@@ -165,11 +165,41 @@ class MainActivity : ComponentActivity() {
     private val requestAllFilesAccessLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
         // Handle the result in onResume
     }
+    private fun requestHighRefreshRate() {
+        val powerManager = getSystemService(POWER_SERVICE) as android.os.PowerManager
+        if (powerManager.isPowerSaveMode) {
+            LogUtils.d(this, "Battery saver active – skipping high refresh rate request")
+            return
+        }
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            val display = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                display
+            } else {
+                @Suppress("DEPRECATION")
+                windowManager.defaultDisplay
+            }
+
+            display?.supportedModes?.let { modes ->
+                val maxRefreshRateMode = modes.maxByOrNull { it.refreshRate }
+
+                maxRefreshRateMode?.let { mode ->
+                    val layoutParams = window.attributes
+                    layoutParams.preferredDisplayModeId = mode.modeId
+                    window.attributes = layoutParams
+
+                    LogUtils.d(this, "Requested refresh rate: ${mode.refreshRate}Hz")
+                }
+            }
+        }
+    }
+
 
     @OptIn(ExperimentalPermissionsApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         LogUtils.d(this, "onCreate")
         val splashScreen = installSplashScreen()
+        requestHighRefreshRate()
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(
                 android.graphics.Color.TRANSPARENT,
@@ -962,6 +992,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        requestHighRefreshRate()
     }
 
 
