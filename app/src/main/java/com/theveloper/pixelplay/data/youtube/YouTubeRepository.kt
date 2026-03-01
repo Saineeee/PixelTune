@@ -1,9 +1,19 @@
 package com.theveloper.pixelplay.data.youtube
 
+import com.theveloper.pixelplay.data.model.Album
+import com.theveloper.pixelplay.data.model.Artist
+import com.theveloper.pixelplay.data.model.Playlist
+import com.theveloper.pixelplay.data.model.SearchResultItem
+import com.theveloper.pixelplay.data.model.SearchFilterType
+import com.theveloper.pixelplay.data.model.Song
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
+import org.schabi.newpipe.extractor.search.SearchExtractor
 import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.StreamInfoItem
+import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
+import org.schabi.newpipe.extractor.channel.ChannelInfoItem
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -56,5 +66,112 @@ class YouTubeRepository @Inject constructor() {
             formatName.contains("m4a") || formatName.contains("aac") -> 1
             else -> 0
         }
+    }
+
+    suspend fun searchYouTube(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): List<SearchResultItem> = withContext(Dispatchers.IO) {
+        try {
+            val searchFilter = when (filter) {
+                SearchFilterType.ALL -> ""
+                SearchFilterType.SONGS -> "videos" // For YouTube, we can just use default or "videos"
+                SearchFilterType.ALBUMS -> "playlists" // YouTube doesn't map albums cleanly, but NewPipe handles it
+                SearchFilterType.ARTISTS -> "channels"
+                SearchFilterType.PLAYLISTS -> "playlists"
+            }
+
+            val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
+                ServiceList.YouTube.getSearchExtractor(query, listOf(searchFilter), "")
+            } else {
+                ServiceList.YouTube.getSearchExtractor(query)
+            }
+
+            extractor.fetchPage()
+
+            val results = mutableListOf<SearchResultItem>()
+
+            extractor.initialPage.items.forEach { item ->
+                when (item) {
+                    is StreamInfoItem -> {
+                        if (filter == SearchFilterType.ALL || filter == SearchFilterType.SONGS) {
+                            val youtubeId = extractVideoId(item.url)
+                            if (youtubeId != null) {
+                                val durationMs = if (item.duration > 0) item.duration * 1000L else 0L
+                                val song = Song(
+                                    id = youtubeId,
+                                    title = item.name ?: "Unknown",
+                                    artist = item.uploaderName ?: "Unknown",
+                                    artistId = -1L,
+                                    artists = emptyList(),
+                                    album = "",
+                                    albumId = -1L,
+                                    albumArtist = null,
+                                    path = item.url,
+                                    contentUriString = proxyUrlProvider(youtubeId),
+                                    albumArtUriString = item.thumbnails.firstOrNull()?.url,
+                                    duration = durationMs,
+                                    genre = null,
+                                    lyrics = null,
+                                    isFavorite = false,
+                                    trackNumber = 0,
+                                    year = 0,
+                                    dateAdded = 0,
+                                    dateModified = 0,
+                                    mimeType = "audio/mp4",
+                                    bitrate = 0,
+                                    sampleRate = 0,
+                                    telegramFileId = null,
+                                    telegramChatId = null,
+                                    neteaseId = null,
+                                    gdriveFileId = null,
+                                    youtubeId = youtubeId
+                                )
+                                results.add(SearchResultItem.SongItem(song))
+                            }
+                        }
+                    }
+                    is PlaylistInfoItem -> {
+                        if (filter == SearchFilterType.ALL || filter == SearchFilterType.PLAYLISTS || filter == SearchFilterType.ALBUMS) {
+                            val playlistId = extractPlaylistId(item.url) ?: item.url
+                            val playlist = Playlist(
+                                id = playlistId,
+                                name = item.name ?: "Unknown Playlist",
+                                songIds = emptyList() // We don't fetch songs right now
+                            )
+                            results.add(SearchResultItem.PlaylistItem(playlist))
+                        }
+                    }
+                    is ChannelInfoItem -> {
+                        if (filter == SearchFilterType.ALL || filter == SearchFilterType.ARTISTS) {
+                            val channelId = extractChannelId(item.url) ?: item.url
+                            val artist = Artist(
+                                id = channelId.hashCode().toLong(),
+                                name = item.name ?: "Unknown Artist",
+                                songCount = item.subscriberCount.toInt(),
+                                // NewPipe ChannelInfoItem doesn't directly expose imageUrl
+                            )
+                            results.add(SearchResultItem.ArtistItem(artist))
+                        }
+                    }
+                }
+            }
+            results
+        } catch (e: Exception) {
+            Timber.e(e, "Error searching YouTube for query: $query")
+            emptyList()
+        }
+    }
+
+    private fun extractVideoId(url: String): String? {
+        // e.g., https://www.youtube.com/watch?v=dQw4w9WgXcQ
+        val regex = Regex("v=([a-zA-Z0-9_-]+)")
+        return regex.find(url)?.groupValues?.get(1) ?: url.substringAfterLast("/").substringBefore("?")
+    }
+
+    private fun extractPlaylistId(url: String): String? {
+        val regex = Regex("list=([a-zA-Z0-9_-]+)")
+        return regex.find(url)?.groupValues?.get(1)
+    }
+
+    private fun extractChannelId(url: String): String? {
+        return url.substringAfterLast("/")
     }
 }

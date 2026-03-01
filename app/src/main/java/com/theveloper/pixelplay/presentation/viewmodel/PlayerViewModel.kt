@@ -1295,10 +1295,10 @@ class PlayerViewModel @Inject constructor(
 
         // Collect SearchStateHolder flows
         viewModelScope.launch {
-            combine(
+            kotlinx.coroutines.flow.combine(
                 searchStateHolder.searchResults,
                 searchStateHolder.selectedSearchFilter,
-                searchStateHolder.searchHistory,
+                searchStateHolder.searchHistory
             ) { results, filter, history ->
                 Triple(results, filter, history)
             }.collect { (results, filter, history) ->
@@ -1306,8 +1306,16 @@ class PlayerViewModel @Inject constructor(
                     it.copy(
                         searchResults = results,
                         selectedSearchFilter = filter,
-                        searchHistory = history,
+                        searchHistory = history
                     )
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            searchStateHolder.isOnlineSearch.collect { isOnline ->
+                _playerUiState.update {
+                    it.copy(isOnlineSearch = isOnline)
                 }
             }
         }
@@ -3392,8 +3400,15 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    fun toggleSearchMode(isOnline: Boolean) {
+        searchStateHolder.toggleSearchMode(isOnline)
+        performSearch(searchQuery)
+    }
+
+
     fun updateSearchFilter(filterType: SearchFilterType) {
         searchStateHolder.updateSearchFilter(filterType)
+        performSearch(searchQuery)
     }
 
     fun loadSearchHistory(limit: Int = 15) {

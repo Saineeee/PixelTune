@@ -5,6 +5,8 @@ import com.theveloper.pixelplay.data.model.SearchFilterType
 import com.theveloper.pixelplay.data.model.SearchHistoryItem
 import com.theveloper.pixelplay.data.model.SearchResultItem
 import com.theveloper.pixelplay.data.repository.MusicRepository
+import com.theveloper.pixelplay.data.youtube.YouTubeRepository
+import com.theveloper.pixelplay.data.youtube.YouTubeStreamProxy
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
@@ -36,7 +38,9 @@ import javax.inject.Singleton
  */
 @Singleton
 class SearchStateHolder @Inject constructor(
-    private val musicRepository: MusicRepository
+    private val musicRepository: MusicRepository,
+    private val youTubeRepository: YouTubeRepository,
+    private val youTubeStreamProxy: YouTubeStreamProxy
 ) {
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 300L
@@ -44,7 +48,8 @@ class SearchStateHolder @Inject constructor(
 
     private data class SearchRequest(
         val query: String,
-        val requestId: Long
+        val requestId: Long,
+        val isOnline: Boolean
     )
 
     // Search State
@@ -56,6 +61,9 @@ class SearchStateHolder @Inject constructor(
 
     private val _searchHistory = MutableStateFlow<ImmutableList<SearchHistoryItem>>(persistentListOf())
     val searchHistory = _searchHistory.asStateFlow()
+
+    private val _isOnlineSearch = MutableStateFlow(true)
+    val isOnlineSearch = _isOnlineSearch.asStateFlow()
 
     private val searchRequests = MutableSharedFlow<SearchRequest>(
         extraBufferCapacity = 1,
@@ -91,8 +99,15 @@ class SearchStateHolder @Inject constructor(
 
                     try {
                         val currentFilter = _selectedSearchFilter.value
+
                         val resultsList = withContext(Dispatchers.IO) {
-                            musicRepository.searchAll(normalizedQuery, currentFilter).first()
+                            if (request.isOnline) {
+                                youTubeRepository.searchYouTube(normalizedQuery, currentFilter) { youtubeId ->
+                                    youTubeStreamProxy.getProxyUrl(youtubeId)
+                                }
+                            } else {
+                                musicRepository.searchAll(normalizedQuery, currentFilter).first()
+                            }
                         }
 
                         if (request.requestId != latestSearchRequestId.get()) {
@@ -117,6 +132,10 @@ class SearchStateHolder @Inject constructor(
 
     fun updateSearchFilter(filterType: SearchFilterType) {
         _selectedSearchFilter.value = filterType
+    }
+
+    fun toggleSearchMode(isOnline: Boolean) {
+        _isOnlineSearch.value = isOnline
     }
 
     fun loadSearchHistory(limit: Int = 15) {
@@ -158,7 +177,7 @@ class SearchStateHolder @Inject constructor(
             }
         }
 
-        searchRequests.tryEmit(SearchRequest(normalizedQuery, requestId))
+        searchRequests.tryEmit(SearchRequest(normalizedQuery, requestId, _isOnlineSearch.value))
     }
 
     fun deleteSearchHistoryItem(query: String) {
