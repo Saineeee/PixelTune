@@ -1,6 +1,7 @@
 package com.theveloper.pixelplay.presentation.screens
 
 import com.theveloper.pixelplay.presentation.navigation.navigateSafely
+import com.theveloper.pixelplay.presentation.components.ToggleSegmentButton
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
@@ -136,6 +137,7 @@ fun SearchScreen(
     var showPlaylistBottomSheet by remember { mutableStateOf(false) }
     val uiState by playerViewModel.playerUiState.collectAsStateWithLifecycle()
     val currentFilter by remember { derivedStateOf { uiState.selectedSearchFilter } }
+    val isOnlineSearch by remember { derivedStateOf { uiState.isOnlineSearch } }
     val genres by playerViewModel.genres.collectAsStateWithLifecycle()
     val stablePlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
     val favoriteSongIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle()
@@ -351,6 +353,50 @@ fun SearchScreen(
                             .fillMaxSize()
                             .padding(horizontal = 16.dp)
                     ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp)
+                                .height(48.dp),
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxSize()
+                            ) {
+                                ToggleSegmentButton(
+                                    modifier = Modifier.fillMaxSize(),
+                                    active = !isOnlineSearch,
+                                    activeColor = MaterialTheme.colorScheme.primary,
+                                    inactiveColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                                    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    activeCornerRadius = 24.dp,
+                                    onClick = { playerViewModel.toggleSearchMode(false) },
+                                    text = "Local"
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxSize()
+                            ) {
+                                ToggleSegmentButton(
+                                    modifier = Modifier.fillMaxSize(),
+                                    active = isOnlineSearch,
+                                    activeColor = MaterialTheme.colorScheme.primary,
+                                    inactiveColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                                    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    activeCornerRadius = 24.dp,
+                                    onClick = { playerViewModel.toggleSearchMode(true) },
+                                    text = "Online"
+                                )
+                            }
+                        }
+
                         FlowRow(
                             modifier = Modifier
                                 .fillMaxWidth()
