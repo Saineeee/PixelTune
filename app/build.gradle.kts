@@ -341,6 +341,7 @@ dependencies {
 
     // Telegram TDLib
     implementation(libs.tdlib)
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.24.6")
 
     // Google Sign-In via Credential Manager (for Google Drive)
     implementation(libs.credentials)
