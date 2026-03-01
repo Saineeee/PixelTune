@@ -451,6 +451,22 @@ object AppModule {
     /**
      * Provee el repositorio de imágenes de artistas.
      */
+
+    @Singleton
+    @Provides
+    fun provideYouTubeRepository(): com.theveloper.pixelplay.data.youtube.YouTubeRepository {
+        return com.theveloper.pixelplay.data.youtube.YouTubeRepository()
+    }
+
+    @Singleton
+    @Provides
+    fun provideYouTubeStreamProxy(
+        repository: com.theveloper.pixelplay.data.youtube.YouTubeRepository,
+        okHttpClient: OkHttpClient
+    ): com.theveloper.pixelplay.data.youtube.YouTubeStreamProxy {
+        return com.theveloper.pixelplay.data.youtube.YouTubeStreamProxy(repository, okHttpClient)
+    }
+
     @Provides
     @Singleton
     fun provideArtistImageRepository(

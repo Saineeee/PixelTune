@@ -14,6 +14,9 @@ import com.theveloper.pixelplay.utils.MediaMetadataRetrieverPool
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import org.schabi.newpipe.extractor.NewPipe
+import com.theveloper.pixelplay.data.youtube.NewPipeDownloader
+import okhttp3.OkHttpClient
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -31,6 +34,12 @@ class PixelPlayApplication : Application(), ImageLoaderFactory, Configuration.Pr
 
     @Inject
     lateinit var neteaseStreamProxy: com.theveloper.pixelplay.data.netease.NeteaseStreamProxy
+
+    @Inject
+    lateinit var youtubeStreamProxy: com.theveloper.pixelplay.data.youtube.YouTubeStreamProxy
+
+    @Inject
+    lateinit var okHttpClient: OkHttpClient
 
     @Inject
     lateinit var telegramCacheManager: dagger.Lazy<com.theveloper.pixelplay.data.telegram.TelegramCacheManager>
@@ -69,8 +78,12 @@ class PixelPlayApplication : Application(), ImageLoaderFactory, Configuration.Pr
             notificationManager.createNotificationChannel(channel)
         }
         
-        // Start Netease proxy immediately (no heavy native deps)
+        // Initialize NewPipe Extractor
+        NewPipe.init(NewPipeDownloader(okHttpClient))
+
+        // Start proxies
         neteaseStreamProxy.start()
+        youtubeStreamProxy.start()
 
         // Start Telegram proxy and schedule cache cleanup on IO thread to avoid blocking
         // Application.onCreate() with TDLib native library loading (System.loadLibrary("tdjni")).

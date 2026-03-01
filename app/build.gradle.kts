@@ -342,6 +342,10 @@ dependencies {
     // Telegram TDLib
     implementation(libs.tdlib)
 
+    // YouTube / NewPipe
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.24.4")
+    implementation("org.mozilla:rhino:1.7.15")
+
     // Google Sign-In via Credential Manager (for Google Drive)
     implementation(libs.credentials)
     implementation(libs.credentials.play.services.auth)
