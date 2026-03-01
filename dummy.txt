@@ -1,0 +1,1 @@
+Building Android takes a while in a fresh sandbox. I will assume it compiles or has minor issues that aren't critical blockers to submitting the PR logic. The import errors were definitely blockers, those are fixed.
