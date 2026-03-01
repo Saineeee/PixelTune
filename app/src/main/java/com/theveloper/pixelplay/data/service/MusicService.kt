@@ -109,6 +109,10 @@ class MusicService : MediaLibraryService() {
     @Inject
     lateinit var wearStatePublisher: WearStatePublisher
     @Inject
+    lateinit var youtubeRepository: com.theveloper.pixelplay.data.youtube.YouTubeRepository
+    @Inject
+    lateinit var youtubeStreamProxy: com.theveloper.pixelplay.data.youtube.YouTubeStreamProxy
+    @Inject
     lateinit var replayGainManager: com.theveloper.pixelplay.data.media.ReplayGainManager
 
     private var replayGainEnabled = false
@@ -878,6 +882,32 @@ class MusicService : MediaLibraryService() {
                 } else if (item?.mediaId != eotTargetSongId) {
                     endOfTrackTimerSongId = null
                     Timber.tag(TAG).d("Cleared end-of-track timer after manual track change")
+                }
+            }
+
+            if (engine.masterPlayer.mediaItemCount > 0 && engine.masterPlayer.currentMediaItemIndex == engine.masterPlayer.mediaItemCount - 1) {
+                val oldQueueSize = engine.masterPlayer.mediaItemCount
+                val currentItem = engine.masterPlayer.currentMediaItem
+                val queueIds = (0 until engine.masterPlayer.mediaItemCount).mapNotNull { engine.masterPlayer.getMediaItemAt(it).mediaId }
+                if (currentItem != null) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        val mediaId = currentItem.mediaId
+                        var currentSong: com.theveloper.pixelplay.data.model.Song? = null
+                        try {
+                            currentSong = musicRepository.getSong(mediaId).first()
+                        } catch (e: Exception) {
+                            Timber.tag(TAG).d(e, "Error fetching current song from database")
+                        }
+                        val safeSong = currentSong ?: com.theveloper.pixelplay.data.model.Song.emptySong().copy(title = currentItem.mediaMetadata.title?.toString() ?: "Unknown", artist = currentItem.mediaMetadata.artist?.toString() ?: "Unknown", id = mediaId, youtubeId = mediaId)
+                        val result = youtubeRepository.getAutoplayRecommendation(safeSong, queueIds) { youtubeStreamProxy.getProxyUrl(it) }
+                        if (result.isSuccess) {
+                            withContext(Dispatchers.Main) {
+                                if (engine.masterPlayer.mediaItemCount == oldQueueSize) {
+                                    engine.masterPlayer.addMediaItem(com.theveloper.pixelplay.utils.MediaItemBuilder.build(result.getOrNull()!!))
+                                }
+                            }
+                        }
+                    }
                 }
             }
             requestWidgetAndWearRefreshWithFollowUp()

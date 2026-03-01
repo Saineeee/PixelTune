@@ -174,4 +174,55 @@ class YouTubeRepository @Inject constructor() {
     private fun extractChannelId(url: String): String? {
         return url.substringAfterLast("/")
     }
+
+    suspend fun getAutoplayRecommendation(
+        currentSong: Song,
+        currentQueueIds: List<String>,
+        proxyUrlProvider: (String) -> String
+    ): Result<Song> = withContext(Dispatchers.IO) {
+        try {
+            val validItem = if (currentSong.youtubeId != null) {
+                val url = "https://www.youtube.com/watch?v=${currentSong.youtubeId}"
+                val extractor = ServiceList.YouTube.getStreamExtractor(url)
+                extractor.fetchPage()
+                extractor.relatedItems?.items?.filterIsInstance<StreamInfoItem>()?.firstOrNull { item ->
+                    val videoId = extractVideoId(item.url)
+                    videoId != null && !currentQueueIds.contains(videoId)
+                }
+            } else {
+                val query = "${currentSong.artist} ${currentSong.title} mix"
+                val extractor = ServiceList.YouTube.getSearchExtractor(query)
+                extractor.fetchPage()
+                extractor.initialPage.items.filterIsInstance<StreamInfoItem>().firstOrNull { item ->
+                    val videoId = extractVideoId(item.url)
+                    videoId != null && !currentQueueIds.contains(videoId)
+                }
+            }
+
+            if (validItem != null) {
+                val youtubeId = extractVideoId(validItem.url)!!
+                val durationMs = if (validItem.duration > 0) validItem.duration * 1000L else 0L
+                val song = Song.emptySong().copy(
+                    id = youtubeId,
+                    title = validItem.name ?: "Unknown",
+                    artist = validItem.uploaderName ?: "Unknown",
+                    artistId = -1L,
+                    album = "",
+                    albumId = -1L,
+                    path = validItem.url,
+                    contentUriString = proxyUrlProvider(youtubeId),
+                    albumArtUriString = validItem.thumbnails.firstOrNull()?.url,
+                    duration = durationMs,
+                    mimeType = "audio/mp4",
+                    youtubeId = youtubeId
+                )
+                Result.success(song)
+            } else {
+                Result.failure(Exception("No suitable autoplay recommendation found."))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Error getting autoplay recommendation")
+            Result.failure(e)
+        }
+    }
 }
