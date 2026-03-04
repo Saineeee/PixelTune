@@ -32,6 +32,7 @@ import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.CloudQueue
+import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Sync
@@ -312,7 +313,7 @@ private fun ConnectedAccountCard(
     onLogout: () -> Unit
 ) {
     val palette = servicePalette(account.service)
-    val isComingSoon = account.service == ExternalServiceAccount.GOOGLE_DRIVE
+    val isComingSoon = account.service == ExternalServiceAccount.GOOGLE_DRIVE || account.service == ExternalServiceAccount.YOUTUBE || account.service == ExternalServiceAccount.SOUNDCLOUD
     val cardShape = AbsoluteSmoothCornerShape(28.dp, 60)
 
     Card(
@@ -483,7 +484,7 @@ private fun EmptyAccountsCard(
             )
 
             disconnectedServices.forEach { service ->
-                val isComingSoon = service == ExternalServiceAccount.GOOGLE_DRIVE
+                val isComingSoon = service == ExternalServiceAccount.GOOGLE_DRIVE || service == ExternalServiceAccount.YOUTUBE || service == ExternalServiceAccount.SOUNDCLOUD
                 FilledTonalButton(
                     onClick = { if (!isComingSoon) onConnect(service) },
                     enabled = !isComingSoon,
@@ -548,6 +549,22 @@ private fun servicePalette(service: ExternalServiceAccount): ServicePalette {
             primaryActionContainer = MaterialTheme.colorScheme.tertiaryContainer,
             primaryActionTint = MaterialTheme.colorScheme.onTertiaryContainer
         )
+        ExternalServiceAccount.YOUTUBE -> ServicePalette(
+            iconContainer = MaterialTheme.colorScheme.errorContainer,
+            iconTint = MaterialTheme.colorScheme.onErrorContainer,
+            statusContainer = Color(0xFFFFD4D4),
+            statusTint = Color(0xFF8A0000),
+            primaryActionContainer = MaterialTheme.colorScheme.errorContainer,
+            primaryActionTint = MaterialTheme.colorScheme.onErrorContainer
+        )
+        ExternalServiceAccount.SOUNDCLOUD -> ServicePalette(
+            iconContainer = Color(0xFFFFDAB9),
+            iconTint = Color(0xFFCC5500),
+            statusContainer = Color(0xFFFFEBCD),
+            statusTint = Color(0xFF8B4500),
+            primaryActionContainer = Color(0xFFFFDAB9),
+            primaryActionTint = Color(0xFFCC5500)
+        )
     }
 }
 
@@ -556,6 +573,8 @@ private fun accountIcon(service: ExternalServiceAccount): ImageVector {
         ExternalServiceAccount.TELEGRAM -> Icons.AutoMirrored.Rounded.Send
         ExternalServiceAccount.GOOGLE_DRIVE -> Icons.Rounded.CloudQueue
         ExternalServiceAccount.NETEASE -> Icons.Rounded.LibraryMusic
+        ExternalServiceAccount.YOUTUBE -> Icons.Rounded.PlayCircle
+        ExternalServiceAccount.SOUNDCLOUD -> Icons.Rounded.CloudQueue
     }
 }
 
@@ -564,6 +583,8 @@ private fun serviceTitle(service: ExternalServiceAccount): String {
         ExternalServiceAccount.TELEGRAM -> "Telegram"
         ExternalServiceAccount.GOOGLE_DRIVE -> "Google Drive"
         ExternalServiceAccount.NETEASE -> "Netease"
+        ExternalServiceAccount.YOUTUBE -> "YouTube"
+        ExternalServiceAccount.SOUNDCLOUD -> "SoundCloud"
     }
 }
 
@@ -592,6 +613,12 @@ private fun openService(
                     intent = Intent(context, NeteaseLoginActivity::class.java)
                 )
             }
+        }
+        ExternalServiceAccount.YOUTUBE -> {
+            Toast.makeText(context, "YouTube is coming soon.", Toast.LENGTH_SHORT).show()
+        }
+        ExternalServiceAccount.SOUNDCLOUD -> {
+            Toast.makeText(context, "SoundCloud is coming soon.", Toast.LENGTH_SHORT).show()
         }
     }
 }

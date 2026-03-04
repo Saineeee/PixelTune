@@ -467,6 +467,21 @@ object AppModule {
         return com.theveloper.pixelplay.data.youtube.YouTubeStreamProxy(repository, okHttpClient)
     }
 
+    @Singleton
+    @Provides
+    fun provideSoundCloudRepository(): com.theveloper.pixelplay.data.soundcloud.SoundCloudRepository {
+        return com.theveloper.pixelplay.data.soundcloud.SoundCloudRepository()
+    }
+
+    @Singleton
+    @Provides
+    fun provideSoundCloudStreamProxy(
+        repository: com.theveloper.pixelplay.data.soundcloud.SoundCloudRepository,
+        okHttpClient: OkHttpClient
+    ): com.theveloper.pixelplay.data.soundcloud.SoundCloudStreamProxy {
+        return com.theveloper.pixelplay.data.soundcloud.SoundCloudStreamProxy(repository, okHttpClient)
+    }
+
     @Provides
     @Singleton
     fun provideArtistImageRepository(

@@ -7,6 +7,8 @@ import com.theveloper.pixelplay.data.model.SearchResultItem
 import com.theveloper.pixelplay.data.repository.MusicRepository
 import com.theveloper.pixelplay.data.youtube.YouTubeRepository
 import com.theveloper.pixelplay.data.youtube.YouTubeStreamProxy
+import com.theveloper.pixelplay.data.soundcloud.SoundCloudRepository
+import com.theveloper.pixelplay.data.soundcloud.SoundCloudStreamProxy
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
@@ -40,7 +42,9 @@ import javax.inject.Singleton
 class SearchStateHolder @Inject constructor(
     private val musicRepository: MusicRepository,
     private val youTubeRepository: YouTubeRepository,
-    private val youTubeStreamProxy: YouTubeStreamProxy
+    private val youTubeStreamProxy: YouTubeStreamProxy,
+    private val soundCloudRepository: SoundCloudRepository,
+    private val soundCloudStreamProxy: SoundCloudStreamProxy
 ) {
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 300L
@@ -51,6 +55,17 @@ class SearchStateHolder @Inject constructor(
         val requestId: Long,
         val isOnline: Boolean
     )
+
+    enum class OnlineProvider {
+        YOUTUBE, SOUNDCLOUD
+    }
+
+    private val _currentProvider = MutableStateFlow(OnlineProvider.YOUTUBE)
+    val currentProvider = _currentProvider.asStateFlow()
+
+    fun setOnlineProvider(provider: OnlineProvider) {
+        _currentProvider.value = provider
+    }
 
     // Search State
     private val _searchResults = MutableStateFlow<ImmutableList<SearchResultItem>>(persistentListOf())
@@ -102,8 +117,14 @@ class SearchStateHolder @Inject constructor(
 
                         val resultsList = withContext(Dispatchers.IO) {
                             if (request.isOnline) {
-                                youTubeRepository.searchYouTube(normalizedQuery, currentFilter) { youtubeId ->
-                                    youTubeStreamProxy.getProxyUrl(youtubeId)
+                                if (_currentProvider.value == OnlineProvider.YOUTUBE) {
+                                    youTubeRepository.searchYouTube(normalizedQuery, currentFilter) { youtubeId ->
+                                        youTubeStreamProxy.getProxyUrl(youtubeId)
+                                    }
+                                } else {
+                                    soundCloudRepository.searchSoundCloud(normalizedQuery, currentFilter) { encodedUrl ->
+                                        soundCloudStreamProxy.getProxyUrl(encodedUrl)
+                                    }
                                 }
                             } else {
                                 musicRepository.searchAll(normalizedQuery, currentFilter).first()

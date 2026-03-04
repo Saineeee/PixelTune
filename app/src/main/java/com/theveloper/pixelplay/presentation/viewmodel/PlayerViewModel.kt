@@ -727,6 +727,10 @@ class PlayerViewModel @Inject constructor(
         searchQuery = query
     }
 
+    fun setOnlineProvider(provider: SearchStateHolder.OnlineProvider) {
+        searchStateHolder.setOnlineProvider(provider)
+    }
+
     private var mediaController: MediaController? = null
     private val _isMediaControllerReady = MutableStateFlow(false)
     val isMediaControllerReady: StateFlow<Boolean> = _isMediaControllerReady.asStateFlow()

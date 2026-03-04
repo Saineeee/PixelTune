@@ -22,7 +22,9 @@ import org.drinkless.tdlib.TdApi
 enum class ExternalServiceAccount {
     TELEGRAM,
     GOOGLE_DRIVE,
-    NETEASE
+    NETEASE,
+    YOUTUBE,
+    SOUNDCLOUD
 }
 
 data class ExternalAccountUiModel(
@@ -139,6 +141,8 @@ class AccountsViewModel @Inject constructor(
             if (!telegramConnected) add(ExternalServiceAccount.TELEGRAM)
             if (!gDriveConnected) add(ExternalServiceAccount.GOOGLE_DRIVE)
             if (!neteaseConnected) add(ExternalServiceAccount.NETEASE)
+            add(ExternalServiceAccount.YOUTUBE)
+            add(ExternalServiceAccount.SOUNDCLOUD)
         }
 
         AccountsUiState(
@@ -162,6 +166,8 @@ class AccountsViewModel @Inject constructor(
                         }
                         ExternalServiceAccount.GOOGLE_DRIVE -> gDriveRepository.logout()
                         ExternalServiceAccount.NETEASE -> neteaseRepository.logout()
+                        ExternalServiceAccount.YOUTUBE -> {}
+                        ExternalServiceAccount.SOUNDCLOUD -> {}
                     }
                 }
             } finally {
