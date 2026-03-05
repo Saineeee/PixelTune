@@ -3,13 +3,13 @@ package com.theveloper.pixelplay.data.youtube
 import android.net.Uri
 import com.theveloper.pixelplay.data.stream.CloudStreamSecurity
 import io.ktor.http.ContentType
+import io.ktor.http.Headers
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
 import io.ktor.server.application.call
 import io.ktor.server.engine.*
 import io.ktor.server.cio.*
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondBytesWriter
-import io.ktor.server.response.header
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.writeFully
@@ -160,6 +160,10 @@ class YouTubeStreamProxy @Inject constructor(
                             requestBuilder.header("Range", it)
                         }
 
+                        call.request.headers["User-Agent"]?.let {
+                            requestBuilder.header("User-Agent", it)
+                        }
+
                         val response = withContext(Dispatchers.IO) {
                             okHttpClient.newCall(requestBuilder.build()).execute()
                         }
@@ -198,26 +202,27 @@ class YouTubeStreamProxy @Inject constructor(
                                 ?.let { raw -> runCatching { ContentType.parse(raw) }.getOrNull() }
                                 ?: ContentType.Audio.Any
 
-                            if (upstream.code == 206) {
-                                call.response.status(HttpStatusCode.PartialContent)
-                            } else {
-                                call.response.status(HttpStatusCode.OK)
-                            }
-                            call.response.header("Accept-Ranges", acceptRanges ?: "bytes")
-                            contentLength?.let { call.response.header("Content-Length", it) }
-                            contentRange?.let { call.response.header("Content-Range", it) }
-
-                            call.respondBytesWriter(contentType = responseContentType) {
-                                withContext(Dispatchers.IO) {
-                                    body.byteStream().use { input ->
-                                        val buffer = ByteArray(64 * 1024)
-                                        var bytesRead: Int
-                                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                                            writeFully(buffer, 0, bytesRead)
+                            val customContent = object : OutgoingContent.WriteChannelContent() {
+                                override val contentLength: Long? = contentLength?.toLongOrNull()
+                                override val contentType: ContentType = responseContentType
+                                override val status: HttpStatusCode = if (upstream.code == 206) HttpStatusCode.PartialContent else HttpStatusCode.OK
+                                override val headers: Headers = io.ktor.http.Headers.build {
+                                    append("Accept-Ranges", acceptRanges ?: "bytes")
+                                    contentRange?.let { append("Content-Range", it) }
+                                }
+                                override suspend fun writeTo(channel: io.ktor.utils.io.ByteWriteChannel) {
+                                    withContext(Dispatchers.IO) {
+                                        body.byteStream().use { input ->
+                                            val buffer = ByteArray(64 * 1024)
+                                            var bytesRead: Int
+                                            while (input.read(buffer).also { bytesRead = it } != -1) {
+                                                channel.writeFully(buffer, 0, bytesRead)
+                                            }
                                         }
                                     }
                                 }
                             }
+                            call.respond(customContent)
                         }
                     } catch (e: Exception) {
                         val msg = e.toString()
