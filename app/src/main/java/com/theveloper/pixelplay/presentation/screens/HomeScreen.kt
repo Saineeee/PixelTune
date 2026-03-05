@@ -376,6 +376,9 @@ fun HomeScreen(
             isNeteaseLoggedIn = isNeteaseLoggedIn,
             onNavigateToNeteaseDashboard = {
                 navController.navigateSafely(Screen.NeteaseDashboard.route)
+            },
+            onProviderSelected = { provider ->
+                playerViewModel.setOnlineProvider(provider)
             }
         )
     }

@@ -26,6 +26,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.theveloper.pixelplay.R
 import com.theveloper.pixelplay.data.netease.NeteaseRepository
+import androidx.compose.material.icons.rounded.PlayCircle
+import com.theveloper.pixelplay.presentation.viewmodel.SearchStateHolder.OnlineProvider
 import com.theveloper.pixelplay.presentation.netease.auth.NeteaseLoginActivity
 import com.theveloper.pixelplay.presentation.telegram.auth.TelegramLoginActivity
 import com.theveloper.pixelplay.ui.theme.GoogleSansRounded
@@ -44,6 +46,7 @@ fun StreamingProviderSheet(
     onDismissRequest: () -> Unit,
     isNeteaseLoggedIn: Boolean = false,
     onNavigateToNeteaseDashboard: () -> Unit = {},
+    onProviderSelected: (OnlineProvider) -> Unit = {},
     sheetState: SheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true
     )
@@ -103,6 +106,40 @@ fun StreamingProviderSheet(
                 shape = cardShape,
                 onClick = {
                     context.startActivity(Intent(context, TelegramLoginActivity::class.java))
+                    onDismissRequest()
+                }
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            // YouTube Provider
+            ProviderCard(
+                icon = Icons.Rounded.PlayCircle,
+                title = "YouTube",
+                subtitle = "Stream from YouTube",
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                iconColor = MaterialTheme.colorScheme.errorContainer,
+                shape = cardShape,
+                onClick = {
+                    onProviderSelected(OnlineProvider.YOUTUBE)
+                    onDismissRequest()
+                }
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            // SoundCloud Provider
+            ProviderCard(
+                icon = Icons.Rounded.CloudQueue,
+                title = "SoundCloud",
+                subtitle = "Stream from SoundCloud",
+                containerColor = Color(0xFFFFDAB9),
+                contentColor = Color(0xFFCC5500),
+                iconColor = Color(0xFFFFDAB9),
+                shape = cardShape,
+                onClick = {
+                    onProviderSelected(OnlineProvider.SOUNDCLOUD)
                     onDismissRequest()
                 }
             )
