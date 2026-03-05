@@ -156,6 +156,9 @@ class YouTubeStreamProxy @Inject constructor(
 
                         // Proxy the audio stream
                         val requestBuilder = Request.Builder().url(streamUrl)
+                        call.request.headers["User-Agent"]?.let { userAgent ->
+                            requestBuilder.header("User-Agent", userAgent)
+                        }
                         rangeValidation.normalizedHeader?.let {
                             requestBuilder.header("Range", it)
                         }
@@ -198,26 +201,27 @@ class YouTubeStreamProxy @Inject constructor(
                                 ?.let { raw -> runCatching { ContentType.parse(raw) }.getOrNull() }
                                 ?: ContentType.Audio.Any
 
-                            if (upstream.code == 206) {
-                                call.response.status(HttpStatusCode.PartialContent)
-                            } else {
-                                call.response.status(HttpStatusCode.OK)
-                            }
-                            call.response.header("Accept-Ranges", acceptRanges ?: "bytes")
-                            contentLength?.let { call.response.header("Content-Length", it) }
-                            contentRange?.let { call.response.header("Content-Range", it) }
+                            call.respond(object : io.ktor.http.content.OutgoingContent.WriteChannelContent() {
+                                override val contentLength: Long? = contentLength?.toLongOrNull()
+                                override val contentType: ContentType = responseContentType
+                                override val status: HttpStatusCode = if (upstream.code == 206) HttpStatusCode.PartialContent else HttpStatusCode.OK
+                                override val headers: io.ktor.http.Headers = io.ktor.http.Headers.build {
+                                    acceptRanges?.let { append("Accept-Ranges", it) } ?: append("Accept-Ranges", "bytes")
+                                    contentRange?.let { append("Content-Range", it) }
+                                }
 
-                            call.respondBytesWriter(contentType = responseContentType) {
-                                withContext(Dispatchers.IO) {
-                                    body.byteStream().use { input ->
-                                        val buffer = ByteArray(64 * 1024)
-                                        var bytesRead: Int
-                                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                                            writeFully(buffer, 0, bytesRead)
+                                override suspend fun writeTo(channel: io.ktor.utils.io.ByteWriteChannel) {
+                                    withContext(Dispatchers.IO) {
+                                        body.byteStream().use { input ->
+                                            val buffer = ByteArray(64 * 1024)
+                                            var bytesRead: Int
+                                            while (input.read(buffer).also { bytesRead = it } != -1) {
+                                                channel.writeFully(buffer, 0, bytesRead)
+                                            }
                                         }
                                     }
                                 }
-                            }
+                            })
                         }
                     } catch (e: Exception) {
                         val msg = e.toString()
