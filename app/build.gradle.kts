@@ -11,7 +11,7 @@ plugins {
 }
 
 android {
-    namespace = "com.theveloper.pixelplay"
+    namespace = "com.theveloper.pixeltune"
     compileSdk = 35
 
     androidResources {

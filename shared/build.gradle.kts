@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.theveloper.pixelplay.shared"
+    namespace = "com.theveloper.pixeltune.shared"
     compileSdk = 35
 
     defaultConfig {
