@@ -1059,6 +1059,9 @@ fun SettingsCategoryScreen(
                         SettingsCategory.DEVICE_CAPABILITIES -> {
                              // Device Capabilities has its own screen
                         }
+                        SettingsCategory.IMPORT_PLAYLIST -> {
+                             // Import Playlist is handled via bottom sheet from SettingsScreen
+                        }
 
                     }
                }

@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 import com.theveloper.pixeltune.data.playlist.PlaylistImportManager
 
@@ -99,8 +100,8 @@ fun ImportPlaylistSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var url by remember { mutableStateOf("") }
     
-    val isLoading by androidx.lifecycle.compose.collectAsStateWithLifecycle(viewModel.isLoading)
-    val statusMessage by androidx.lifecycle.compose.collectAsStateWithLifecycle(viewModel.statusMessage)
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -156,7 +157,7 @@ fun ImportPlaylistSheet(
                         }
                     }
                 },
-                enabled = !isLoading
+                enabled = isLoading != true
             )
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -174,11 +175,11 @@ fun ImportPlaylistSheet(
                 Spacer(modifier = Modifier.height(20.dp))
             }
             
-            if (statusMessage != null) {
+            statusMessage?.let { message ->
                 Text(
-                    text = statusMessage!!,
+                    text = message,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (statusMessage!!.contains("Error", true)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    color = if (message.contains("Error", true)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                     modifier = Modifier.align(Alignment.Start)
                 )
                 Spacer(modifier = Modifier.height(16.dp))
@@ -190,12 +191,12 @@ fun ImportPlaylistSheet(
                     .fillMaxWidth()
                     .height(56.dp),
                 shape = CircleShape,
-                enabled = !isLoading && url.isNotBlank()
+                enabled = isLoading != true && url.isNotBlank()
             ) {
                 Icon(Icons.Rounded.Download, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = if (isLoading) "Importing..." else "Import",
+                    text = if (isLoading == true) "Importing..." else "Import",
                     style = MaterialTheme.typography.titleMedium,
                     fontFamily = GoogleSansRounded,
                     fontWeight = FontWeight.SemiBold

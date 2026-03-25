@@ -2865,7 +2865,7 @@ class PlayerViewModel @Inject constructor(
             var likedCount = 0
             songs.forEach { song ->
                 if (!favIds.contains(song.id)) {
-                    setFavoriteStatusEverywhere(song.id, true)
+                    setFavoriteStatusEverywhere(song, true)
                     favIds.add(song.id)
                     likedCount++
                 }
@@ -2889,7 +2889,7 @@ class PlayerViewModel @Inject constructor(
             var unlikedCount = 0
             songs.forEach { song ->
                 if (favIds.contains(song.id)) {
-                    setFavoriteStatusEverywhere(song.id, false)
+                    setFavoriteStatusEverywhere(song, false)
                     favIds.remove(song.id)
                     unlikedCount++
                 }
