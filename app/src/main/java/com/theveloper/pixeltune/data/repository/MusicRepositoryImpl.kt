@@ -479,6 +479,43 @@ class MusicRepositoryImpl @Inject constructor(
         musicDao.getAllArtistsListRaw().map { it.toArtist() }
     }
 
+    override suspend fun setFavoriteStatus(song: Song, isFavorite: Boolean) = withContext(Dispatchers.IO) {
+        val id = song.id.toLongOrNull() ?: return@withContext
+        val isOffline = song.path.isNotEmpty() || song.contentUriString.startsWith("content://") || song.contentUriString.startsWith("file://")
+        
+        if (isFavorite && !isOffline) {
+            val entity = com.theveloper.pixeltune.data.database.SongEntity(
+                id = id,
+                title = song.title,
+                artistName = song.artist,
+                artistId = song.artistId,
+                albumName = song.album,
+                albumId = song.albumId,
+                contentUriString = song.contentUriString,
+                albumArtUriString = song.albumArtUriString,
+                duration = song.duration,
+                genre = song.genre,
+                filePath = song.path.ifEmpty { song.contentUriString },
+                parentDirectoryPath = "online_favorites",
+                isFavorite = true,
+                dateAdded = System.currentTimeMillis()
+            )
+            musicDao.insertSongsIgnoreConflicts(listOf(entity))
+        }
+
+        if (isFavorite) {
+            favoritesDao.setFavorite(
+                com.theveloper.pixeltune.data.database.FavoritesEntity(
+                    songId = id,
+                    isFavorite = true
+                )
+            )
+        } else {
+            favoritesDao.removeFavorite(id)
+        }
+        musicDao.setFavoriteStatus(id, isFavorite)
+    }
+
     override suspend fun setFavoriteStatus(songId: String, isFavorite: Boolean) = withContext(Dispatchers.IO) {
         val id = songId.toLongOrNull() ?: return@withContext
         if (isFavorite) {

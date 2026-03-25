@@ -2684,9 +2684,9 @@ class PlayerViewModel @Inject constructor(
         playbackStateHolder.cycleRepeatMode()
     }
 
-    private suspend fun setFavoriteStatusEverywhere(songId: String, isFavorite: Boolean) {
-        musicRepository.setFavoriteStatus(songId, isFavorite)
-        userPreferencesRepository.setFavoriteSong(songId, isFavorite)
+    private suspend fun setFavoriteStatusEverywhere(song: Song, isFavorite: Boolean) {
+        musicRepository.setFavoriteStatus(song, isFavorite)
+        userPreferencesRepository.setFavoriteSong(song.id, isFavorite)
     }
 
     private suspend fun syncFavoritesStores(preferenceFavoriteIds: Set<String>) {
@@ -2703,10 +2703,11 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun toggleFavorite() {
-        playbackStateHolder.stablePlayerState.value.currentSong?.id?.let { songId ->
+        playbackStateHolder.stablePlayerState.value.currentSong?.let { song ->
             viewModelScope.launch {
+                val songId = song.id
                 val currentlyFavorite = favoriteSongIds.value.contains(songId)
-                setFavoriteStatusEverywhere(songId, !currentlyFavorite)
+                setFavoriteStatusEverywhere(song, !currentlyFavorite)
             }
         }
     }
@@ -2715,7 +2716,7 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             val currentlyFavorite = favoriteSongIds.value.contains(song.id)
             val targetFavoriteState = if (removing) false else !currentlyFavorite
-            setFavoriteStatusEverywhere(song.id, targetFavoriteState)
+            setFavoriteStatusEverywhere(song, targetFavoriteState)
         }
     }
 

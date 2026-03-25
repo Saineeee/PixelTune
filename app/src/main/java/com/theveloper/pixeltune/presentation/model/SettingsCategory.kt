@@ -6,6 +6,7 @@ import androidx.compose.material.icons.rounded.DeveloperMode
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -53,6 +54,12 @@ enum class SettingsCategory(
         title = "Backup & Restore",
         subtitle = "Export and recover your personal app data",
         iconRes = R.drawable.rounded_upload_file_24
+    ),
+    IMPORT_PLAYLIST(
+        id = "import_playlist",
+        title = "Import playlist via URL",
+        subtitle = "Import your playlists from YouTube, Spotify, Apple Music",
+        icon = Icons.Rounded.Link
     ),
     DEVELOPER(
         id = "developer",

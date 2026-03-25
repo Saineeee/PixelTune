@@ -140,9 +140,9 @@ private val PinnedCommunityMembers = listOf(
     Contributor(
         id = "pixelplayer_devs",
         displayName = "PixelPlayer Devs",
-        role = "Original Creators",
-        detail = "The original creators of PixelPlayer, setting the foundation for this app.",
-        badge = "Original Devs",
+        role = "PPL Creators",
+        detail = "The devs of PixelPlayer, setting the foundation for this app.",
+        badge = "PPL Devs",
         iconRes = R.drawable.rounded_celebration_24,
         githubUrl = "https://github.com/theovilardo/PixelPlayer"
     ),

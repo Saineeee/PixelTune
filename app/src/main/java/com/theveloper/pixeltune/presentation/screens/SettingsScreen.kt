@@ -79,6 +79,7 @@ import com.theveloper.pixeltune.presentation.model.SettingsCategory
 import com.theveloper.pixeltune.presentation.navigation.Screen
 import com.theveloper.pixeltune.presentation.viewmodel.PlayerViewModel
 import com.theveloper.pixeltune.presentation.viewmodel.SettingsViewModel
+import com.theveloper.pixeltune.presentation.components.ImportPlaylistSheet
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -132,6 +133,7 @@ fun SettingsScreen(
     val useSmoothCorners by settingsViewModel.useSmoothCorners.collectAsStateWithLifecycle()
 
     var showCornerRadiusOverlay by remember { mutableStateOf(false) }
+    var showImportSheet by remember { mutableStateOf(false) }
 
     val topBarHeight = remember { Animatable(maxTopBarHeightPx) }
     var collapseFraction by remember { mutableStateOf(0f) }
@@ -225,7 +227,11 @@ fun SettingsScreen(
                             category = category,
                             customColors = colors,
                             onClick = {
-                                navController.navigateSafely(Screen.SettingsCategory.createRoute(category.id))
+                                if (category == SettingsCategory.IMPORT_PLAYLIST) {
+                                    showImportSheet = true
+                                } else {
+                                    navController.navigateSafely(Screen.SettingsCategory.createRoute(category.id))
+                                }
                             },
                             shape = when {
                                 mainCategories.size == 1 -> RoundedCornerShape(24.dp)
@@ -234,6 +240,35 @@ fun SettingsScreen(
                                 else -> RoundedCornerShape(4.dp)
                             }
                         )
+                        
+                        if (category == SettingsCategory.IMPORT_PLAYLIST) {
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Info,
+                                        contentDescription = "Info",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text(
+                                        text = "Note: Make sure that the playlist you want to import is set to public, otherwise the app won't be able to access it.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
                         if (index < mainCategories.lastIndex) {
                             Spacer(modifier = Modifier.height(2.dp))
                         }
@@ -310,6 +345,12 @@ fun SettingsScreen(
                         }
                     }
                 }
+            )
+        }
+        
+        if (showImportSheet) {
+            ImportPlaylistSheet(
+                onDismiss = { showImportSheet = false }
             )
         }
     }
@@ -484,6 +525,7 @@ private fun getCategoryColors(category: SettingsCategory, isDark: Boolean): Pair
             SettingsCategory.BEHAVIOR -> Color(0xFF3E4C63) to Color(0xFFD7E3FF)
             SettingsCategory.AI_INTEGRATION -> Color(0xFF004F58) to Color(0xFF88FAFF) 
             SettingsCategory.BACKUP_RESTORE -> Color(0xFF3B4869) to Color(0xFFD9E2FF)
+            SettingsCategory.IMPORT_PLAYLIST -> Color(0xFF3B694B) to Color(0xFFD9FFED)
             SettingsCategory.DEVELOPER -> Color(0xFF324F34) to Color(0xFFCBEFD0) 
             SettingsCategory.EQUALIZER -> Color(0xFF6E4E13) to Color(0xFFFFDEAC) 
             SettingsCategory.DEVICE_CAPABILITIES -> Color(0xFF004D61) to Color(0xFFACEFEE) // Custom teal/cyan mix
@@ -497,6 +539,7 @@ private fun getCategoryColors(category: SettingsCategory, isDark: Boolean): Pair
             SettingsCategory.BEHAVIOR -> Color(0xFFD7E3FF) to Color(0xFF253347)
             SettingsCategory.AI_INTEGRATION -> Color(0xFFCCE8EA) to Color(0xFF004F58)
             SettingsCategory.BACKUP_RESTORE -> Color(0xFFD9E2FF) to Color(0xFF27304E)
+            SettingsCategory.IMPORT_PLAYLIST -> Color(0xFFD9FFED) to Color(0xFF1B3B2B)
             SettingsCategory.DEVELOPER -> Color(0xFFCBEFD0) to Color(0xFF042106)
             SettingsCategory.EQUALIZER -> Color(0xFFFFDEAC) to Color(0xFF281900)
             SettingsCategory.DEVICE_CAPABILITIES -> Color(0xFFACEFEE) to Color(0xFF002022)

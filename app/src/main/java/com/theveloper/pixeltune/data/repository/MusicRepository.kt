@@ -182,6 +182,8 @@ interface MusicRepository {
      */
     suspend fun setFavoriteStatus(songId: String, isFavorite: Boolean)
 
+    suspend fun setFavoriteStatus(song: Song, isFavorite: Boolean)
+
     /**
      * Obtiene IDs de canciones favoritas directamente desde Room (tabla favorites).
      */
