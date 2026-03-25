@@ -16,7 +16,6 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 import com.theveloper.pixeltune.data.database.EngagementDao
-import com.theveloper.pixeltune.data.stats.PlaybackStatsRepository
 
 /**
  * Tracks listening statistics for songs.

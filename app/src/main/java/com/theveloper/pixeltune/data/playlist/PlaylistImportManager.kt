@@ -247,7 +247,8 @@ class PlaylistImportManager @Inject constructor(
         if (trackArray != null) {
             for (i in 0 until trackArray.length()) {
                 val trackObj = trackArray.getJSONObject(i)
-                val trackName = trackObj.optString("name", "").ifBlank { continue }
+                val trackName = trackObj.optString("name", "")
+                if (trackName.isBlank()) continue
 
                 // byArtist can be a single object or an array of objects
                 val artistName = try {

@@ -166,7 +166,7 @@ fun PlaybackHistoryBottomSheet(
                 contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
                 icon = {
                     Icon(
-                        painter = painterResource(id = R.drawable.rounded_delete_forever_24),
+                        painter = painterResource(id = R.drawable.rounded_delete_24),
                         contentDescription = "Clear History"
                     )
                 },

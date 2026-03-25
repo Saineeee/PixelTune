@@ -462,9 +462,10 @@ object AppModule {
     @Provides
     fun provideYouTubeStreamProxy(
         repository: com.theveloper.pixeltune.data.youtube.YouTubeRepository,
-        okHttpClient: OkHttpClient
+        okHttpClient: OkHttpClient,
+        userPreferencesRepository: UserPreferencesRepository
     ): com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy {
-        return com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy(repository, okHttpClient)
+        return com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy(repository, okHttpClient, userPreferencesRepository)
     }
 
     @Singleton
@@ -477,9 +478,10 @@ object AppModule {
     @Provides
     fun provideSoundCloudStreamProxy(
         repository: com.theveloper.pixeltune.data.soundcloud.SoundCloudRepository,
-        okHttpClient: OkHttpClient
+        okHttpClient: OkHttpClient,
+        userPreferencesRepository: UserPreferencesRepository
     ): com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy {
-        return com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy(repository, okHttpClient)
+        return com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy(repository, okHttpClient, userPreferencesRepository)
     }
 
     @Provides
