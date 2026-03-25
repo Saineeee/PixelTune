@@ -204,7 +204,7 @@ class PlaylistImportManager @Inject constructor(
             Timber.w(e, "Failed to parse Spotify embed trackList, trying fallback")
             // Fallback: try to find tracks in the broader JSON structure
             val dataStr = props.toString()
-            val fallbackRegex = Regex(""""title":"(.*?)","(subtitle|artist)":"(.*?)"""",""")
+            val fallbackRegex = Regex("\"title\":\"(.*?)\",\"(subtitle|artist)\":\"(.*?)\"")
             for (match in fallbackRegex.findAll(dataStr)) {
                 val trackName = match.groupValues[1]
                 val artistName = match.groupValues[3].ifBlank { "Unknown" }
@@ -227,7 +227,7 @@ class PlaylistImportManager @Inject constructor(
         val html = response.body?.string() ?: throw Exception("Failed to fetch Apple Music HTML")
 
         // Extract the JSON-LD block from <script type="application/ld+json">...</script>
-        val ldJsonRegex = Regex("""<script type="application/ld\+json">(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
+        val ldJsonRegex = Regex("<script type=\"application/ld\\+json\">(.*?)</script>", RegexOption.DOT_MATCHES_ALL)
         val ldJsonMatch = ldJsonRegex.find(html)
             ?: throw Exception("Could not find ld+json script tag in Apple Music page")
         val ldJsonString = ldJsonMatch.groupValues[1].trim()
