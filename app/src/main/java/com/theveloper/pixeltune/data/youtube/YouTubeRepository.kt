@@ -17,6 +17,8 @@ import org.schabi.newpipe.extractor.channel.ChannelInfoItem
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.theveloper.pixeltune.data.preferences.StreamingQuality
+import kotlin.math.abs
 
 @Singleton
 class YouTubeRepository @Inject constructor() {
@@ -24,7 +26,7 @@ class YouTubeRepository @Inject constructor() {
     /**
      * Extracts the best available audio stream URL for a given YouTube video ID.
      */
-    suspend fun getAudioStreamUrl(youtubeId: String): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun getAudioStreamUrl(youtubeId: String, quality: StreamingQuality = StreamingQuality.NORMAL): Result<String> = withContext(Dispatchers.IO) {
         try {
             val url = "https://www.youtube.com/watch?v=$youtubeId"
             Timber.d("Extracting YouTube streams for: $url")
@@ -41,8 +43,7 @@ class YouTubeRepository @Inject constructor() {
             }
 
             // Filter out non-audio streams just in case and pick the best one.
-            // Priority: Opus/WebM -> M4A/AAC, highest bitrate.
-            val bestStream = findBestAudioStream(audioStreams)
+            val bestStream = findBestAudioStream(audioStreams, quality)
 
             if (bestStream != null) {
                 Result.success(bestStream.content)
@@ -55,16 +56,21 @@ class YouTubeRepository @Inject constructor() {
         }
     }
 
-    private fun findBestAudioStream(streams: List<AudioStream>): AudioStream? {
-        return streams.maxWithOrNull(compareBy({ getFormatPriority(it) }, { it.bitrate }))
-    }
-
-    private fun getFormatPriority(stream: AudioStream): Int {
-        val formatName = stream.format?.name?.lowercase() ?: ""
-        return when {
-            formatName.contains("opus") || formatName.contains("webm") -> 2
-            formatName.contains("m4a") || formatName.contains("aac") -> 1
-            else -> 0
+    private fun findBestAudioStream(streams: List<AudioStream>, quality: StreamingQuality): AudioStream? {
+        if (streams.isEmpty()) return null
+        
+        return when (quality) {
+            StreamingQuality.HIGH_RES -> {
+                streams.maxByOrNull { it.averageBitrate }
+            }
+            StreamingQuality.DATA_SAVER -> {
+                streams.minByOrNull { it.averageBitrate }
+            }
+            StreamingQuality.NORMAL -> {
+                val targetBitrate = 128000 // 128 kbps
+                streams.minByOrNull { abs(it.averageBitrate - targetBitrate) } 
+                    ?: streams.sortedBy { it.averageBitrate }.let { it.getOrNull(it.size / 2) }
+            }
         }
     }
 

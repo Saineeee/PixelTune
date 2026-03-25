@@ -217,6 +217,9 @@ constructor(
         val DEEPSEEK_API_KEY = stringPreferencesKey("deepseek_api_key")
         val DEEPSEEK_MODEL = stringPreferencesKey("deepseek_model")
         val DEEPSEEK_SYSTEM_PROMPT = stringPreferencesKey("deepseek_system_prompt")
+        
+        // Streaming Quality
+        val STREAMING_QUALITY = stringPreferencesKey("streaming_quality")
     }
 
     val appRebrandDialogShownFlow: Flow<Boolean> =
@@ -734,6 +737,30 @@ constructor(
     }
 
     // ===== End Smart Duration Filtering =====
+
+    // ===== Streaming Quality =====
+
+    val streamingQualityFlow: Flow<StreamingQuality> =
+        dataStore.data.map { preferences ->
+            val qualityString = preferences[PreferencesKeys.STREAMING_QUALITY]
+            if (qualityString != null) {
+                try {
+                    StreamingQuality.valueOf(qualityString)
+                } catch (e: Exception) {
+                    StreamingQuality.NORMAL
+                }
+            } else {
+                StreamingQuality.NORMAL
+            }
+        }
+
+    suspend fun updateStreamingQuality(quality: StreamingQuality) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.STREAMING_QUALITY] = quality.name
+        }
+    }
+
+    // ===== End Streaming Quality =====
 
     // ===== ReplayGain =====
 

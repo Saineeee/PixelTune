@@ -29,11 +29,13 @@ import java.net.ServerSocket
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.flow.first
 
 @Singleton
 class YouTubeStreamProxy @Inject constructor(
     private val repository: YouTubeRepository,
-    private val okHttpClient: OkHttpClient
+    private val okHttpClient: OkHttpClient,
+    private val userPreferencesRepository: com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
 ) {
     private companion object {
         val ALLOWED_REMOTE_HOST_SUFFIXES = setOf(
@@ -52,8 +54,20 @@ class YouTubeStreamProxy @Inject constructor(
     private val urlCache = ConcurrentHashMap<String, CachedUrl>()
 
     private data class CachedUrl(val url: String, val timestamp: Long) {
-        // YouTube URLs typically expire in ~6 hours, let's be safe and refetch after 5
-        fun isExpired(): Boolean = System.currentTimeMillis() - timestamp > 5 * 60 * 60 * 1000
+        fun isExpired(): Boolean {
+            try {
+                val uri = android.net.Uri.parse(url)
+                val expireParam = uri.getQueryParameter("expire")?.toLongOrNull()
+                if (expireParam != null) {
+                    // expireParam is in seconds. Convert to ms and add a 5-minute safety buffer.
+                    return System.currentTimeMillis() > (expireParam * 1000L) - (5 * 60 * 1000L)
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to parse expire param from cached URL")
+            }
+            // Fallback to 5 hours if no expire param is found
+            return System.currentTimeMillis() - timestamp > 5 * 60 * 60 * 1000
+        }
     }
 
     fun isReady(): Boolean = actualPort > 0
@@ -155,7 +169,10 @@ class YouTubeStreamProxy @Inject constructor(
                         }
 
                         // Proxy the audio stream
-                        val requestBuilder = Request.Builder().url(streamUrl)
+                        val requestBuilder = Request.Builder()
+                            .url(streamUrl)
+                            .header("Accept-Encoding", "identity") // MUST disable gzip to preserve Range requests for Media3/ExoPlayer
+                            
                         call.request.headers["User-Agent"]?.let { userAgent ->
                             requestBuilder.header("User-Agent", userAgent)
                         }
@@ -240,15 +257,18 @@ class YouTubeStreamProxy @Inject constructor(
     }
 
     private suspend fun getOrFetchStreamUrl(youtubeId: String): String? {
+        val quality = userPreferencesRepository.streamingQualityFlow.first()
+        val cacheKey = "${youtubeId}_${quality.name}"
+
         // Check cache first
-        urlCache[youtubeId]?.let { cached ->
+        urlCache[cacheKey]?.let { cached ->
             if (!cached.isExpired()) return cached.url
         }
 
         // Fetch fresh URL
-        val result = repository.getAudioStreamUrl(youtubeId)
+        val result = repository.getAudioStreamUrl(youtubeId, quality)
         return result.getOrNull()?.also { url ->
-            urlCache[youtubeId] = CachedUrl(url, System.currentTimeMillis())
+            urlCache[cacheKey] = CachedUrl(url, System.currentTimeMillis())
         }
     }
 }

@@ -30,11 +30,14 @@ import java.net.URLDecoder
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
+import kotlinx.coroutines.flow.first
 
 @Singleton
 class SoundCloudStreamProxy @Inject constructor(
     private val repository: SoundCloudRepository,
-    private val okHttpClient: OkHttpClient
+    private val okHttpClient: OkHttpClient,
+    private val userPreferencesRepository: UserPreferencesRepository
 ) {
     private companion object {
         val ALLOWED_REMOTE_HOST_SUFFIXES = setOf(
@@ -233,15 +236,18 @@ class SoundCloudStreamProxy @Inject constructor(
     }
 
     private suspend fun getOrFetchStreamUrl(soundCloudUrl: String): String? {
+        val quality = userPreferencesRepository.streamingQualityFlow.first()
+        val cacheKey = "$soundCloudUrl-${quality.name}"
+
         // Check cache first
-        urlCache[soundCloudUrl]?.let { cached ->
+        urlCache[cacheKey]?.let { cached ->
             if (!cached.isExpired()) return cached.url
         }
 
         // Fetch fresh URL
-        val result = repository.getAudioStreamUrl(soundCloudUrl)
+        val result = repository.getAudioStreamUrl(soundCloudUrl, quality)
         return result.getOrNull()?.also { url ->
-            urlCache[soundCloudUrl] = CachedUrl(url, System.currentTimeMillis())
+            urlCache[cacheKey] = CachedUrl(url, System.currentTimeMillis())
         }
     }
 }

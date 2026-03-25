@@ -462,6 +462,12 @@ class PlaybackStatsRepository @Inject constructor(
         }
     }
 
+    fun clearHistory() {
+        synchronized(fileLock) {
+            writeEventsLocked(mutableListOf())
+        }
+    }
+
     private fun readEvents(): List<PlaybackEvent> = synchronized(fileLock) { readEventsLocked() }
 
     private fun readEventsLocked(): MutableList<PlaybackEvent> {

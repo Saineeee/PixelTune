@@ -87,7 +87,8 @@ data class SettingsUiState(
     val collageAutoRotate: Boolean = false,
     val minSongDuration: Int = 10000,
     val replayGainEnabled: Boolean = false,
-    val replayGainUseAlbumGain: Boolean = false
+    val replayGainUseAlbumGain: Boolean = false,
+    val streamingQuality: com.theveloper.pixeltune.data.preferences.StreamingQuality = com.theveloper.pixeltune.data.preferences.StreamingQuality.NORMAL
 )
 
 data class FailedSongInfo(
@@ -156,6 +157,9 @@ class SettingsViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
+
+    val streamingQuality: StateFlow<com.theveloper.pixeltune.data.preferences.StreamingQuality> = userPreferencesRepository.streamingQualityFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), com.theveloper.pixeltune.data.preferences.StreamingQuality.NORMAL)
 
     val geminiApiKey: StateFlow<String> = userPreferencesRepository.geminiApiKey
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
@@ -395,6 +399,12 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             userPreferencesRepository.replayGainUseAlbumGainFlow.collect { useAlbum ->
                 _uiState.update { it.copy(replayGainUseAlbumGain = useAlbum) }
+            }
+        }
+
+        viewModelScope.launch {
+            userPreferencesRepository.streamingQualityFlow.collect { quality ->
+                _uiState.update { it.copy(streamingQuality = quality) }
             }
         }
     }
@@ -1020,6 +1030,12 @@ class SettingsViewModel @Inject constructor(
     fun removeBackupHistoryEntry(entry: BackupHistoryEntry) {
         viewModelScope.launch {
             backupManager.removeBackupHistoryEntry(entry.uri)
+        }
+    }
+
+    fun setStreamingQuality(quality: com.theveloper.pixeltune.data.preferences.StreamingQuality) {
+        viewModelScope.launch {
+            userPreferencesRepository.updateStreamingQuality(quality)
         }
     }
 }

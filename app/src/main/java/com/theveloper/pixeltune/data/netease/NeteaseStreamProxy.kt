@@ -29,6 +29,9 @@ import java.net.ServerSocket
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
+import com.theveloper.pixeltune.data.preferences.StreamingQuality
+import kotlinx.coroutines.flow.first
 
 /**
  * Local HTTP proxy server for streaming Netease Cloud Music audio.
@@ -41,7 +44,8 @@ import javax.inject.Singleton
 @Singleton
 class NeteaseStreamProxy @Inject constructor(
     private val repository: NeteaseRepository,
-    private val okHttpClient: OkHttpClient
+    private val okHttpClient: OkHttpClient,
+    private val userPreferencesRepository: UserPreferencesRepository
 ) {
     private companion object {
         val ALLOWED_REMOTE_HOST_SUFFIXES = setOf(
@@ -58,7 +62,7 @@ class NeteaseStreamProxy @Inject constructor(
     private var startJob: Job? = null
 
     // Cache of resolved streaming URLs (they expire, so we track timestamp)
-    private val urlCache = ConcurrentHashMap<Long, CachedUrl>()
+    private val urlCache = ConcurrentHashMap<String, CachedUrl>()
 
     private data class CachedUrl(val url: String, val timestamp: Long) {
         // Netease URLs typically expire in ~20 minutes, re-fetch after 15
@@ -249,15 +253,23 @@ class NeteaseStreamProxy @Inject constructor(
     }
 
     private suspend fun getOrFetchStreamUrl(songId: Long): String? {
+        val qualityInfo = userPreferencesRepository.streamingQualityFlow.first()
+        val level = when (qualityInfo) {
+            StreamingQuality.DATA_SAVER -> "standard"
+            StreamingQuality.NORMAL -> "higher"
+            StreamingQuality.HIGH_RES -> "lossless"
+        }
+        val cacheKey = "${songId}_${level}"
+
         // Check cache first
-        urlCache[songId]?.let { cached ->
+        urlCache[cacheKey]?.let { cached ->
             if (!cached.isExpired()) return cached.url
         }
 
         // Fetch fresh URL
-        val result = repository.getSongUrl(songId)
+        val result = repository.getSongUrl(songId, level)
         return result.getOrNull()?.also { url ->
-            urlCache[songId] = CachedUrl(url, System.currentTimeMillis())
+            urlCache[cacheKey] = CachedUrl(url, System.currentTimeMillis())
         }
     }
 }

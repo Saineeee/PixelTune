@@ -69,7 +69,7 @@ import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.preferences.CollagePattern
 import com.theveloper.pixeltune.presentation.components.AlbumArtCollage
 import com.theveloper.pixeltune.presentation.components.BetaInfoBottomSheet
-import com.theveloper.pixeltune.presentation.components.ChangelogBottomSheet
+import com.theveloper.pixeltune.presentation.components.PlaybackHistoryBottomSheet
 import com.theveloper.pixeltune.presentation.netease.dashboard.NeteaseDashboardViewModel
 import com.theveloper.pixeltune.presentation.components.DailyMixSection
 import com.theveloper.pixeltune.presentation.components.HomeGradientTopBar
@@ -160,7 +160,7 @@ fun HomeScreen(
     val bottomPadding = if (currentSong != null) MiniPlayerHeight else 0.dp
 
     var showOptionsBottomSheet by remember { mutableStateOf(false) }
-    var showChangelogBottomSheet by remember { mutableStateOf(false) }
+    var showPlaybackHistoryBottomSheet by remember { mutableStateOf(false) }
     var showBetaInfoBottomSheet by remember { mutableStateOf(false) }
     var showStreamingProviderSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState()
@@ -184,7 +184,7 @@ fun HomeScreen(
                         navController.navigateSafely(Screen.Settings.route)
                     },
                     onMoreOptionsClick = {
-                        showChangelogBottomSheet = true
+                        showPlaybackHistoryBottomSheet = true
                     },
                     onBetaClick = {
                         showBetaInfoBottomSheet = true
@@ -352,12 +352,29 @@ fun HomeScreen(
             )
         }
     }
-    if (showChangelogBottomSheet) {
+    if (showPlaybackHistoryBottomSheet) {
         ModalBottomSheet(
-            onDismissRequest = { showChangelogBottomSheet = false },
+            onDismissRequest = { showPlaybackHistoryBottomSheet = false },
             sheetState = sheetState
         ) {
-            ChangelogBottomSheet()
+            PlaybackHistoryBottomSheet(
+                recentlyPlayedSongs = recentlyPlayedSongs,
+                playerViewModel = playerViewModel,
+                onSongClick = { song ->
+                    showPlaybackHistoryBottomSheet = false
+                    if (recentlyPlayedQueue.isNotEmpty()) {
+                        playerViewModel.playSongs(
+                            songsToPlay = recentlyPlayedQueue,
+                            startSong = song,
+                            queueName = "Recently Played"
+                        )
+                    }
+                },
+                onClearHistory = {
+                    showPlaybackHistoryBottomSheet = false
+                    playerViewModel.clearPlaybackHistory()
+                }
+            )
         }
     }
     if (showBetaInfoBottomSheet) {

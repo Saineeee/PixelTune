@@ -203,6 +203,10 @@ class PlayerViewModel @Inject constructor(
     val currentPlaybackPosition: StateFlow<Long> = playbackStateHolder.currentPosition
     val playbackHistory = listeningStatsTracker.playbackHistory
 
+    fun clearPlaybackHistory() {
+        listeningStatsTracker.clearHistory()
+    }
+
     // Removed: _masterAllSongs was a duplicate of libraryStateHolder.allSongs
     // All reads now delegate to libraryStateHolder.allSongs
 

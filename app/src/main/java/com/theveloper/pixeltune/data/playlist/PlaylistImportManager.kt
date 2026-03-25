@@ -1,5 +1,7 @@
 package com.theveloper.pixeltune.data.playlist
 
+import com.theveloper.pixeltune.data.database.AlbumEntity
+import com.theveloper.pixeltune.data.database.ArtistEntity
 import com.theveloper.pixeltune.data.database.MusicDao
 import com.theveloper.pixeltune.data.database.SongEntity
 import com.theveloper.pixeltune.data.model.SearchFilterType
@@ -12,6 +14,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
+import org.json.JSONObject
 import timber.log.Timber
 import java.util.UUID
 import javax.inject.Inject
@@ -81,7 +84,31 @@ class PlaylistImportManager @Inject constructor(
                 throw Exception("Could not match any tracks to playable streams.")
             }
 
-            // Database Insertion: isOffline conceptually means path points to web, mapped correctly above
+            // Insert parent Artist and Album entities first to satisfy Foreign Key constraints
+            val newArtists = songEntities.map {
+                ArtistEntity(
+                    id = it.artistId,
+                    name = it.artistName,
+                    trackCount = 0
+                )
+            }.distinctBy { it.id }
+
+            val newAlbums = songEntities.map {
+                AlbumEntity(
+                    id = it.albumId,
+                    title = it.albumName,
+                    artistName = it.artistName,
+                    artistId = it.artistId,
+                    albumArtUriString = it.albumArtUriString,
+                    songCount = 0,
+                    year = 0
+                )
+            }.distinctBy { it.id }
+
+            musicDao.insertArtistsIgnoreConflicts(newArtists)
+            musicDao.insertAlbumsIgnoreConflicts(newAlbums)
+
+            // Now proceed with saving the songs
             musicDao.insertSongsIgnoreConflicts(songEntities)
             
             // Playlist Creation
@@ -97,46 +124,96 @@ class PlaylistImportManager @Inject constructor(
     }
 
     private suspend fun extractYouTubePlaylist(url: String): Pair<String, List<ScrapedTrack>> {
-        val extractor = ServiceList.YouTube.getPlaylistExtractor(url)
+        // Normalize YouTube Music URLs to standard YouTube URLs for the extractor
+        val normalizedUrl = url.replace("music.youtube.com", "www.youtube.com")
+
+        val extractor = ServiceList.YouTube.getPlaylistExtractor(normalizedUrl)
         extractor.fetchPage()
         val playlistName = extractor.name ?: "YouTube Playlist"
-        val tracks = extractor.initialPage.items.map { item ->
-            // For StreamInfoItem
-            val title = item.name ?: "Unknown Track"
-            // Uploader name usually acts as artist
-            val artist = "" // Extractor doesn't strictly provide uploader name elegantly on initialPage items without casting, we simplify
-            ScrapedTrack(title, artist)
+        val tracks = extractor.initialPage.items.mapNotNull { item ->
+            // Cast to StreamInfoItem to access the uploader/artist name
+            if (item is org.schabi.newpipe.extractor.stream.StreamInfoItem) {
+                val title = item.name ?: "Unknown Track"
+                val artist = item.uploaderName ?: ""
+                ScrapedTrack(title, artist)
+            } else {
+                null // Skip non-stream items like nested playlists or channels
+            }
         }
         return Pair(playlistName, tracks)
     }
 
     private fun scrapeSpotifyPlaylist(url: String): Pair<String, List<ScrapedTrack>> {
+        // Extract playlist ID from any Spotify playlist URL format
+        val playlistId = Regex("playlist[/:]([a-zA-Z0-9]+)").find(url)?.groupValues?.get(1)
+            ?: throw IllegalArgumentException("Could not extract Spotify playlist ID from URL")
+
+        val embedUrl = "https://open.spotify.com/embed/playlist/$playlistId"
         val request = Request.Builder()
-            .url(url)
+            .url(embedUrl)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             .build()
-            
+
         val response = client.newCall(request).execute()
-        val html = response.body?.string() ?: throw Exception("Failed to fetch Spotify HTML")
-        
-        // Extract title
-        val titleMatch = Regex("<title>(.*?)</title>").find(html)
-        var playlistName = titleMatch?.groupValues?.get(1)?.replace(" | Spotify", "")?.substringBefore(" - playlist by") ?: "Spotify Playlist"
-        
-        // Very basic extraction by finding tracks in OpenGraph or embedded JSON
-        // A naive regex to sniff track names from the raw HTML chunks
-        val trackRegex = Regex("\"name\":\"(.*?)\",\"type\":\"track\".*?\"artists\":\\[(?:\\{.*?\"name\":\"(.*?)\".*?\\})?")
+        val html = response.body?.string() ?: throw Exception("Failed to fetch Spotify embed HTML")
+
+        // Extract the JSON payload from the __NEXT_DATA__ script tag
+        val jsonMatch = Regex("""<script id="__NEXT_DATA__" type="application/json">(.*?)</script>""")
+            .find(html)
+        val jsonString = jsonMatch?.groupValues?.get(1)
+            ?: throw Exception("Could not find __NEXT_DATA__ JSON in Spotify embed page")
+
+        val rootJson = JSONObject(jsonString)
+        val props = rootJson.getJSONObject("props").getJSONObject("pageProps")
+
+        // Extract playlist name
+        val playlistName = try {
+            props.getJSONObject("state").getJSONObject("data").getJSONObject("entity")
+                .getString("name")
+        } catch (e: Exception) {
+            "Spotify Playlist"
+        }
+
+        // Extract tracks from the entity's trackList
         val tracks = mutableListOf<ScrapedTrack>()
-        val matches = trackRegex.findAll(html)
-        for (match in matches) {
-            val trackName = match.groupValues.getOrNull(1) ?: continue
-            val artistName = match.groupValues.getOrNull(2) ?: "Unknown"
-            // Skip duplicates which often appear in the JSON bloat
-            if (tracks.none { it.title == trackName }) {
-                tracks.add(ScrapedTrack(trackName, artistName))
+        try {
+            val trackList = props.getJSONObject("state").getJSONObject("data")
+                .getJSONObject("entity").getJSONArray("trackList")
+
+            for (i in 0 until trackList.length()) {
+                val trackObj = trackList.getJSONObject(i)
+                val trackName = trackObj.optString("title", "").ifBlank {
+                    trackObj.optString("name", "")
+                }
+                if (trackName.isBlank()) continue
+
+                val artistName = try {
+                    trackObj.optString("subtitle", "").ifBlank {
+                        val artists = trackObj.optJSONArray("artists")
+                        if (artists != null && artists.length() > 0) {
+                            artists.getJSONObject(0).optString("name", "Unknown")
+                        } else "Unknown"
+                    }
+                } catch (e: Exception) { "Unknown" }
+
+                if (tracks.none { it.title == trackName }) {
+                    tracks.add(ScrapedTrack(trackName, artistName))
+                }
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to parse Spotify embed trackList, trying fallback")
+            // Fallback: try to find tracks in the broader JSON structure
+            val dataStr = props.toString()
+            val fallbackRegex = Regex(""""title":"(.*?)","(subtitle|artist)":"(.*?)"""",""")
+            for (match in fallbackRegex.findAll(dataStr)) {
+                val trackName = match.groupValues[1]
+                val artistName = match.groupValues[3].ifBlank { "Unknown" }
+                if (trackName.isNotBlank() && tracks.none { it.title == trackName }) {
+                    tracks.add(ScrapedTrack(trackName, artistName))
+                }
             }
         }
-        
+
         return Pair(playlistName, tracks)
     }
 
@@ -145,27 +222,58 @@ class PlaylistImportManager @Inject constructor(
             .url(url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             .build()
-            
+
         val response = client.newCall(request).execute()
         val html = response.body?.string() ?: throw Exception("Failed to fetch Apple Music HTML")
-        
-        // Extract title
-        val titleMatch = Regex("<title>(.*?)</title>").find(html)
-        var playlistName = titleMatch?.groupValues?.get(1)?.substringBefore(" - Apple") ?: "Apple Music Playlist"
-        
+
+        // Extract the JSON-LD block from <script type="application/ld+json">...</script>
+        val ldJsonRegex = Regex("""<script type="application/ld\+json">(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
+        val ldJsonMatch = ldJsonRegex.find(html)
+            ?: throw Exception("Could not find ld+json script tag in Apple Music page")
+        val ldJsonString = ldJsonMatch.groupValues[1].trim()
+
+        val rootJson = JSONObject(ldJsonString)
+
+        // Extract playlist name from the JSON-LD object, falling back to <title> tag
+        val playlistName = rootJson.optString("name", "").ifBlank {
+            val titleMatch = Regex("<title>(.*?)</title>").find(html)
+            titleMatch?.groupValues?.get(1)?.substringBefore(" - Apple") ?: "Apple Music Playlist"
+        }
+
         val tracks = mutableListOf<ScrapedTrack>()
-        
-        // Simple regex strategy for apple music embedded JSON block (schema.org/MusicPlaylist)
-        val trackRegex = Regex("\"@type\":\"MusicRecording\",\"url\":\"[^\"]+\",\"name\":\"([^\"]+)\"")
-        val matches = trackRegex.findAll(html)
-        for (match in matches) {
-            val trackName = match.groupValues.getOrNull(1) ?: continue
-            // We could find artist dynamically but it's hard with regex on schema, using empty string to rely on youtube's track search
-            if (tracks.none { it.title == trackName }) {
-                tracks.add(ScrapedTrack(trackName, ""))
+
+        // The "track" key holds an array of MusicRecording objects
+        val trackArray = rootJson.optJSONArray("track")
+        if (trackArray != null) {
+            for (i in 0 until trackArray.length()) {
+                val trackObj = trackArray.getJSONObject(i)
+                val trackName = trackObj.optString("name", "").ifBlank { continue }
+
+                // byArtist can be a single object or an array of objects
+                val artistName = try {
+                    val byArtist = trackObj.opt("byArtist")
+                    when (byArtist) {
+                        is org.json.JSONArray -> {
+                            if (byArtist.length() > 0) byArtist.getJSONObject(0).optString("name", "") else ""
+                        }
+                        is org.json.JSONObject -> byArtist.optString("name", "")
+                        else -> ""
+                    }
+                } catch (e: Exception) {
+                    Timber.w(e, "Failed to parse byArtist for track: $trackName")
+                    ""
+                }
+
+                if (tracks.none { it.title == trackName }) {
+                    tracks.add(ScrapedTrack(trackName, artistName))
+                }
             }
         }
-        
+
+        if (tracks.isEmpty()) {
+            Timber.w("ld+json track array was empty or missing, no tracks parsed for: $url")
+        }
+
         return Pair(playlistName, tracks)
     }
 }

@@ -1,5 +1,6 @@
 package com.theveloper.pixeltune.data.youtube
 
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -21,15 +22,23 @@ class NewPipeDownloader @Inject constructor(
         val requestBuilder = Request.Builder()
             .url(url)
 
-        if (httpMethod != "GET" && dataToSend != null) {
-            requestBuilder.method(httpMethod, dataToSend.toRequestBody())
-        } else if (httpMethod != "GET") {
-            requestBuilder.method(httpMethod, "".toRequestBody())
+        val contentTypeHeader = headers.entries.find { it.key.equals("Content-Type", ignoreCase = true) }?.value?.firstOrNull()
+        val mediaType = contentTypeHeader?.toMediaTypeOrNull()
+
+        val methodNeedsBody = httpMethod == "POST" || httpMethod == "PUT" || httpMethod == "PATCH"
+        val methodCannotHaveBody = httpMethod == "GET" || httpMethod == "HEAD" || httpMethod == "OPTIONS"
+
+        if (dataToSend != null && !methodCannotHaveBody) {
+            requestBuilder.method(httpMethod, dataToSend.toRequestBody(mediaType))
+        } else if (methodNeedsBody) {
+            requestBuilder.method(httpMethod, ByteArray(0).toRequestBody(mediaType))
         } else {
-            requestBuilder.get()
+            requestBuilder.method(httpMethod, null)
         }
 
         headers.forEach { (key, values) ->
+            if (key.equals("Content-Type", ignoreCase = true)) return@forEach
+            
             if (values.size == 1) {
                 requestBuilder.header(key, values[0])
             } else {

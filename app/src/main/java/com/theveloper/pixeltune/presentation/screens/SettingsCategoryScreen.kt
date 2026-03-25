@@ -683,6 +683,19 @@ fun SettingsCategoryScreen(
                                 )
                             }
 
+                            SettingsSubsection(title = "Streaming") {
+                                ThemeSelectorItem(
+                                    label = "Streaming Quality",
+                                    description = "Adjust audio quality for cloud streams (YouTube, Netease, etc.)",
+                                    options = com.theveloper.pixeltune.data.preferences.StreamingQuality.entries.associate { it.name to it.title },
+                                    selectedKey = uiState.streamingQuality.name,
+                                    onSelectionChanged = { key ->
+                                        settingsViewModel.setStreamingQuality(com.theveloper.pixeltune.data.preferences.StreamingQuality.valueOf(key))
+                                    },
+                                    leadingIcon = { Icon(Icons.Rounded.MusicNote, null, tint = MaterialTheme.colorScheme.secondary) }
+                                )
+                            }
+
                             SettingsSubsection(title = "Volume Normalization (ReplayGain)") {
                                 SwitchSettingItem(
                                     title = "Enable ReplayGain",

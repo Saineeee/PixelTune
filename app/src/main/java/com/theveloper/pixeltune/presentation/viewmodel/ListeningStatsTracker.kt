@@ -15,6 +15,9 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
+import com.theveloper.pixeltune.data.database.EngagementDao
+import com.theveloper.pixeltune.data.stats.PlaybackStatsRepository
+
 /**
  * Tracks listening statistics for songs.
  * Extracted from PlayerViewModel to reduce its size and improve modularity.
@@ -26,7 +29,8 @@ import javax.inject.Inject
  */
 class ListeningStatsTracker @Inject constructor(
     private val dailyMixManager: DailyMixManager,
-    private val playbackStatsRepository: PlaybackStatsRepository
+    private val playbackStatsRepository: PlaybackStatsRepository,
+    private val engagementDao: EngagementDao
 ) {
     private var currentSession: ActiveSession? = null
     private var pendingVoluntarySongId: String? = null
@@ -188,6 +192,14 @@ class ListeningStatsTracker @Inject constructor(
 
     fun onPlaybackStopped() {
         finalizeCurrentSession()
+    }
+
+    fun clearHistory() {
+        _playbackHistory.value = emptyList()
+        scope?.launch(Dispatchers.IO) {
+            playbackStatsRepository.clearHistory()
+            engagementDao.clearAllEngagements()
+        }
     }
 
     fun onCleared() {

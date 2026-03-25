@@ -446,7 +446,7 @@ class NeteaseRepository @Inject constructor(
     suspend fun getSongUrl(songId: Long, quality: String = "exhigh"): Result<String> {
         return withContext(Dispatchers.IO) {
             try {
-                val qualityFallbacks = linkedSetOf(quality, "higher", "standard")
+                val qualityFallbacks = linkedSetOf(quality, "exhigh", "higher", "standard")
                 var lastFailure: String? = null
 
                 for (level in qualityFallbacks) {

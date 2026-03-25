@@ -21,7 +21,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BugReport
-import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -69,7 +68,7 @@ fun BetaInfoBottomSheet(modifier: Modifier = Modifier) {
             item(key = "header") {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "Beta 0.6.0",
+                        text = "v0.1.0-Beta",
                         fontFamily = GoogleSansRounded,
                         style = ExpTitleTypography.displaySmall,
                         color = MaterialTheme.colorScheme.onSurface
@@ -107,105 +106,47 @@ fun BetaInfoBottomSheet(modifier: Modifier = Modifier) {
                     //tonalElevation = 2.dp,
                     color = MaterialTheme.colorScheme.surfaceContainerHigh
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .background(
-                                    brush = Brush.linearGradient(
-                                        listOf(
-                                            MaterialTheme.colorScheme.primary,
-                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
-                                        )
-                                    ),
-                                    shape = CircleShape
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "β",
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Black
-                            )
-                        }
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = "Welcome to the first 0.6.0 beta!",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "This huge update brings a complete UI overhaul, 10-band Equalizer, and AI powers.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
-
-            item(key = "what-to-expect") {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = AbsoluteSmoothCornerShape(
-                        cornerRadiusTR = fabCornerRadius,
-                        cornerRadiusTL = fabCornerRadius,
-                        cornerRadiusBL = fabCornerRadius,
-                        cornerRadiusBR = fabCornerRadius,
-                        smoothnessAsPercentTR = 60,
-                        smoothnessAsPercentTL = 60,
-                        smoothnessAsPercentBL = 60,
-                        smoothnessAsPercentBR = 60
-                    ),
-                    tonalElevation = 2.dp,
-                    color = MaterialTheme.colorScheme.surfaceContainerLow
-                ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                            .padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Rounded.Info,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.secondary
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .background(
+                                        brush = Brush.linearGradient(
+                                            listOf(
+                                                MaterialTheme.colorScheme.primary,
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
+                                            )
+                                        ),
+                                        shape = CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "β",
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Black
+                                )
+                            }
                             Text(
-                                text = "What to expect",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold
+                                text = "Welcome to v0.1.0-Beta!",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
                         Text(
-                            text = "Material 3 Expressive UI refresh across Settings, Player, and Bottom Sheets.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "New 10-band Equalizer with effects, plus AI integration for smarter playlists.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "Rebuilt Library Sync for reliability and linear progress reporting.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "Major fixes for Casting, Queue stability, and lyrics synchronization.",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = "Welcome to the first launch of the app! We have added multiple cloud streaming services and will add even more in the future. The app interface and your personal preferences are completely customizable. More things will be added in future updates, so stay tuned!",
+                            style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }

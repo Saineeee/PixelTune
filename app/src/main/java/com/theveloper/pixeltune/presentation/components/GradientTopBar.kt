@@ -17,6 +17,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LargeTopAppBar
@@ -195,8 +196,8 @@ fun HomeGradientTopBar(
                 ) {
                     Icon(
                         //modifier = Modifier.size(18.dp),
-                        painter = painterResource(R.drawable.round_newspaper_24),
-                        contentDescription = "Changelog"
+                        imageVector = Icons.Rounded.History,
+                        contentDescription = "Listening History"
                     )
                 }
                 //Spacer(Modifier.size(8.dp))
