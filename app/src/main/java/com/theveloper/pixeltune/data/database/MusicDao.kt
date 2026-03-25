@@ -22,13 +22,19 @@ interface MusicDao {
     suspend fun updateSongs(songs: List<SongEntity>)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertAlbumsIgnoreConflicts(albums: List<AlbumEntity>): List<Long>
+    suspend fun insertAlbumsIgnoreConflictsInternal(albums: List<AlbumEntity>): List<Long>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAlbumsIgnoreConflicts(albums: List<AlbumEntity>)
 
     @Update
     suspend fun updateAlbums(albums: List<AlbumEntity>)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertArtistsIgnoreConflicts(artists: List<ArtistEntity>): List<Long>
+    suspend fun insertArtistsIgnoreConflictsInternal(artists: List<ArtistEntity>): List<Long>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertArtistsIgnoreConflicts(artists: List<ArtistEntity>)
 
     @Update
     suspend fun updateArtists(artists: List<ArtistEntity>)
@@ -49,7 +55,7 @@ interface MusicDao {
     @Transaction
     suspend fun insertAlbums(albums: List<AlbumEntity>) {
         if (albums.isEmpty()) return
-        val insertResults = insertAlbumsIgnoreConflicts(albums)
+        val insertResults = insertAlbumsIgnoreConflictsInternal(albums)
         val albumsToUpdate = mutableListOf<AlbumEntity>()
         insertResults.forEachIndexed { index, rowId ->
             if (rowId == -1L) albumsToUpdate.add(albums[index])
@@ -62,7 +68,7 @@ interface MusicDao {
     @Transaction
     suspend fun insertArtists(artists: List<ArtistEntity>) {
         if (artists.isEmpty()) return
-        val insertResults = insertArtistsIgnoreConflicts(artists)
+        val insertResults = insertArtistsIgnoreConflictsInternal(artists)
         val artistsToUpdate = mutableListOf<ArtistEntity>()
         insertResults.forEachIndexed { index, rowId ->
             if (rowId == -1L) artistsToUpdate.add(artists[index])
