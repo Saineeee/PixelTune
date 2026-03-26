@@ -1,0 +1,132 @@
+package com.theveloper.pixeltune
+
+import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.ComponentCallbacks2
+import android.os.Build
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
+import coil.ImageLoader
+import coil.ImageLoaderFactory
+import com.theveloper.pixeltune.utils.CrashHandler
+import com.theveloper.pixeltune.utils.MediaMetadataRetrieverPool
+import dagger.hilt.android.HiltAndroidApp
+import kotlinx.coroutines.launch
+import timber.log.Timber
+import org.schabi.newpipe.extractor.NewPipe
+import com.theveloper.pixeltune.data.youtube.NewPipeDownloader
+import okhttp3.OkHttpClient
+import javax.inject.Inject
+
+@HiltAndroidApp
+class PixelTuneApplication : Application(), ImageLoaderFactory, Configuration.Provider {
+
+    @Inject
+    lateinit var workerFactory: HiltWorkerFactory
+
+    @Inject
+    lateinit var imageLoader: dagger.Lazy<ImageLoader>
+
+    // Use dagger.Lazy to defer construction (and TDLib native library loading) off the main thread.
+    @Inject
+    lateinit var telegramStreamProxy: dagger.Lazy<com.theveloper.pixeltune.data.telegram.TelegramStreamProxy>
+
+    @Inject
+    lateinit var neteaseStreamProxy: com.theveloper.pixeltune.data.netease.NeteaseStreamProxy
+
+    @Inject
+    lateinit var youtubeStreamProxy: com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy
+
+    @Inject
+    lateinit var soundCloudStreamProxy: com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy
+
+    @Inject
+    lateinit var okHttpClient: OkHttpClient
+
+    @Inject
+    lateinit var telegramCacheManager: dagger.Lazy<com.theveloper.pixeltune.data.telegram.TelegramCacheManager>
+
+    @Inject
+    lateinit var telegramCoilFetcherFactory: dagger.Lazy<com.theveloper.pixeltune.data.image.TelegramCoilFetcher.Factory>
+
+    // AÑADE EL COMPANION OBJECT
+    companion object {
+        const val NOTIFICATION_CHANNEL_ID = "PixelTune_music_channel"
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+
+        // Benchmark variant intentionally restarts/kills app process during tests.
+        // Avoid persisting those events as user-facing crash reports.
+        if (BuildConfig.BUILD_TYPE != "benchmark") {
+            CrashHandler.install(this)
+        }
+
+        if (BuildConfig.DEBUG) {
+            Timber.plant(Timber.DebugTree())
+        } else {
+            // Release tree: only WARN/ERROR/WTF - no DEBUG/VERBOSE/INFO
+            Timber.plant(ReleaseTree())
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                "PixelTune Music Playback",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(channel)
+        }
+        
+        // Initialize NewPipe Extractor
+        NewPipe.init(NewPipeDownloader(okHttpClient))
+
+        // Start proxies
+        neteaseStreamProxy.start()
+        youtubeStreamProxy.start()
+        soundCloudStreamProxy.start()
+
+        // Start Telegram proxy and schedule cache cleanup on IO thread to avoid blocking
+        // Application.onCreate() with TDLib native library loading (System.loadLibrary("tdjni")).
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            // First .get() call constructs TelegramStreamProxy (and transitively TelegramClientManager),
+            // loading the tdjni native library here on the IO thread instead of the main thread.
+            telegramStreamProxy.get().start()
+
+            try {
+                // Wait a bit for TDLib to initialize before cleaning up
+                kotlinx.coroutines.delay(5000)
+                Timber.d("Performing startup Telegram cache cleanup...")
+                telegramCacheManager.get().clearTdLibCache()
+                telegramCacheManager.get().trimEmbeddedArtCache()
+            } catch (e: Exception) {
+                Timber.e(e, "Error during startup cache cleanup")
+            }
+        }
+    }
+
+    override fun newImageLoader(): ImageLoader {
+        return imageLoader.get().newBuilder()
+            .components {
+                add(telegramCoilFetcherFactory.get())
+            }
+            .build()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+            MediaMetadataRetrieverPool.clear()
+        }
+    }
+
+    // 3. Sobrescribe el método para proveer la configuración de WorkManager
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setWorkerFactory(workerFactory)
+            .build()
+
+}

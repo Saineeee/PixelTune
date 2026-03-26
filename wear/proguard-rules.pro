@@ -1,9 +1,8 @@
-# Wear OS ProGuard rules
 -keepattributes *Annotation*
 -keepattributes SourceFile,LineNumberTable
 -dontobfuscate
 
-# Keep serialization
--keepclassmembers class com.theveloper.pixelplay.shared.** {
+# Keep serialization for smartwatch communication
+-keepclassmembers class com.theveloper.pixeltune.shared.** {
     *;
 }

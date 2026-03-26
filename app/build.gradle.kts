@@ -11,7 +11,7 @@ plugins {
 }
 
 android {
-    namespace = "com.theveloper.pixelplay"
+    namespace = "com.theveloper.pixeltune"
     compileSdk = 35
 
     androidResources {
@@ -30,8 +30,8 @@ android {
         applicationId = "com.saine.pixeltune"
         minSdk = 29
         targetSdk = 35
-        versionCode = (project.findProperty("APP_VERSION_CODE") as String).toInt()
-        versionName = project.findProperty("APP_VERSION_NAME") as String
+        versionCode = 1
+        versionName = "0.1.0-Beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

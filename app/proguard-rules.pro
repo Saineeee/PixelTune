@@ -1,79 +1,41 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
-
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
-
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
 -keepattributes SourceFile,LineNumberTable
-
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
 -renamesourcefileattribute SourceFile
-
-# Disable obfuscation - keep class/method names readable
-# (App is open source, no need to hide code)
 -dontobfuscate
 
-# Keep javax.lang.model classes (often needed by annotation processors or code generation libraries)
 -keep class javax.lang.model.** { *; }
 -keep interface javax.lang.model.** { *; }
-
-# Keep javax.sound.sampled classes (for audio processing libraries like JFLAC)
 -keep class javax.sound.sampled.** { *; }
 -keep interface javax.sound.sampled.** { *; }
-
-# Specific rules for JavaPoet if the above is not enough
 -keep class com.squareup.javapoet.** { *; }
 -keep interface com.squareup.javapoet.** { *; }
-
-# Specific rules for AutoValue if it's directly used or a transitive dependency
-# (though usually AutoValue is a compile-time dependency and shouldn't need this)
-# -keep class com.google.auto.value.** { *; }
-# -keep interface com.google.auto.value.** { *; }
-
-# Rules for TagLib
 -keep class com.kyant.taglib.** { *; }
-
-# Rules for JAudioTagger (fallback metadata reader)
 -keep class org.jaudiotagger.** { *; }
 
-# [NUEVO] Regla general para mantener metadatos de Kotlin, puede ayudar a R8
+# General rule to keep Kotlin metadata (helps R8)
 -keep class kotlin.Metadata { *; }
 
 # ExoPlayer FFmpeg extension
 -keep class androidx.media3.decoder.ffmpeg.** { *; }
 -keep class androidx.media3.exoplayer.ffmpeg.** { *; }
 
-# Mantener clases de datos y sus miembros para evitar que R8 Full elimine campos
--keepclassmembers class com.theveloper.pixelplay.data.model.** { *; }
--keepclassmembers class com.theveloper.pixelplay.domain.model.** { *; }
+# Keep data classes and members to prevent R8 from removing fields
+-keepclassmembers class com.theveloper.pixeltune.data.model.** { *; }
+-keepclassmembers class com.theveloper.pixeltune.domain.model.** { *; }
 
 -keepattributes Signature, InnerClasses, EnclosingMethod, AnnotationDefault, *Annotation*
 
 # Cast framework classes loaded via manifest/reflective entry points.
--keep class com.theveloper.pixelplay.data.service.cast.CastOptionsProvider { *; }
+-keep class com.theveloper.pixeltune.data.service.cast.CastOptionsProvider { *; }
 -keep class * implements com.google.android.gms.cast.framework.OptionsProvider
 
 # Gson generic type capture for backup/restore in release builds.
 -keep class com.google.gson.reflect.TypeToken { *; }
 -keep class * extends com.google.gson.reflect.TypeToken
--keep class com.theveloper.pixelplay.data.preferences.PreferenceBackupEntry { *; }
--keep class com.theveloper.pixelplay.data.backup.model.** { *; }
--keep class com.theveloper.pixelplay.data.backup.module.** { *; }
+-keep class com.theveloper.pixeltune.data.preferences.PreferenceBackupEntry { *; }
+-keep class com.theveloper.pixeltune.data.backup.model.** { *; }
+-keep class com.theveloper.pixeltune.data.backup.module.** { *; }
 
 # Netty channel classes are instantiated reflectively and require public no-arg constructors.
-# Without these, release builds can fail with:
-# "IllegalArgumentException: Class NioServerSocketChannel does not have a public non-arg constructor"
 -keep class io.netty.channel.socket.nio.NioServerSocketChannel { public <init>(); }
 -keep class io.netty.channel.socket.nio.NioSocketChannel { public <init>(); }
 -keep class io.netty.channel.epoll.EpollServerSocketChannel { public <init>(); }
@@ -81,18 +43,13 @@
 -keep class io.netty.channel.kqueue.KQueueServerSocketChannel { public <init>(); }
 -keep class io.netty.channel.kqueue.KQueueSocketChannel { public <init>(); }
 
-# Ktor server engine classes (CIO and internals) — prevent R8 from stripping
-# service-loaded or reflectively-accessed engine wiring.
+# Ktor server engine classes (CIO and internals)
 -keep class io.ktor.** { *; }
 -keep class kotlinx.coroutines.** { *; }
 
-# Please add these rules to your existing keep rules in order to suppress warnings.
-# This is generated automatically by the Android Gradle plugin.
-
-# [NUEVO] Reglas para solucionar el error de Ktor y R8
+# Suppress warnings for various libraries
 -dontwarn java.lang.management.**
 -dontwarn reactor.blockhound.**
-
 -dontwarn java.awt.Graphics2D
 -dontwarn java.awt.Image
 -dontwarn java.awt.geom.AffineTransform
@@ -144,7 +101,6 @@
 -dontwarn org.eclipse.jetty.npn.NextProtoNego$ClientProvider
 -dontwarn org.eclipse.jetty.npn.NextProtoNego$Provider
 -dontwarn org.eclipse.jetty.npn.NextProtoNego$ServerProvider
--dontwarn org.eclipse.jetty.npn.NextProtoNego$ServerProvider
 -dontwarn org.eclipse.jetty.npn.NextProtoNego
 
 # TDLib (Telegram Database Library) rules
@@ -166,39 +122,40 @@
 -keepnames class io.ktor.** { *; }
 -keepnames class io.netty.** { *; }
 
-# Ensure internal server can start
--keep class com.theveloper.pixelplay.data.telegram.TelegramStreamProxy { *; }
+# Cloud Streaming Proxies & Providers (Ensures internal server can start in Release)
+-keep class com.theveloper.pixeltune.data.telegram.** { *; }
+-keep interface com.theveloper.pixeltune.data.telegram.** { *; }
 
--keep class com.theveloper.pixelplay.data.telegram.** { *; }
--keep interface com.theveloper.pixelplay.data.telegram.** { *; }
+-keep class com.theveloper.pixeltune.data.gdrive.** { *; }
+-keep interface com.theveloper.pixeltune.data.gdrive.** { *; }
+
+-keep class com.theveloper.pixeltune.data.netease.** { *; }
+-keep interface com.theveloper.pixeltune.data.netease.** { *; }
+
+-keep class com.theveloper.pixeltune.data.soundcloud.** { *; }
+-keep interface com.theveloper.pixeltune.data.soundcloud.** { *; }
+
+-keep class com.theveloper.pixeltune.data.youtube.** { *; }
+-keep interface com.theveloper.pixeltune.data.youtube.** { *; }
 
 # Keep Kotlin reflection if needed by Ktor/Serialization in Release
 -keep class kotlin.reflect.** { *; }
 
-# =============================================================================
-# TIMBER LOGGING OPTIMIZATION FOR RELEASE BUILDS
-# =============================================================================
-# Strip VERBOSE and DEBUG log calls entirely from release builds.
-# This removes the method calls at bytecode level, eliminating any overhead
-# from string concatenation or log message building.
-
+# Timber Logging Optimization for Release Builds
 -assumenosideeffects class timber.log.Timber {
     public static void v(...);
     public static void d(...);
     public static void i(...);
 }
 
-# Also strip Timber.Tree methods used by custom trees (belt and suspenders)
 -assumenosideeffects class timber.log.Timber$Tree {
     public void v(...);
     public void d(...);
     public void i(...);
 }
 
-# Strip Android Log.v and Log.d calls as well
 -assumenosideeffects class android.util.Log {
     public static int v(...);
     public static int d(...);
     public static int i(...);
 }
-

@@ -23,7 +23,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PixelPlay"
+rootProject.name = "PixelTune"
 include(":app")
 include(":shared")
 include(":wear")
