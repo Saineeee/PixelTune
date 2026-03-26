@@ -39,6 +39,9 @@ class PixelTuneApplication : Application(), ImageLoaderFactory, Configuration.Pr
     lateinit var youtubeStreamProxy: com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy
 
     @Inject
+    lateinit var soundCloudStreamProxy: com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy
+
+    @Inject
     lateinit var okHttpClient: OkHttpClient
 
     @Inject
@@ -84,6 +87,7 @@ class PixelTuneApplication : Application(), ImageLoaderFactory, Configuration.Pr
         // Start proxies
         neteaseStreamProxy.start()
         youtubeStreamProxy.start()
+        soundCloudStreamProxy.start()
 
         // Start Telegram proxy and schedule cache cleanup on IO thread to avoid blocking
         // Application.onCreate() with TDLib native library loading (System.loadLibrary("tdjni")).
