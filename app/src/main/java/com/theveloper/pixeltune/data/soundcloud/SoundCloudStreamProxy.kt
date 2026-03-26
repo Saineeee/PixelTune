@@ -42,6 +42,7 @@ class SoundCloudStreamProxy @Inject constructor(
     private companion object {
         val ALLOWED_REMOTE_HOST_SUFFIXES = setOf(
             "soundcloud.com",
+            "soundcloud.cloud",
             "sndcdn.com"
         )
     }
