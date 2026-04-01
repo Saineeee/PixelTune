@@ -1,0 +1,1 @@
+sed -i 's/"netease" -> resolveNeteaseUriAsync(uriString)/"netease" -> resolveNeteaseUriAsync(uriString)\n            "youtube" -> resolveYouTubeUriAsync(uriString)/g' ./app/src/main/java/com/theveloper/pixeltune/data/service/player/DualPlayerEngine.kt

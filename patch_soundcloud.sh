@@ -1,0 +1,1 @@
+sed -i 's/        return null/        val encodedUrl = uri.host ?: return null\n        return getProxyUrl(encodedUrl)/g' ./app/src/main/java/com/theveloper/pixeltune/data/soundcloud/SoundCloudStreamProxy.kt
