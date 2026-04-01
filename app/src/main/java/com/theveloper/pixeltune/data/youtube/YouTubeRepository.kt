@@ -50,12 +50,20 @@ class YouTubeRepository @Inject constructor() {
                 stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && stream.isUrl
             }
 
-            if (progressiveStreams.isEmpty()) {
+            var usableStreams = progressiveStreams
+            if (usableStreams.isEmpty()) {
+                // Fallback to any stream with a URL if no progressive streams exist
+                usableStreams = audioStreams.filter { it.isUrl }
+                if (usableStreams.isNotEmpty()) {
+                    Timber.w("No progressive streams found, falling back to other URL streams for $youtubeId")
+                }
+            }
+            if (usableStreams.isEmpty()) {
                 Timber.w("No progressive audio streams for $youtubeId. DeliveryMethods: ${audioStreams.map { it.deliveryMethod }}")
                 return@withContext Result.failure(Exception("No progressive audio streams found for video $youtubeId"))
             }
 
-            val bestStream = findBestAudioStream(progressiveStreams, quality)
+            val bestStream = findBestAudioStream(usableStreams, quality)
 
             if (bestStream != null) {
                 Result.success(bestStream.content)

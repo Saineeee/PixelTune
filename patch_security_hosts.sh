@@ -1,0 +1,2 @@
+sed -i 's/"googlevideo.com",/"googlevideo.com",\n            "googlevideo.com.cn",\n            "video.google.com",/g' ./app/src/main/java/com/theveloper/pixeltune/data/youtube/YouTubeStreamProxy.kt
+sed -i '/call.respond(HttpStatusCode.BadGateway, "Rejected upstream stream URL")/i \                            Timber.w("Rejected upstream stream URL for $youtubeId: $streamUrl")' ./app/src/main/java/com/theveloper/pixeltune/data/youtube/YouTubeStreamProxy.kt
