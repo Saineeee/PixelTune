@@ -40,6 +40,7 @@ import javax.inject.Singleton
 import kotlin.coroutines.resume
 
 import com.theveloper.pixeltune.data.netease.NeteaseStreamProxy
+import com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy
 import com.theveloper.pixeltune.data.telegram.TelegramRepository
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.DefaultDataSource
@@ -62,6 +63,7 @@ class DualPlayerEngine @Inject constructor(
     private val telegramRepository: TelegramRepository,
     private val telegramStreamProxy: com.theveloper.pixeltune.data.telegram.TelegramStreamProxy,
     private val neteaseStreamProxy: NeteaseStreamProxy,
+    private val youtubeStreamProxy: YouTubeStreamProxy,
     private val telegramCacheManager: com.theveloper.pixeltune.data.telegram.TelegramCacheManager,
     private val connectivityStateHolder: com.theveloper.pixeltune.presentation.viewmodel.ConnectivityStateHolder
 ) {
@@ -317,7 +319,7 @@ class DualPlayerEngine @Inject constructor(
         val resolver = object : ResolvingDataSource.Resolver {
             override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
                 val scheme = dataSpec.uri.scheme
-                if (scheme == "telegram" || scheme == "netease") {
+                if (scheme == "telegram" || scheme == "netease" || scheme == "youtube") {
                     val originalUri = dataSpec.uri.toString()
                     val resolved = resolvedUriCache[originalUri]
                     if (resolved != null) {
@@ -394,6 +396,7 @@ class DualPlayerEngine @Inject constructor(
         val resolved: Uri? = when (uri.scheme) {
             "telegram" -> resolveTelegramUriAsync(uri, uriString)
             "netease" -> resolveNeteaseUriAsync(uriString)
+            "youtube" -> resolveYouTubeUriAsync(uriString)
             else -> null
         }
 
@@ -453,6 +456,27 @@ class DualPlayerEngine @Inject constructor(
         return if (proxyUrl.isNotEmpty()) Uri.parse(proxyUrl) else null
     }
 
+    private suspend fun resolveYouTubeUriAsync(uriString: String): Uri? {
+        Timber.tag("DualPlayerEngine").d("Async resolving YouTube URI: $uriString")
+
+        if (!youtubeStreamProxy.isReady()) {
+            Timber.tag("DualPlayerEngine").w("YouTubeStreamProxy not ready, awaiting...")
+            val proxyReady = youtubeStreamProxy.awaitReady(5_000L)
+            if (!proxyReady) {
+                Timber.tag("DualPlayerEngine").e("YouTubeStreamProxy not ready after timeout")
+                return null
+            }
+        }
+
+        val proxyUrl = youtubeStreamProxy.resolveYouTubeUri(uriString)
+        if (!proxyUrl.isNullOrBlank()) {
+            return Uri.parse(proxyUrl)
+        }
+
+        Timber.tag("DualPlayerEngine").w("Failed to resolve YouTube URI: $uriString")
+        return null
+    }
+
     private suspend fun resolveNeteaseUriAsync(uriString: String): Uri? {
         Timber.tag("DualPlayerEngine").d("Async resolving Netease URI: $uriString")
 
@@ -481,7 +505,7 @@ class DualPlayerEngine @Inject constructor(
     suspend fun resolveMediaItem(mediaItem: MediaItem): MediaItem {
         val uri = mediaItem.localConfiguration?.uri ?: return mediaItem
         val scheme = uri.scheme
-        if (scheme != "telegram" && scheme != "netease") return mediaItem
+        if (scheme != "telegram" && scheme != "netease" && scheme != "youtube") return mediaItem
 
         val resolvedUri = resolveCloudUri(uri)
         if (resolvedUri == uri) return mediaItem // Resolution failed or not needed
@@ -510,7 +534,7 @@ class DualPlayerEngine @Inject constructor(
             
             // Set appropriate WakeMode for the next item
             val scheme = mediaItem.localConfiguration?.uri?.scheme
-            if (scheme == "telegram" || scheme == "http" || scheme == "https") {
+            if (scheme == "telegram" || scheme == "http" || scheme == "https" || scheme == "youtube") {
                  playerB.setWakeMode(C.WAKE_MODE_LOCAL)
             } else {
                  playerB.setWakeMode(C.WAKE_MODE_LOCAL)
