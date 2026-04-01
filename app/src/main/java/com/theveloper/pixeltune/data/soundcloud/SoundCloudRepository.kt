@@ -73,7 +73,7 @@ class SoundCloudRepository @Inject constructor() {
             }
 
             val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
-                ServiceList.SoundCloud.getSearchExtractor(query, listOf(searchFilter), "")
+                ServiceList.SoundCloud.getSearchExtractor(query, listOf(searchFilter), null)
             } else {
                 ServiceList.SoundCloud.getSearchExtractor(query)
             }
@@ -91,7 +91,7 @@ class SoundCloudRepository @Inject constructor() {
                             val durationMs = if (item.duration > 0) item.duration * 1000L else 0L
 
                             val song = Song(
-                                id = encodedUrl.hashCode().toString(),
+                                id = encodedUrl,
                                 title = item.name ?: "Unknown",
                                 artist = item.uploaderName ?: "Unknown",
                                 artistId = -1L,
@@ -125,7 +125,7 @@ class SoundCloudRepository @Inject constructor() {
                     is PlaylistInfoItem -> {
                         if (filter == SearchFilterType.ALL || filter == SearchFilterType.PLAYLISTS || filter == SearchFilterType.ALBUMS) {
                             val playlist = Playlist(
-                                id = item.url.hashCode().toString(),
+                                id = item.url,
                                 name = item.name ?: "Unknown Playlist",
                                 songIds = emptyList() // We don't fetch songs right now
                             )
