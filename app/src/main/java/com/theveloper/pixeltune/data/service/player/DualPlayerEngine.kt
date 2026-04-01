@@ -41,6 +41,8 @@ import kotlin.coroutines.resume
 
 import com.theveloper.pixeltune.data.netease.NeteaseStreamProxy
 import com.theveloper.pixeltune.data.telegram.TelegramRepository
+import com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy
+import com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DataSpec
@@ -62,6 +64,8 @@ class DualPlayerEngine @Inject constructor(
     private val telegramRepository: TelegramRepository,
     private val telegramStreamProxy: com.theveloper.pixeltune.data.telegram.TelegramStreamProxy,
     private val neteaseStreamProxy: NeteaseStreamProxy,
+    private val youtubeStreamProxy: YouTubeStreamProxy,
+    private val soundcloudStreamProxy: SoundCloudStreamProxy,
     private val telegramCacheManager: com.theveloper.pixeltune.data.telegram.TelegramCacheManager,
     private val connectivityStateHolder: com.theveloper.pixeltune.presentation.viewmodel.ConnectivityStateHolder
 ) {
@@ -317,7 +321,7 @@ class DualPlayerEngine @Inject constructor(
         val resolver = object : ResolvingDataSource.Resolver {
             override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
                 val scheme = dataSpec.uri.scheme
-                if (scheme == "telegram" || scheme == "netease") {
+                if (scheme == "telegram" || scheme == "netease" || scheme == "youtube" || scheme == "soundcloud") {
                     val originalUri = dataSpec.uri.toString()
                     val resolved = resolvedUriCache[originalUri]
                     if (resolved != null) {
@@ -394,6 +398,8 @@ class DualPlayerEngine @Inject constructor(
         val resolved: Uri? = when (uri.scheme) {
             "telegram" -> resolveTelegramUriAsync(uri, uriString)
             "netease" -> resolveNeteaseUriAsync(uriString)
+            "youtube" -> resolveYouTubeUriAsync(uri)
+            "soundcloud" -> resolveSoundCloudUriAsync(uri)
             else -> null
         }
 
@@ -474,6 +480,40 @@ class DualPlayerEngine @Inject constructor(
         return null
     }
 
+    private suspend fun resolveYouTubeUriAsync(uri: Uri): Uri? {
+        val youtubeId = uri.host ?: return null
+        Timber.tag("DualPlayerEngine").d("Async resolving YouTube URI: $youtubeId")
+
+        if (!youtubeStreamProxy.isReady()) {
+            Timber.tag("DualPlayerEngine").w("YouTubeStreamProxy not ready, awaiting...")
+            val proxyReady = youtubeStreamProxy.awaitReady(5_000L)
+            if (!proxyReady) {
+                Timber.tag("DualPlayerEngine").e("YouTubeStreamProxy not ready after timeout")
+                return null
+            }
+        }
+
+        val proxyUrl = youtubeStreamProxy.getProxyUrl(youtubeId)
+        return if (proxyUrl.isNotEmpty()) Uri.parse(proxyUrl) else null
+    }
+
+    private suspend fun resolveSoundCloudUriAsync(uri: Uri): Uri? {
+        val encodedUrl = uri.host ?: return null
+        Timber.tag("DualPlayerEngine").d("Async resolving SoundCloud URI: $encodedUrl")
+
+        if (!soundcloudStreamProxy.isReady()) {
+            Timber.tag("DualPlayerEngine").w("SoundCloudStreamProxy not ready, awaiting...")
+            val proxyReady = soundcloudStreamProxy.awaitReady(5_000L)
+            if (!proxyReady) {
+                Timber.tag("DualPlayerEngine").e("SoundCloudStreamProxy not ready after timeout")
+                return null
+            }
+        }
+
+        val proxyUrl = soundcloudStreamProxy.getProxyUrl(encodedUrl)
+        return if (proxyUrl.isNotEmpty()) Uri.parse(proxyUrl) else null
+    }
+
     /**
      * Resolves a MediaItem's cloud URI (if any) and returns a copy with the resolved URI.
      * For non-cloud URIs, returns the original MediaItem unchanged.
@@ -481,7 +521,7 @@ class DualPlayerEngine @Inject constructor(
     suspend fun resolveMediaItem(mediaItem: MediaItem): MediaItem {
         val uri = mediaItem.localConfiguration?.uri ?: return mediaItem
         val scheme = uri.scheme
-        if (scheme != "telegram" && scheme != "netease") return mediaItem
+        if (scheme != "telegram" && scheme != "netease" && scheme != "youtube" && scheme != "soundcloud") return mediaItem
 
         val resolvedUri = resolveCloudUri(uri)
         if (resolvedUri == uri) return mediaItem // Resolution failed or not needed
