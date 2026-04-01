@@ -321,7 +321,7 @@ class DualPlayerEngine @Inject constructor(
         val resolver = object : ResolvingDataSource.Resolver {
             override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
                 val scheme = dataSpec.uri.scheme
-                if (scheme == "telegram" || scheme == "netease" || scheme == "youtube" || scheme == "soundcloud") {
+                if (scheme == "telegram" || scheme == "netease" || scheme == "youtube" || scheme == "soundcloud" || scheme == "cloud") {
                     val originalUri = dataSpec.uri.toString()
                     val resolved = resolvedUriCache[originalUri]
                     if (resolved != null) {
@@ -400,6 +400,11 @@ class DualPlayerEngine @Inject constructor(
             "netease" -> resolveNeteaseUriAsync(uriString)
             "youtube" -> resolveYouTubeUriAsync(uriString)
             "soundcloud" -> resolveSoundCloudUriAsync(uriString)
+            "cloud" -> when (uri.host) {
+                "youtube" -> resolveYouTubeUriAsync(uriString)
+                "soundcloud" -> resolveSoundCloudUriAsync(uriString)
+                else -> null
+            }
             else -> null
         }
 
@@ -529,7 +534,7 @@ class DualPlayerEngine @Inject constructor(
     suspend fun resolveMediaItem(mediaItem: MediaItem): MediaItem {
         val uri = mediaItem.localConfiguration?.uri ?: return mediaItem
         val scheme = uri.scheme
-        if (scheme != "telegram" && scheme != "netease" && scheme != "youtube" && scheme != "soundcloud") return mediaItem
+        if (scheme != "telegram" && scheme != "netease" && scheme != "youtube" && scheme != "soundcloud" && scheme != "cloud") return mediaItem
 
         val resolvedUri = resolveCloudUri(uri)
         if (resolvedUri == uri) return mediaItem // Resolution failed or not needed
@@ -558,7 +563,7 @@ class DualPlayerEngine @Inject constructor(
             
             // Set appropriate WakeMode for the next item
             val scheme = mediaItem.localConfiguration?.uri?.scheme
-            if (scheme == "telegram" || scheme == "http" || scheme == "https" || scheme == "youtube" || scheme == "soundcloud") {
+            if (scheme == "telegram" || scheme == "http" || scheme == "https" || scheme == "youtube" || scheme == "soundcloud" || scheme == "cloud") {
                  playerB.setWakeMode(C.WAKE_MODE_LOCAL)
             } else {
                  playerB.setWakeMode(C.WAKE_MODE_LOCAL)
