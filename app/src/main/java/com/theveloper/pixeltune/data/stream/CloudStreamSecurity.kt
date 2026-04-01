@@ -21,7 +21,8 @@ object CloudStreamSecurity {
         "application/octet-stream",
         "binary/octet-stream",
         "application/mp4",
-        "video/mp4"
+        "video/mp4",
+        "video/webm"
     )
 
     data class RangeHeaderValidation(
