@@ -40,6 +40,7 @@ import javax.inject.Singleton
 import kotlin.coroutines.resume
 
 import com.theveloper.pixeltune.data.netease.NeteaseStreamProxy
+import com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy
 import com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy
 import com.theveloper.pixeltune.data.telegram.TelegramRepository
 import androidx.media3.datasource.ResolvingDataSource
@@ -64,6 +65,7 @@ class DualPlayerEngine @Inject constructor(
     private val telegramStreamProxy: com.theveloper.pixeltune.data.telegram.TelegramStreamProxy,
     private val neteaseStreamProxy: NeteaseStreamProxy,
     private val youtubeStreamProxy: YouTubeStreamProxy,
+    private val soundCloudStreamProxy: SoundCloudStreamProxy,
     private val telegramCacheManager: com.theveloper.pixeltune.data.telegram.TelegramCacheManager,
     private val connectivityStateHolder: com.theveloper.pixeltune.presentation.viewmodel.ConnectivityStateHolder
 ) {
@@ -319,7 +321,7 @@ class DualPlayerEngine @Inject constructor(
         val resolver = object : ResolvingDataSource.Resolver {
             override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
                 val scheme = dataSpec.uri.scheme
-                if (scheme == "telegram" || scheme == "netease" || scheme == "youtube") {
+                if (scheme == "telegram" || scheme == "netease" || scheme == "youtube" || scheme == "soundcloud") {
                     val originalUri = dataSpec.uri.toString()
                     val resolved = resolvedUriCache[originalUri]
                     if (resolved != null) {
@@ -397,6 +399,7 @@ class DualPlayerEngine @Inject constructor(
             "telegram" -> resolveTelegramUriAsync(uri, uriString)
             "netease" -> resolveNeteaseUriAsync(uriString)
             "youtube" -> resolveYouTubeUriAsync(uriString)
+            "soundcloud" -> resolveSoundCloudUriAsync(uriString)
             else -> null
         }
 
@@ -477,6 +480,27 @@ class DualPlayerEngine @Inject constructor(
         return null
     }
 
+    private suspend fun resolveSoundCloudUriAsync(uriString: String): Uri? {
+        Timber.tag("DualPlayerEngine").d("Async resolving SoundCloud URI: $uriString")
+
+        if (!soundCloudStreamProxy.isReady()) {
+            Timber.tag("DualPlayerEngine").w("SoundCloudStreamProxy not ready, awaiting...")
+            val proxyReady = soundCloudStreamProxy.awaitReady(5_000L)
+            if (!proxyReady) {
+                Timber.tag("DualPlayerEngine").e("SoundCloudStreamProxy not ready after timeout")
+                return null
+            }
+        }
+
+        val proxyUrl = soundCloudStreamProxy.resolveSoundCloudUri(uriString)
+        if (!proxyUrl.isNullOrBlank()) {
+            return Uri.parse(proxyUrl)
+        }
+
+        Timber.tag("DualPlayerEngine").w("Failed to resolve SoundCloud URI: $uriString")
+        return null
+    }
+
     private suspend fun resolveNeteaseUriAsync(uriString: String): Uri? {
         Timber.tag("DualPlayerEngine").d("Async resolving Netease URI: $uriString")
 
@@ -505,7 +529,7 @@ class DualPlayerEngine @Inject constructor(
     suspend fun resolveMediaItem(mediaItem: MediaItem): MediaItem {
         val uri = mediaItem.localConfiguration?.uri ?: return mediaItem
         val scheme = uri.scheme
-        if (scheme != "telegram" && scheme != "netease" && scheme != "youtube") return mediaItem
+        if (scheme != "telegram" && scheme != "netease" && scheme != "youtube" && scheme != "soundcloud") return mediaItem
 
         val resolvedUri = resolveCloudUri(uri)
         if (resolvedUri == uri) return mediaItem // Resolution failed or not needed
@@ -534,7 +558,7 @@ class DualPlayerEngine @Inject constructor(
             
             // Set appropriate WakeMode for the next item
             val scheme = mediaItem.localConfiguration?.uri?.scheme
-            if (scheme == "telegram" || scheme == "http" || scheme == "https" || scheme == "youtube") {
+            if (scheme == "telegram" || scheme == "http" || scheme == "https" || scheme == "youtube" || scheme == "soundcloud") {
                  playerB.setWakeMode(C.WAKE_MODE_LOCAL)
             } else {
                  playerB.setWakeMode(C.WAKE_MODE_LOCAL)

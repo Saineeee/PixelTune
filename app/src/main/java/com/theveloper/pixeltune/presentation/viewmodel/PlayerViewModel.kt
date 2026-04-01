@@ -2569,7 +2569,7 @@ class PlayerViewModel @Inject constructor(
             // Pre-resolve the starting song's cloud URI before ExoPlayer touches it.
             // This populates the resolvedUriCache so resolveDataSpec finds it instantly.
             val startingUri = MediaItemBuilder.playbackUri(effectiveStartSong.contentUriString)
-            if (startingUri.scheme == "telegram" || startingUri.scheme == "netease" || startingUri.scheme == "youtube") {
+            if (startingUri.scheme == "telegram" || startingUri.scheme == "netease" || startingUri.scheme == "youtube" || startingUri.scheme == "soundcloud") {
                 dualPlayerEngine.resolveCloudUri(startingUri)
             }
 
