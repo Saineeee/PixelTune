@@ -73,7 +73,7 @@ class SoundCloudRepository @Inject constructor() {
             }
 
             val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
-                ServiceList.SoundCloud.getSearchExtractor(query, listOf(searchFilter), "")
+                ServiceList.SoundCloud.getSearchExtractor(query, listOf(searchFilter), null)
             } else {
                 ServiceList.SoundCloud.getSearchExtractor(query)
             }
