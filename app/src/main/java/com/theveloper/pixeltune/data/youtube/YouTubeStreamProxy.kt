@@ -218,16 +218,17 @@ class YouTubeStreamProxy @Inject constructor(
                                 ?.let { raw -> runCatching { ContentType.parse(raw) }.getOrNull() }
                                 ?: ContentType.Audio.Any
 
-                            if (upstream.code == 206) {
-                                call.response.status(HttpStatusCode.PartialContent)
-                            } else {
-                                call.response.status(HttpStatusCode.OK)
-                            }
+                            val proxyStatus = if (upstream.code == 206) HttpStatusCode.PartialContent else HttpStatusCode.OK
+                            val lengthLong = contentLength?.toLongOrNull()
+
                             call.response.header("Accept-Ranges", acceptRanges ?: "bytes")
-                            contentLength?.let { call.response.header("Content-Length", it) }
                             contentRange?.let { call.response.header("Content-Range", it) }
 
-                            call.respondBytesWriter(contentType = responseContentType) {
+                            call.respondBytesWriter(
+                                contentType = responseContentType,
+                                status = proxyStatus,
+                                contentLength = lengthLong
+                            ) {
                                 withContext(Dispatchers.IO) {
                                     body.byteStream().use { input ->
                                         val buffer = ByteArray(64 * 1024)
