@@ -592,7 +592,7 @@ class MusicService : MediaLibraryService() {
             .build()
 
         val localOnlyProvider = LocalOnlyMediaNotificationProvider(this).also {
-            it.setSmallIcon(R.drawable.monochrome_player)
+            it.setSmallIcon(R.drawable.welcome_art)
         }
         setMediaNotificationProvider(localOnlyProvider)
         mediaSession?.let { refreshMediaSessionUi(it) }
@@ -731,7 +731,7 @@ class MusicService : MediaLibraryService() {
             this,
             PixelTuneApplication.NOTIFICATION_CHANNEL_ID
         )
-            .setSmallIcon(R.drawable.monochrome_player)
+            .setSmallIcon(R.drawable.welcome_art)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(getString(R.string.service_processing_action))
             .setCategory(NotificationCompat.CATEGORY_SERVICE)

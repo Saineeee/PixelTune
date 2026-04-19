@@ -93,7 +93,7 @@ fun AlbumArtImage(
                 contentAlignment = Alignment.Center
             ) {
                 Image(
-                    provider = ImageProvider(R.drawable.ic_music_placeholder),
+                    provider = ImageProvider(R.drawable.welcome_art),
                     contentDescription = "Placeholder",
                     modifier = GlanceModifier.size(size * 0.6f),
                     contentScale = ContentScale.Fit,

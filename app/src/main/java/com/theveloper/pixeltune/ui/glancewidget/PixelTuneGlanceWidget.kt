@@ -1181,7 +1181,7 @@ class PixelTuneGlanceWidget : GlanceAppWidget() {
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
-                        provider = ImageProvider(R.drawable.ic_music_placeholder),
+                        provider = ImageProvider(R.drawable.welcome_art),
                         contentDescription = "Album Art Placeholder",
                         modifier = GlanceModifier.size(placeholderSize),
                         contentScale = ContentScale.Fit,
