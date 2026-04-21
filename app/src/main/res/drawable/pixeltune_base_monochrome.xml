@@ -1,23 +1,37 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="483"
-    android:viewportHeight="483">
+    android:viewportWidth="183"
+    android:viewportHeight="183">
 
-  <group
-      android:pivotX="241.5"
-      android:pivotY="241.5"
-      android:scaleX="0.253"
-      android:scaleY="0.253">
+    <group
+        android:pivotX="35.5"
+        android:pivotY="45.5"
+        android:scaleX="0.253"
+        android:scaleY="0.253">
 
-    <path
-        
-    android:width="24dp"
-    android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-  <path
-      android:fillColor="#000000"
-      android:pathData="M12,4 H14 V2 H18 V6 H16 V8 H14 V16 H15 V18 H14 V20 H10 V21 H7 V20 H5 V16 H6 V14 H9 V15 H7 V18 H10 V19 H12 V4 Z"/>
-  </group>
+        <group
+            android:translateX="-100"
+            android:translateY="-140"
+            android:scaleX="24"
+            android:scaleY="24">
+            <path
+                android:pathData="M4,2 H6 V4 H8 V6 H10 V8 H12 V10 H14 V12 H16 V14 H14 V16 H12 V18 H10 V20 H8 V22 H6 V24 H4 Z"
+                android:fillColor="#000000"
+                android:strokeColor="#00000000"/>
+        </group>
+
+        <group
+            android:translateX="72"
+            android:translateY="-54"
+            android:scaleX="20"
+            android:scaleY="20">
+            <path
+                android:pathData="M12,4 H14 V2 H18 V6 H16 V8 H14 V16 H15 V18 H14 V20 H10 V21 H7 V20 H5 V16 H6 V14 H9 V15 H7 V18 H10 V19 H12 V4 Z"
+                android:fillColor="#000000"
+                android:strokeColor="#00000000"/>
+        </group>
+
+    </group>
 </vector>
+
