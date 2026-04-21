@@ -11,12 +11,12 @@
         android:scaleY="0.253">
 
         <group
-            android:translateX="-100"
-            android:translateY="-140"
-            android:scaleX="24"
-            android:scaleY="24">
+            android:translateX="-78"
+            android:translateY="-133"
+            android:scaleX="19"
+            android:scaleY="19">
             <path
-                android:pathData="M4,2 H6 V4 H8 V6 H10 V8 H12 V10 H14 V12 H16 V14 H14 V16 H12 V18 H10 V20 H8 V22 H6 V24 H4 Z"
+                android:pathData="M 0,0 H 2 V 1 H 4 V 2 H 6 V 3 H 8 V 4 H 10 V 5 H 12 V 6 H 14 V 8 H 12 V 9 H 10 V 10 H 8 V 11 H 6 V 12 H 4 V 13 H 2 V 14 H 0 Z"
                 android:fillColor="#000000"
                 android:strokeColor="#00000000"/>
         </group>
@@ -34,4 +34,3 @@
 
     </group>
 </vector>
-
