@@ -138,14 +138,14 @@ private val CoreMaintainer = Contributor(
 
 private val PinnedCommunityMembers = listOf(
     Contributor(
-        id = "pixelplayer_devs",
-        displayName = "PixelPlayer Devs",
-        role = "PPL Creators",
+        id = "Theovilardo",
+        displayName = "Theovilardo",
+        role = "PPL Dev",
         detail = "The devs of PixelPlayer, setting the foundation for this app.",
         badge = "PPL Devs",
-        avatarUrl = "[https://avatars.githubusercontent.com/u/26845343?v=4](https://avatars.githubusercontent.com/u/26845343?v=4)",
+        avatarUrl = "https://avatars.githubusercontent.com/u/26845343?v=4",
         iconRes = R.drawable.rounded_celebration_24,
-        githubUrl = "[https://github.com/theovilardo/PixelPlayer](https://github.com/theovilardo/PixelPlayer)"
+        githubUrl = "https://github.com/theovilardo"
     ),
     Contributor(
         id = "razx",
@@ -153,9 +153,9 @@ private val PinnedCommunityMembers = listOf(
         role = "App Icon Designer",
         detail = "Designed the beautiful app icon for PixelTune.",
         badge = "Designer",
-        avatarUrl = "[https://pps.services.adobe.com/api/profile/81D01E7C67B1ACD40A495CE9@AdobeID/image/6c040bcf-9405-479a-87f8-81f94e91843f/230](https://pps.services.adobe.com/api/profile/81D01E7C67B1ACD40A495CE9@AdobeID/image/6c040bcf-9405-479a-87f8-81f94e91843f/230)",
+        avatarUrl = "https://pps.services.adobe.com/api/profile/81D01E7C67B1ACD40A495CE9@AdobeID/image/6c040bcf-9405-479a-87f8-81f94e91843f/230",
         iconRes = R.drawable.rounded_person_24,
-        behanceUrl = "[https://www.behance.net/raxzeditz](https://www.behance.net/raxzeditz)"
+        behanceUrl = "https://www.behance.net/raxzeditz"
     )
 )
 
