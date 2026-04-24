@@ -173,9 +173,10 @@ class YouTubeStreamProxy @Inject constructor(
                             .url(streamUrl)
                             .header("Accept-Encoding", "identity") // MUST disable gzip to preserve Range requests for Media3/ExoPlayer
                             
-                        call.request.headers["User-Agent"]?.let { userAgent ->
-                            requestBuilder.header("User-Agent", userAgent)
-                        }
+                        val userAgent = call.request.headers["User-Agent"]
+                        val desktopUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        val finalUserAgent = if (userAgent?.contains("ExoPlayer") == true) desktopUserAgent else (userAgent ?: desktopUserAgent)
+                        requestBuilder.header("User-Agent", finalUserAgent)
                         rangeValidation.normalizedHeader?.let {
                             requestBuilder.header("Range", it)
                         }
