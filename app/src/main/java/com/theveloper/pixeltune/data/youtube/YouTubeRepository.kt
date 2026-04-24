@@ -43,11 +43,8 @@ class YouTubeRepository @Inject constructor() {
                 return@withContext Result.failure(Exception("No audio streams found for video $youtubeId"))
             }
 
-            // Only use progressive HTTP streams that provide a direct URL.
-            // DASH streams return manifest XML in getContent(), which cannot be
-            // proxied as a simple byte stream to ExoPlayer.
             val progressiveStreams = audioStreams.filter { stream ->
-                stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && stream.isUrl
+                (stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP || stream.deliveryMethod == DeliveryMethod.DASH) && stream.isUrl
             }
 
             if (progressiveStreams.isEmpty()) {
@@ -97,7 +94,7 @@ class YouTubeRepository @Inject constructor() {
             }
 
             val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
-                ServiceList.YouTube.getSearchExtractor(query, listOf(searchFilter), "")
+                ServiceList.YouTube.getSearchExtractor(query, listOf(searchFilter), null)
             } else {
                 ServiceList.YouTube.getSearchExtractor(query)
             }
