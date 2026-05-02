@@ -87,8 +87,8 @@ class YouTubeStreamProxy @Inject constructor(
 
     fun getProxyUrl(youtubeId: String): String {
         if (actualPort == 0) {
-            Timber.w("YouTubeStreamProxy: getProxyUrl called but actualPort is 0")
-            return ""
+            Timber.w("YouTubeStreamProxy: getProxyUrl called before proxy was ready; returning deferred URI")
+            return "youtube://$youtubeId"
         }
         // Basic validation for YouTube ID format
         if (!youtubeId.matches(Regex("^[a-zA-Z0-9_-]{11}$"))) {

@@ -76,8 +76,8 @@ class SoundCloudStreamProxy @Inject constructor(
 
     fun getProxyUrl(encodedUrl: String): String {
         if (actualPort == 0) {
-            Timber.w("SoundCloudStreamProxy: getProxyUrl called but actualPort is 0")
-            return ""
+            Timber.w("SoundCloudStreamProxy: getProxyUrl called before proxy was ready; returning deferred URI")
+            return "soundcloud://$encodedUrl"
         }
         return "http://127.0.0.1:$actualPort/soundcloud/$encodedUrl"
     }
@@ -85,10 +85,12 @@ class SoundCloudStreamProxy @Inject constructor(
     fun resolveSoundCloudUri(uriString: String): String? {
         val uri = Uri.parse(uriString)
         if (uri.scheme != "soundcloud") return null
-        // The host would be the encoded soundcloud url, but we might just need to verify
-        // that it looks like soundcloud. For our proxy, the `contentUriString` will actually
-        // be `http://127.0.0.1...`, so this resolver is mostly for custom scheme handling if any.
-        return null
+        val encodedUrl = uri.schemeSpecificPart
+            ?.removePrefix("//")
+            ?.substringBefore('?')
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        return getProxyUrl(encodedUrl)
     }
 
     fun start() {
