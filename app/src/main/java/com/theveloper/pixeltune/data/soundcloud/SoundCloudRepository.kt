@@ -64,19 +64,9 @@ class SoundCloudRepository @Inject constructor() {
 
     suspend fun searchSoundCloud(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): List<SearchResultItem> = withContext(Dispatchers.IO) {
         try {
-            val searchFilter = when (filter) {
-                SearchFilterType.ALL -> ""
-                SearchFilterType.SONGS -> "tracks"
-                SearchFilterType.ALBUMS -> "playlists"
-                SearchFilterType.ARTISTS -> "users"
-                SearchFilterType.PLAYLISTS -> "playlists"
-            }
-
-            val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
-                ServiceList.SoundCloud.getSearchExtractor(query, listOf(searchFilter), "")
-            } else {
-                ServiceList.SoundCloud.getSearchExtractor(query)
-            }
+            // SoundCloud extractor filters are brittle across extractor versions.
+            // Fetch broad results and apply app-level filtering by item type below.
+            val extractor: SearchExtractor = ServiceList.SoundCloud.getSearchExtractor(query)
 
             extractor.fetchPage()
 
