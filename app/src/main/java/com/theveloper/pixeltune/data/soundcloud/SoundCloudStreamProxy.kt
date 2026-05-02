@@ -158,7 +158,11 @@ class SoundCloudStreamProxy @Inject constructor(
                         }
 
                         // Proxy the audio stream
-                        val requestBuilder = Request.Builder().url(streamUrl)
+                        val requestBuilder = Request.Builder()
+                            .url(streamUrl)
+                            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
+                            .header("Referer", "https://soundcloud.com/")
+                            .header("Origin", "https://soundcloud.com")
                         rangeValidation.normalizedHeader?.let {
                             requestBuilder.header("Range", it)
                         }

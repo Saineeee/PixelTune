@@ -172,6 +172,9 @@ class YouTubeStreamProxy @Inject constructor(
                         val requestBuilder = Request.Builder()
                             .url(streamUrl)
                             .header("Accept-Encoding", "identity") // MUST disable gzip to preserve Range requests for Media3/ExoPlayer
+                            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
+                            .header("Referer", "https://www.youtube.com/")
+                            .header("Origin", "https://www.youtube.com")
                             
                         call.request.headers["User-Agent"]?.let { userAgent ->
                             requestBuilder.header("User-Agent", userAgent)
