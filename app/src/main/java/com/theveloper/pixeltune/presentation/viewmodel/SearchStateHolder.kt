@@ -119,11 +119,11 @@ class SearchStateHolder @Inject constructor(
                             if (request.isOnline) {
                                 if (_currentProvider.value == OnlineProvider.YOUTUBE) {
                                     youTubeRepository.searchYouTube(normalizedQuery, currentFilter) { youtubeId ->
-                                        youTubeStreamProxy.getProxyUrl(youtubeId)
+                                        "youtube://$youtubeId"
                                     }
                                 } else {
                                     soundCloudRepository.searchSoundCloud(normalizedQuery, currentFilter) { encodedUrl ->
-                                        soundCloudStreamProxy.getProxyUrl(encodedUrl)
+                                        "soundcloud://$encodedUrl"
                                     }
                                 }
                             } else {

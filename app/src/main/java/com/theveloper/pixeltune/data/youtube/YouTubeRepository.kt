@@ -97,7 +97,7 @@ class YouTubeRepository @Inject constructor() {
             }
 
             val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
-                ServiceList.YouTube.getSearchExtractor(query, listOf(searchFilter), "")
+                ServiceList.YouTube.getSearchExtractor(query)
             } else {
                 ServiceList.YouTube.getSearchExtractor(query)
             }
