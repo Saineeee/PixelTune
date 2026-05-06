@@ -336,10 +336,11 @@ object AppModule {
             // Add User-Agent header (required by some APIs)
             .addInterceptor { chain ->
                 val originalRequest = chain.request()
-                val requestWithUserAgent = originalRequest.newBuilder()
-                    .header("User-Agent", "PixelTune/1.0 (Android; Music Player)")
-                    .build()
-                chain.proceed(requestWithUserAgent)
+                val builder = originalRequest.newBuilder()
+                if (originalRequest.header("User-Agent") == null) {
+                    builder.header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                }
+                chain.proceed(builder.build())
             }
             .addInterceptor(loggingInterceptor)
             .build()
@@ -393,11 +394,12 @@ object AppModule {
             // Add headers
             .addInterceptor { chain ->
                 val originalRequest = chain.request()
-                val requestWithHeaders = originalRequest.newBuilder()
-                    .header("User-Agent", "PixelTune/1.0 (Android; Music Player)")
-                    .header("Accept", "application/json")
-                    .build()
-                chain.proceed(requestWithHeaders)
+                val builder = originalRequest.newBuilder()
+                if (originalRequest.header("User-Agent") == null) {
+                    builder.header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                }
+                builder.header("Accept", "application/json")
+                chain.proceed(builder.build())
             }
             .addInterceptor(loggingInterceptor)
             .build()
