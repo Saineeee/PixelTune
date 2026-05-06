@@ -47,7 +47,7 @@ class YouTubeRepository @Inject constructor() {
             // DASH streams return manifest XML in getContent(), which cannot be
             // proxied as a simple byte stream to ExoPlayer.
             val progressiveStreams = audioStreams.filter { stream ->
-                stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && stream.isUrl
+                stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && stream.isUrl()
             }
 
             if (progressiveStreams.isEmpty()) {
