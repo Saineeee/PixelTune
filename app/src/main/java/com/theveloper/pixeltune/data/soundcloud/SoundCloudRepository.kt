@@ -65,7 +65,7 @@ class SoundCloudRepository @Inject constructor() {
     suspend fun searchSoundCloud(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): List<SearchResultItem> = withContext(Dispatchers.IO) {
         try {
             val searchFilter = when (filter) {
-                SearchFilterType.ALL -> ""
+                SearchFilterType.ALL -> "all"
                 SearchFilterType.SONGS -> "tracks"
                 SearchFilterType.ALBUMS -> "playlists"
                 SearchFilterType.ARTISTS -> "users"

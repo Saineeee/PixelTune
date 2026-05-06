@@ -1,20 +1,21 @@
 package com.theveloper.pixeltune.data.soundcloud
 
 import android.net.Uri
-import com.theveloper.pixeltune.data.stream.CloudStreamSecurity
-import io.ktor.http.ContentType
-import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
-import io.ktor.server.engine.*
-import io.ktor.server.cio.*
+import io.ktor.server.engine.ApplicationEngine
+import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytesWriter
-import io.ktor.server.response.header
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import io.ktor.server.cio.CIO
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
 import io.ktor.utils.io.writeFully
-import kotlinx.coroutines.CoroutineScope
+import io.ktor.server.response.header
+import com.theveloper.pixeltune.data.stream.CloudStreamSecurity
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -85,10 +86,8 @@ class SoundCloudStreamProxy @Inject constructor(
     fun resolveSoundCloudUri(uriString: String): String? {
         val uri = Uri.parse(uriString)
         if (uri.scheme != "soundcloud") return null
-        // The host would be the encoded soundcloud url, but we might just need to verify
-        // that it looks like soundcloud. For our proxy, the `contentUriString` will actually
-        // be `http://127.0.0.1...`, so this resolver is mostly for custom scheme handling if any.
-        return null
+        val encodedUrl = uri.host ?: uri.authority ?: return null
+        return getProxyUrl(encodedUrl)
     }
 
     fun start() {
