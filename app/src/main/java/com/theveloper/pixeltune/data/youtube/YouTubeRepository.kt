@@ -19,6 +19,9 @@ import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.theveloper.pixeltune.data.preferences.StreamingQuality
+import kotlinx.coroutines.delay
+import org.schabi.newpipe.extractor.exceptions.ContentNotAvailableException
+import org.schabi.newpipe.extractor.exceptions.ExtractionException
 import kotlin.math.abs
 
 @Singleton
@@ -29,42 +32,115 @@ class YouTubeRepository @Inject constructor() {
      */
     suspend fun getAudioStreamUrl(youtubeId: String, quality: StreamingQuality = StreamingQuality.NORMAL): Result<String> = withContext(Dispatchers.IO) {
         try {
-            val url = "https://www.youtube.com/watch?v=$youtubeId"
-            Timber.d("Extracting YouTube streams for: $url")
+            val primaryUrl = "https://www.youtube.com/watch?v=$youtubeId"
+            Timber.d("Extracting YouTube streams for: $primaryUrl")
 
-            // Get the stream extractor for YouTube
-            val extractor = ServiceList.YouTube.getStreamExtractor(url)
+            val maxRetries = 2
+            val retryDelayMs = 500L
 
-            // Fetch page and extract streams
-            extractor.fetchPage()
-
-            val audioStreams = extractor.audioStreams
-            if (audioStreams.isNullOrEmpty()) {
-                return@withContext Result.failure(Exception("No audio streams found for video $youtubeId"))
+            val primaryAttempt = attemptExtractWithRetries(primaryUrl, youtubeId, quality, maxRetries, retryDelayMs)
+            if (primaryAttempt.isSuccess) {
+                return@withContext primaryAttempt
             }
 
-            // Only use progressive HTTP streams that provide a direct URL.
-            // DASH streams return manifest XML in getContent(), which cannot be
-            // proxied as a simple byte stream to ExoPlayer.
-            val progressiveStreams = audioStreams.filter { stream ->
-                stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && stream.isUrl
-            }
+            val firstFailure = primaryAttempt.exceptionOrNull()
+            Timber.w(firstFailure, "Primary extraction failed for $youtubeId. Trying fallback extractor request variant")
 
-            if (progressiveStreams.isEmpty()) {
-                Timber.w("No progressive audio streams for $youtubeId. DeliveryMethods: ${audioStreams.map { it.deliveryMethod }}")
-                return@withContext Result.failure(Exception("No progressive audio streams found for video $youtubeId"))
-            }
+            // Fallback extractor request variant: alternate canonical URL style.
+            val fallbackUrl = "https://youtu.be/$youtubeId"
+            val fallbackAttempt = attemptExtractWithRetries(fallbackUrl, youtubeId, quality, maxRetries = 1, retryDelayMs = retryDelayMs)
 
-            val bestStream = findBestAudioStream(progressiveStreams, quality)
-
-            if (bestStream != null) {
-                Result.success(bestStream.content)
+            if (fallbackAttempt.isSuccess) {
+                Timber.d("Fallback extractor request succeeded for $youtubeId")
+                fallbackAttempt
             } else {
-                Result.failure(Exception("No suitable audio stream format found for video $youtubeId"))
+                val fallbackFailure = fallbackAttempt.exceptionOrNull()
+                Timber.e(fallbackFailure, "Fallback extractor request failed for $youtubeId")
+                Result.failure(
+                    Exception(
+                        "Track unavailable right now. Please retry.",
+                        fallbackFailure ?: firstFailure
+                    )
+                )
             }
         } catch (e: Exception) {
             Timber.e(e, "Error extracting YouTube stream for $youtubeId")
-            Result.failure(e)
+            Result.failure(Exception("Track unavailable right now. Please retry.", e))
+        }
+    }
+
+    private suspend fun attemptExtractWithRetries(
+        requestUrl: String,
+        youtubeId: String,
+        quality: StreamingQuality,
+        maxRetries: Int,
+        retryDelayMs: Long
+    ): Result<String> {
+        var lastError: Exception? = null
+
+        repeat(maxRetries + 1) { attempt ->
+            try {
+                val extractor = ServiceList.YouTube.getStreamExtractor(requestUrl)
+                extractor.fetchPage()
+                return selectBestAudioStream(extractor.audioStreams, youtubeId, quality)
+            } catch (e: ContentNotAvailableException) {
+                lastError = Exception("Track unavailable for playback.", e)
+                Timber.w(e, "Content unavailable for $youtubeId (attempt ${attempt + 1}/${maxRetries + 1})")
+                return@repeat
+            } catch (e: ExtractionException) {
+                lastError = e
+                val transient = isTransientPlayabilityFailure(e)
+                Timber.w(e, "Extractor failure for $youtubeId (attempt ${attempt + 1}/${maxRetries + 1}, transient=$transient)")
+
+                if (!transient) return Result.failure(Exception("Track unavailable for playback.", e))
+            } catch (e: Exception) {
+                lastError = e
+                val transient = isTransientPlayabilityFailure(e)
+                Timber.w(e, "Unexpected extractor failure for $youtubeId (attempt ${attempt + 1}/${maxRetries + 1}, transient=$transient)")
+
+                if (!transient) return Result.failure(Exception("Track unavailable for playback.", e))
+            }
+
+            if (attempt < maxRetries) {
+                Timber.d("Retrying extraction for $youtubeId in ${retryDelayMs}ms (attempt ${attempt + 2}/${maxRetries + 1})")
+                delay(retryDelayMs)
+            }
+        }
+
+        return Result.failure(Exception("Track unavailable right now. Please retry.", lastError))
+    }
+
+    private fun isTransientPlayabilityFailure(error: Throwable): Boolean {
+        val message = error.message?.lowercase() ?: return false
+        return message.contains("the page needs to be reloaded") ||
+            message.contains("playability") ||
+            message.contains("temporarily unavailable") ||
+            message.contains("try again")
+    }
+
+    private fun selectBestAudioStream(
+        audioStreams: List<AudioStream>?,
+        youtubeId: String,
+        quality: StreamingQuality
+    ): Result<String> {
+        if (audioStreams.isNullOrEmpty()) {
+            return Result.failure(Exception("No audio streams found for video $youtubeId"))
+        }
+
+        val progressiveStreams = audioStreams.filter { stream ->
+            stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && stream.isUrl
+        }
+
+        if (progressiveStreams.isEmpty()) {
+            Timber.w("No progressive audio streams for $youtubeId. DeliveryMethods: ${audioStreams.map { it.deliveryMethod }}")
+            return Result.failure(Exception("No progressive audio streams found for video $youtubeId"))
+        }
+
+        val bestStream = findBestAudioStream(progressiveStreams, quality)
+        return if (bestStream != null) {
+            Result.success(bestStream.content)
+        } else {
+            Result.failure(Exception("No suitable audio stream format found for video $youtubeId"))
         }
     }
 
