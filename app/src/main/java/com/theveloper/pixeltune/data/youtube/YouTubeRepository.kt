@@ -27,44 +27,59 @@ class YouTubeRepository @Inject constructor() {
      * Extracts the best available audio stream URL for a given YouTube video ID.
      */
     suspend fun getAudioStreamUrl(youtubeId: String, quality: StreamingQuality = StreamingQuality.NORMAL): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            val url = "https://www.youtube.com/watch?v=$youtubeId"
-            Timber.d("Extracting YouTube streams for: $url")
+        val maxRetries = 3
+        var currentAttempt = 0
+        var lastException: Exception? = null
 
-            // Get the stream extractor for YouTube
-            val extractor = ServiceList.YouTube.getStreamExtractor(url)
+        while (currentAttempt < maxRetries) {
+            try {
+                val url = "https://www.youtube.com/watch?v=$youtubeId"
+                Timber.d("Extracting YouTube streams for: $url (Attempt ${currentAttempt + 1})")
 
-            // Fetch page and extract streams
-            extractor.fetchPage()
+                // Get the stream extractor for YouTube
+                val extractor = ServiceList.YouTube.getStreamExtractor(url)
 
-            val audioStreams = extractor.audioStreams
-            if (audioStreams.isNullOrEmpty()) {
-                return@withContext Result.failure(Exception("No audio streams found for video $youtubeId"))
+                // Fetch page and extract streams
+                extractor.fetchPage()
+
+                val audioStreams = extractor.audioStreams
+                if (audioStreams.isNullOrEmpty()) {
+                    return@withContext Result.failure(Exception("No audio streams found for video $youtubeId"))
+                }
+
+                // Prefer direct progressive streams, but fall back to other direct audio URLs.
+                // Some videos no longer expose progressive variants, which previously caused
+                // playback to stay stuck at 00:00 when no stream URL could be resolved.
+                val directAudioStreams = audioStreams.filter { it.isUrl }
+                if (directAudioStreams.isEmpty()) {
+                    Timber.w("No direct audio streams for $youtubeId. DeliveryMethods: ${audioStreams.map { it.deliveryMethod }}")
+                    return@withContext Result.failure(Exception("No direct audio streams found for video $youtubeId"))
+                }
+
+                val progressiveStreams = directAudioStreams.filter { it.deliveryMethod.name == "PROGRESSIVE_HTTP" }
+                val candidateStreams = if (progressiveStreams.isNotEmpty()) progressiveStreams else directAudioStreams
+
+                val bestStream = findBestAudioStream(candidateStreams, quality)
+
+                if (bestStream != null) {
+                    return@withContext Result.success(bestStream.content)
+                } else {
+                    return@withContext Result.failure(Exception("No suitable audio stream format found for video $youtubeId"))
+                }
+            } catch (e: org.schabi.newpipe.extractor.exceptions.ContentNotAvailableException) {
+                Timber.w(e, "Content not available for $youtubeId, might need reload. Attempt ${currentAttempt + 1}/$maxRetries")
+                lastException = e
+                currentAttempt++
+                if (currentAttempt < maxRetries) {
+                    kotlinx.coroutines.delay(1000L * currentAttempt) // Exponential backoff 1s, 2s
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Error extracting YouTube stream for $youtubeId")
+                return@withContext Result.failure(e)
             }
-
-            // Prefer direct progressive streams, but fall back to other direct audio URLs.
-            // Some videos no longer expose progressive variants, which previously caused
-            // playback to stay stuck at 00:00 when no stream URL could be resolved.
-            val directAudioStreams = audioStreams.filter { it.isUrl }
-            if (directAudioStreams.isEmpty()) {
-                Timber.w("No direct audio streams for $youtubeId. DeliveryMethods: ${audioStreams.map { it.deliveryMethod }}")
-                return@withContext Result.failure(Exception("No direct audio streams found for video $youtubeId"))
-            }
-
-            val progressiveStreams = directAudioStreams.filter { it.deliveryMethod.name == "PROGRESSIVE_HTTP" }
-            val candidateStreams = if (progressiveStreams.isNotEmpty()) progressiveStreams else directAudioStreams
-
-            val bestStream = findBestAudioStream(candidateStreams, quality)
-
-            if (bestStream != null) {
-                Result.success(bestStream.content)
-            } else {
-                Result.failure(Exception("No suitable audio stream format found for video $youtubeId"))
-            }
-        } catch (e: Exception) {
-            Timber.e(e, "Error extracting YouTube stream for $youtubeId")
-            Result.failure(e)
         }
+
+        Result.failure(lastException ?: Exception("Failed to get audio stream after $maxRetries attempts"))
     }
 
     private fun findBestAudioStream(streams: List<AudioStream>, quality: StreamingQuality): AudioStream? {
@@ -197,49 +212,64 @@ class YouTubeRepository @Inject constructor() {
         currentQueueIds: List<String>,
         proxyUrlProvider: (String) -> String
     ): Result<Song> = withContext(Dispatchers.IO) {
-        try {
-            val validItem = if (currentSong.youtubeId != null) {
-                val url = "https://www.youtube.com/watch?v=${currentSong.youtubeId}"
-                val extractor = ServiceList.YouTube.getStreamExtractor(url)
-                extractor.fetchPage()
-                extractor.relatedItems?.items?.filterIsInstance<StreamInfoItem>()?.firstOrNull { item ->
-                    val videoId = extractVideoId(item.url)
-                    videoId != null && !currentQueueIds.contains(videoId)
-                }
-            } else {
-                val query = "${currentSong.artist} ${currentSong.title} mix"
-                val extractor = ServiceList.YouTube.getSearchExtractor(query)
-                extractor.fetchPage()
-                extractor.initialPage.items.filterIsInstance<StreamInfoItem>().firstOrNull { item ->
-                    val videoId = extractVideoId(item.url)
-                    videoId != null && !currentQueueIds.contains(videoId)
-                }
-            }
+        val maxRetries = 3
+        var currentAttempt = 0
+        var lastException: Exception? = null
 
-            if (validItem != null) {
-                val youtubeId = extractVideoId(validItem.url)!!
-                val durationMs = if (validItem.duration > 0) validItem.duration * 1000L else 0L
-                val song = Song.emptySong().copy(
-                    id = youtubeId,
-                    title = validItem.name ?: "Unknown",
-                    artist = validItem.uploaderName ?: "Unknown",
-                    artistId = -1L,
-                    album = "",
-                    albumId = -1L,
-                    path = validItem.url,
-                    contentUriString = proxyUrlProvider(youtubeId),
-                    albumArtUriString = validItem.thumbnails.firstOrNull()?.url,
-                    duration = durationMs,
-                    mimeType = "audio/mp4",
-                    youtubeId = youtubeId
-                )
-                Result.success(song)
-            } else {
-                Result.failure(Exception("No suitable autoplay recommendation found."))
+        while (currentAttempt < maxRetries) {
+            try {
+                val validItem = if (currentSong.youtubeId != null) {
+                    val url = "https://www.youtube.com/watch?v=${currentSong.youtubeId}"
+                    val extractor = ServiceList.YouTube.getStreamExtractor(url)
+                    extractor.fetchPage()
+                    extractor.relatedItems?.items?.filterIsInstance<StreamInfoItem>()?.firstOrNull { item ->
+                        val videoId = extractVideoId(item.url)
+                        videoId != null && !currentQueueIds.contains(videoId)
+                    }
+                } else {
+                    val query = "${currentSong.artist} ${currentSong.title} mix"
+                    val extractor = ServiceList.YouTube.getSearchExtractor(query)
+                    extractor.fetchPage()
+                    extractor.initialPage.items.filterIsInstance<StreamInfoItem>().firstOrNull { item ->
+                        val videoId = extractVideoId(item.url)
+                        videoId != null && !currentQueueIds.contains(videoId)
+                    }
+                }
+
+                if (validItem != null) {
+                    val youtubeId = extractVideoId(validItem.url)!!
+                    val durationMs = if (validItem.duration > 0) validItem.duration * 1000L else 0L
+                    val song = Song.emptySong().copy(
+                        id = youtubeId,
+                        title = validItem.name ?: "Unknown",
+                        artist = validItem.uploaderName ?: "Unknown",
+                        artistId = -1L,
+                        album = "",
+                        albumId = -1L,
+                        path = validItem.url,
+                        contentUriString = proxyUrlProvider(youtubeId),
+                        albumArtUriString = validItem.thumbnails.firstOrNull()?.url,
+                        duration = durationMs,
+                        mimeType = "audio/mp4",
+                        youtubeId = youtubeId
+                    )
+                    return@withContext Result.success(song)
+                } else {
+                    return@withContext Result.failure(Exception("No suitable autoplay recommendation found."))
+                }
+            } catch (e: org.schabi.newpipe.extractor.exceptions.ContentNotAvailableException) {
+                Timber.w(e, "Content not available for autoplay recommendation, might need reload. Attempt ${currentAttempt + 1}/$maxRetries")
+                lastException = e
+                currentAttempt++
+                if (currentAttempt < maxRetries) {
+                    kotlinx.coroutines.delay(1000L * currentAttempt) // Exponential backoff
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Error getting autoplay recommendation")
+                return@withContext Result.failure(e)
             }
-        } catch (e: Exception) {
-            Timber.e(e, "Error getting autoplay recommendation")
-            Result.failure(e)
         }
+
+        Result.failure(lastException ?: Exception("Failed to get autoplay recommendation after $maxRetries attempts"))
     }
 }
