@@ -40,7 +40,9 @@ import javax.inject.Singleton
 import kotlin.coroutines.resume
 
 import com.theveloper.pixeltune.data.netease.NeteaseStreamProxy
+import com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy
 import com.theveloper.pixeltune.data.telegram.TelegramRepository
+import com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DataSpec
@@ -62,6 +64,8 @@ class DualPlayerEngine @Inject constructor(
     private val telegramRepository: TelegramRepository,
     private val telegramStreamProxy: com.theveloper.pixeltune.data.telegram.TelegramStreamProxy,
     private val neteaseStreamProxy: NeteaseStreamProxy,
+    private val youTubeStreamProxy: YouTubeStreamProxy,
+    private val soundCloudStreamProxy: SoundCloudStreamProxy,
     private val telegramCacheManager: com.theveloper.pixeltune.data.telegram.TelegramCacheManager,
     private val connectivityStateHolder: com.theveloper.pixeltune.presentation.viewmodel.ConnectivityStateHolder
 ) {
@@ -317,7 +321,7 @@ class DualPlayerEngine @Inject constructor(
         val resolver = object : ResolvingDataSource.Resolver {
             override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
                 val scheme = dataSpec.uri.scheme
-                if (scheme == "telegram" || scheme == "netease") {
+                if (scheme == "telegram" || scheme == "netease" || scheme == "youtube" || scheme == "soundcloud") {
                     val originalUri = dataSpec.uri.toString()
                     val resolved = resolvedUriCache[originalUri]
                     if (resolved != null) {
@@ -377,7 +381,7 @@ class DualPlayerEngine @Inject constructor(
     }
 
     /**
-     * Resolves a cloud URI (telegram:// or netease://) to a playable URI.
+     * Resolves a cloud URI (telegram://, netease://, youtube://, soundcloud://) to a playable URI.
      * Performs all network I/O and proxy readiness checks on the calling coroutine,
      * keeping ExoPlayer's playback thread free from blocking.
      *
@@ -394,6 +398,8 @@ class DualPlayerEngine @Inject constructor(
         val resolved: Uri? = when (uri.scheme) {
             "telegram" -> resolveTelegramUriAsync(uri, uriString)
             "netease" -> resolveNeteaseUriAsync(uriString)
+            "youtube" -> resolveYouTubeUriAsync(uriString)
+            "soundcloud" -> resolveSoundCloudUriAsync(uriString)
             else -> null
         }
 
@@ -474,6 +480,48 @@ class DualPlayerEngine @Inject constructor(
         return null
     }
 
+    private suspend fun resolveYouTubeUriAsync(uriString: String): Uri? {
+        Timber.tag("DualPlayerEngine").d("Async resolving YouTube URI: $uriString")
+
+        if (!youTubeStreamProxy.isReady()) {
+            Timber.tag("DualPlayerEngine").w("YouTubeStreamProxy not ready, awaiting...")
+            val proxyReady = youTubeStreamProxy.awaitReady(5_000L)
+            if (!proxyReady) {
+                Timber.tag("DualPlayerEngine").e("YouTubeStreamProxy not ready after timeout")
+                return null
+            }
+        }
+
+        val proxyUrl = youTubeStreamProxy.resolveYouTubeUri(uriString)
+        if (!proxyUrl.isNullOrBlank() && proxyUrl.startsWith("http")) {
+            return Uri.parse(proxyUrl)
+        }
+
+        Timber.tag("DualPlayerEngine").w("Failed to resolve YouTube URI: $uriString")
+        return null
+    }
+
+    private suspend fun resolveSoundCloudUriAsync(uriString: String): Uri? {
+        Timber.tag("DualPlayerEngine").d("Async resolving SoundCloud URI: $uriString")
+
+        if (!soundCloudStreamProxy.isReady()) {
+            Timber.tag("DualPlayerEngine").w("SoundCloudStreamProxy not ready, awaiting...")
+            val proxyReady = soundCloudStreamProxy.awaitReady(5_000L)
+            if (!proxyReady) {
+                Timber.tag("DualPlayerEngine").e("SoundCloudStreamProxy not ready after timeout")
+                return null
+            }
+        }
+
+        val proxyUrl = soundCloudStreamProxy.resolveSoundCloudUri(uriString)
+        if (!proxyUrl.isNullOrBlank() && proxyUrl.startsWith("http")) {
+            return Uri.parse(proxyUrl)
+        }
+
+        Timber.tag("DualPlayerEngine").w("Failed to resolve SoundCloud URI: $uriString")
+        return null
+    }
+
     /**
      * Resolves a MediaItem's cloud URI (if any) and returns a copy with the resolved URI.
      * For non-cloud URIs, returns the original MediaItem unchanged.
@@ -481,7 +529,7 @@ class DualPlayerEngine @Inject constructor(
     suspend fun resolveMediaItem(mediaItem: MediaItem): MediaItem {
         val uri = mediaItem.localConfiguration?.uri ?: return mediaItem
         val scheme = uri.scheme
-        if (scheme != "telegram" && scheme != "netease") return mediaItem
+        if (scheme != "telegram" && scheme != "netease" && scheme != "youtube" && scheme != "soundcloud") return mediaItem
 
         val resolvedUri = resolveCloudUri(uri)
         if (resolvedUri == uri) return mediaItem // Resolution failed or not needed

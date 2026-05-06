@@ -118,10 +118,16 @@ class SearchStateHolder @Inject constructor(
                         val resultsList = withContext(Dispatchers.IO) {
                             if (request.isOnline) {
                                 if (_currentProvider.value == OnlineProvider.YOUTUBE) {
+                                    if (!youTubeStreamProxy.isReady()) {
+                                        youTubeStreamProxy.awaitReady()
+                                    }
                                     youTubeRepository.searchYouTube(normalizedQuery, currentFilter) { youtubeId ->
                                         youTubeStreamProxy.getProxyUrl(youtubeId)
                                     }
                                 } else {
+                                    if (!soundCloudStreamProxy.isReady()) {
+                                        soundCloudStreamProxy.awaitReady()
+                                    }
                                     soundCloudRepository.searchSoundCloud(normalizedQuery, currentFilter) { encodedUrl ->
                                         soundCloudStreamProxy.getProxyUrl(encodedUrl)
                                     }

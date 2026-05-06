@@ -11,7 +11,6 @@ import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.search.SearchExtractor
 import org.schabi.newpipe.extractor.stream.AudioStream
-import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.channel.ChannelInfoItem
@@ -43,19 +42,19 @@ class YouTubeRepository @Inject constructor() {
                 return@withContext Result.failure(Exception("No audio streams found for video $youtubeId"))
             }
 
-            // Only use progressive HTTP streams that provide a direct URL.
-            // DASH streams return manifest XML in getContent(), which cannot be
-            // proxied as a simple byte stream to ExoPlayer.
-            val progressiveStreams = audioStreams.filter { stream ->
-                stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && stream.isUrl
+            // Prefer direct progressive streams, but fall back to other direct audio URLs.
+            // Some videos no longer expose progressive variants, which previously caused
+            // playback to stay stuck at 00:00 when no stream URL could be resolved.
+            val directAudioStreams = audioStreams.filter { it.isUrl }
+            if (directAudioStreams.isEmpty()) {
+                Timber.w("No direct audio streams for $youtubeId. DeliveryMethods: ${audioStreams.map { it.deliveryMethod }}")
+                return@withContext Result.failure(Exception("No direct audio streams found for video $youtubeId"))
             }
 
-            if (progressiveStreams.isEmpty()) {
-                Timber.w("No progressive audio streams for $youtubeId. DeliveryMethods: ${audioStreams.map { it.deliveryMethod }}")
-                return@withContext Result.failure(Exception("No progressive audio streams found for video $youtubeId"))
-            }
+            val progressiveStreams = directAudioStreams.filter { it.deliveryMethod.name == "PROGRESSIVE_HTTP" }
+            val candidateStreams = if (progressiveStreams.isNotEmpty()) progressiveStreams else directAudioStreams
 
-            val bestStream = findBestAudioStream(progressiveStreams, quality)
+            val bestStream = findBestAudioStream(candidateStreams, quality)
 
             if (bestStream != null) {
                 Result.success(bestStream.content)

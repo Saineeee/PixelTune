@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.search.SearchExtractor
+import org.schabi.newpipe.extractor.InfoItem
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
@@ -64,25 +65,27 @@ class SoundCloudRepository @Inject constructor() {
 
     suspend fun searchSoundCloud(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): List<SearchResultItem> = withContext(Dispatchers.IO) {
         try {
-            val searchFilter = when (filter) {
-                SearchFilterType.ALL -> ""
-                SearchFilterType.SONGS -> "tracks"
-                SearchFilterType.ALBUMS -> "playlists"
-                SearchFilterType.ARTISTS -> "users"
-                SearchFilterType.PLAYLISTS -> "playlists"
-            }
-
-            val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
-                ServiceList.SoundCloud.getSearchExtractor(query, listOf(searchFilter), "")
-            } else {
-                ServiceList.SoundCloud.getSearchExtractor(query)
-            }
+            // SoundCloud extractor filters are brittle across extractor versions.
+            // Fetch broad results and apply app-level filtering by item type below.
+            val extractor: SearchExtractor = ServiceList.SoundCloud.getSearchExtractor(query)
 
             extractor.fetchPage()
 
-            val results = mutableListOf<SearchResultItem>()
+            val items = mutableListOf<InfoItem>().apply {
+                val firstPage = extractor.initialPage
+                addAll(firstPage.items)
+                var nextPage = firstPage.nextPage
+                var pageCount = 0
+                while (isEmpty() && nextPage != null && pageCount < 2) {
+                    val page = extractor.getPage(nextPage)
+                    addAll(page.items)
+                    nextPage = page.nextPage
+                    pageCount++
+                }
+            }
 
-            extractor.initialPage.items.forEach { item ->
+            val results = mutableListOf<SearchResultItem>()
+            items.forEach { item ->
                 when (item) {
                     is StreamInfoItem -> {
                         if (filter == SearchFilterType.ALL || filter == SearchFilterType.SONGS) {
@@ -137,13 +140,14 @@ class SoundCloudRepository @Inject constructor() {
                             val artist = Artist(
                                 id = item.url.hashCode().toLong(),
                                 name = item.name ?: "Unknown Artist",
-                                songCount = item.subscriberCount.toInt(),
+                                songCount = item.subscriberCount.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(),
                             )
                             results.add(SearchResultItem.ArtistItem(artist))
                         }
                     }
                 }
             }
+            Timber.d("SoundCloud search query='%s' filter=%s items=%d mapped=%d", query, filter, items.size, results.size)
             results
         } catch (e: Exception) {
             Timber.e(e, "Error searching SoundCloud for query: $query")
