@@ -123,7 +123,7 @@ class SoundCloudStreamProxy @Inject constructor(
     private fun createServer(port: Int): ApplicationEngine {
         return embeddedServer(CIO, host = "127.0.0.1", port = port) {
             routing {
-                get("/soundcloud/{url}") {
+                get("/soundcloud/{url...}") {
                     val encodedUrl = call.parameters["url"]
                     if (encodedUrl == null) {
                         call.respond(HttpStatusCode.BadRequest, "Missing SoundCloud URL")
