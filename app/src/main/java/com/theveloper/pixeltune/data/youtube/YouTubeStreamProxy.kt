@@ -40,6 +40,8 @@ class YouTubeStreamProxy @Inject constructor(
     private companion object {
         val ALLOWED_REMOTE_HOST_SUFFIXES = setOf(
             "googlevideo.com",
+            "googlevideo.com.cn",
+            "video.google.com",
             "youtube.com",
             "ytimg.com"
         )
@@ -164,6 +166,7 @@ class YouTubeStreamProxy @Inject constructor(
                                 allowHttpForAllowedHosts = true
                             )
                         ) {
+                            Timber.w("Rejected upstream stream URL for $youtubeId: $streamUrl")
                             call.respond(HttpStatusCode.BadGateway, "Rejected upstream stream URL")
                             return@get
                         }
@@ -199,7 +202,8 @@ class YouTubeStreamProxy @Inject constructor(
                             }
 
                             val contentTypeHeader = upstream.header("Content-Type")
-                            if (!CloudStreamSecurity.isSupportedAudioContentType(contentTypeHeader)) {
+                            Timber.d("YouTubeStreamProxy content type: $contentTypeHeader")
+                            if (!CloudStreamSecurity.isSupportedAudioContentType(contentTypeHeader) && contentTypeHeader?.contains("application/octet-stream") != true && contentTypeHeader?.contains("video/") != true) {
                                 call.respond(HttpStatusCode.BadGateway, "Unsupported stream content type")
                                 return@get
                             }
