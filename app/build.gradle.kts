@@ -343,7 +343,7 @@ dependencies {
     implementation(libs.tdlib)
 
     // YouTube / NewPipe
-    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.24.4")
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.1")
     implementation("org.mozilla:rhino:1.7.15")
 
     // Google Sign-In via Credential Manager (for Google Drive)
