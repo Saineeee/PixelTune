@@ -35,7 +35,20 @@ class YouTubeRepository @Inject constructor() {
             val extractor = ServiceList.YouTube.getStreamExtractor(url)
 
             // Fetch page and extract streams
-            extractor.fetchPage()
+            for (i in 0 until 3) {
+                try {
+                    extractor.fetchPage()
+                    break
+                } catch (e: Exception) {
+                    if (e.message?.contains("The page needs to be reloaded") == true && i < 2) {
+                        Timber.w("YouTube page needs reload, retrying... (${i + 1}/3)")
+                        kotlinx.coroutines.delay(1000)
+                    } else {
+                        throw e
+                    }
+                }
+            }
+
 
             val audioStreams = extractor.audioStreams
             if (audioStreams.isNullOrEmpty()) {
@@ -101,7 +114,19 @@ class YouTubeRepository @Inject constructor() {
                 ServiceList.YouTube.getSearchExtractor(query)
             }
 
-            extractor.fetchPage()
+            for (i in 0 until 3) {
+                try {
+                    extractor.fetchPage()
+                    break
+                } catch (e: Exception) {
+                    if (e.message?.contains("The page needs to be reloaded") == true && i < 2) {
+                        Timber.w("YouTube page needs reload, retrying... (${i + 1}/3)")
+                        kotlinx.coroutines.delay(1000)
+                    } else {
+                        throw e
+                    }
+                }
+            }
 
             val results = mutableListOf<SearchResultItem>()
 
@@ -201,7 +226,19 @@ class YouTubeRepository @Inject constructor() {
             val validItem = if (currentSong.youtubeId != null) {
                 val url = "https://www.youtube.com/watch?v=${currentSong.youtubeId}"
                 val extractor = ServiceList.YouTube.getStreamExtractor(url)
-                extractor.fetchPage()
+                    for (i in 0 until 3) {
+                    try {
+                        extractor.fetchPage()
+                            break
+                    } catch (e: Exception) {
+                        if (e.message?.contains("The page needs to be reloaded") == true && i < 2) {
+                            Timber.w("YouTube page needs reload, retrying... (${i + 1}/3)")
+                            kotlinx.coroutines.delay(1000)
+                        } else {
+                            throw e
+                        }
+                    }
+                }
                 extractor.relatedItems?.items?.filterIsInstance<StreamInfoItem>()?.firstOrNull { item ->
                     val videoId = extractVideoId(item.url)
                     videoId != null && !currentQueueIds.contains(videoId)
@@ -209,7 +246,19 @@ class YouTubeRepository @Inject constructor() {
             } else {
                 val query = "${currentSong.artist} ${currentSong.title} mix"
                 val extractor = ServiceList.YouTube.getSearchExtractor(query)
-                extractor.fetchPage()
+                    for (i in 0 until 3) {
+                    try {
+                        extractor.fetchPage()
+                            break
+                    } catch (e: Exception) {
+                        if (e.message?.contains("The page needs to be reloaded") == true && i < 2) {
+                            Timber.w("YouTube page needs reload, retrying... (${i + 1}/3)")
+                            kotlinx.coroutines.delay(1000)
+                        } else {
+                            throw e
+                        }
+                    }
+                }
                 extractor.initialPage.items.filterIsInstance<StreamInfoItem>().firstOrNull { item ->
                     val videoId = extractVideoId(item.url)
                     videoId != null && !currentQueueIds.contains(videoId)
