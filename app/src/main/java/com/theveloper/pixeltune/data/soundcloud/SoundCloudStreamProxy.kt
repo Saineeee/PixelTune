@@ -131,7 +131,13 @@ class SoundCloudStreamProxy @Inject constructor(
                     }
 
                     try {
-                        val soundCloudUrl = URLDecoder.decode(encodedUrl, "UTF-8")
+                        // Ktor usually URL-decodes path parameters automatically. 
+                        // If it's already decoded, avoid double-decoding which turns '+' into spaces.
+                        val soundCloudUrl = if (encodedUrl.startsWith("http://") || encodedUrl.startsWith("https://")) {
+                            encodedUrl
+                        } else {
+                            URLDecoder.decode(encodedUrl, "UTF-8")
+                        }
 
                         val rangeValidation = CloudStreamSecurity.validateRangeHeader(call.request.headers["Range"])
                         if (!rangeValidation.isValid) {
