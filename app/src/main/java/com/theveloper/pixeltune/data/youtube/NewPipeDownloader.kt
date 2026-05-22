@@ -39,6 +39,9 @@ class NewPipeDownloader @Inject constructor(
         headers.forEach { (key, values) ->
             if (key.equals("Content-Type", ignoreCase = true)) return@forEach
             
+            // Skip Accept-Encoding to let OkHttp handle transparent decompression (fixes SoundCloud search)
+            if (key.equals("Accept-Encoding", ignoreCase = true)) return@forEach 
+            
             if (values.size == 1) {
                 requestBuilder.header(key, values[0])
             } else {
