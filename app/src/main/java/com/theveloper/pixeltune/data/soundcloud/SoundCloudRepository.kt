@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.search.SearchExtractor
 import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.channel.ChannelInfoItem
@@ -41,12 +42,23 @@ class SoundCloudRepository @Inject constructor() {
                 return@withContext Result.failure(Exception("No audio streams found for URL $soundCloudUrl"))
             }
 
+            // Filter out HLS/DASH streams. The local proxy streams data as raw audio bytes,
+            // so we must strictly require PROGRESSIVE_HTTP streams (like MP3 files). 
+            // If we proxy an HLS manifest as raw audio, ExoPlayer receives text bytes and fails silently at 00:00.
+            val progressiveStreams = audioStreams.filter { 
+                it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP 
+            }
+
+            if (progressiveStreams.isEmpty()) {
+                return@withContext Result.failure(Exception("No progressive audio streams found for URL $soundCloudUrl"))
+            }
+
             // Pick the best stream by bitrate based on quality
             val bestStream = when (quality) {
-                StreamingQuality.HIGH_RES -> audioStreams.maxByOrNull { it.bitrate }
-                StreamingQuality.DATA_SAVER -> audioStreams.minByOrNull { it.bitrate }
+                StreamingQuality.HIGH_RES -> progressiveStreams.maxByOrNull { it.bitrate }
+                StreamingQuality.DATA_SAVER -> progressiveStreams.minByOrNull { it.bitrate }
                 StreamingQuality.NORMAL -> {
-                    val sortedStreams = audioStreams.sortedBy { it.bitrate }
+                    val sortedStreams = progressiveStreams.sortedBy { it.bitrate }
                     sortedStreams.minByOrNull { kotlin.math.abs(it.bitrate - 128) } ?: sortedStreams.getOrNull(sortedStreams.size / 2)
                 }
             }
