@@ -43,11 +43,12 @@ class YouTubeRepository @Inject constructor() {
                 return@withContext Result.failure(Exception("No audio streams found for video $youtubeId"))
             }
 
-            // Only use progressive HTTP streams that provide a direct URL.
+            // Only use streams that provide a direct URL.
             // DASH streams return manifest XML in getContent(), which cannot be
-            // proxied as a simple byte stream to ExoPlayer.
+            // proxied as a simple byte stream to ExoPlayer. We removed the PROGRESSIVE_HTTP
+            // check because ExoPlayer natively handles DASH audio segment URLs perfectly fine.
             val progressiveStreams = audioStreams.filter { stream ->
-                stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && stream.isUrl
+                stream.isUrl
             }
 
             if (progressiveStreams.isEmpty()) {
