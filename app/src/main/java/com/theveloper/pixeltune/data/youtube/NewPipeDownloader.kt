@@ -19,8 +19,7 @@ class NewPipeDownloader @Inject constructor(
         val headers = request.headers()
         val dataToSend = request.dataToSend()
 
-        val requestBuilder = Request.Builder()
-            .url(url)
+        val requestBuilder = Request.Builder().url(url)
 
         val contentTypeHeader = headers.entries.find { it.key.equals("Content-Type", ignoreCase = true) }?.value?.firstOrNull()
         val mediaType = contentTypeHeader?.toMediaTypeOrNull()
@@ -38,10 +37,7 @@ class NewPipeDownloader @Inject constructor(
 
         headers.forEach { (key, values) ->
             if (key.equals("Content-Type", ignoreCase = true)) return@forEach
-            
-            // Skip Accept-Encoding to let OkHttp handle transparent decompression (fixes SoundCloud search)
-            if (key.equals("Accept-Encoding", ignoreCase = true)) return@forEach 
-            
+            // We pass all headers (including Accept-Encoding) exactly as NewPipe requests.
             if (values.size == 1) {
                 requestBuilder.header(key, values[0])
             } else {
@@ -54,17 +50,20 @@ class NewPipeDownloader @Inject constructor(
         val okHttpRequest = requestBuilder.build()
         val response = client.newCall(okHttpRequest).execute()
 
-        val responseBody = response.body?.string() ?: ""
+        // FIX: Fetch raw bytes! Do not use .string() as it corrupts GZIP and Protobuf binary data!
+        val responseBytes = response.body?.bytes() ?: ByteArray(0)
+        
         val responseHeaders = mutableMapOf<String, List<String>>()
         response.headers.names().forEach { name ->
             responseHeaders[name] = response.headers.values(name)
         }
 
+        // FIX: Use the byte[] constructor so NewPipe can safely decompress GZIP or parse Protobuf
         return ExtractorResponse(
             response.code,
             response.message,
             responseHeaders,
-            responseBody,
+            responseBytes,
             response.request.url.toString()
         )
     }
