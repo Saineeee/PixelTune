@@ -19,8 +19,7 @@ class NewPipeDownloader @Inject constructor(
         val headers = request.headers()
         val dataToSend = request.dataToSend()
 
-        val requestBuilder = Request.Builder()
-            .url(url)
+        val requestBuilder = Request.Builder().url(url)
 
         val contentTypeHeader = headers.entries.find { it.key.equals("Content-Type", ignoreCase = true) }?.value?.firstOrNull()
         val mediaType = contentTypeHeader?.toMediaTypeOrNull()
@@ -39,6 +38,12 @@ class NewPipeDownloader @Inject constructor(
         headers.forEach { (key, values) ->
             if (key.equals("Content-Type", ignoreCase = true)) return@forEach
             
+            // CRITICAL SOUNDCLOUD FIX: We MUST filter out Accept-Encoding.
+            // When we let OkHttp handle this internally, it will perform transparent
+            // GZIP decompression for us. This provides NewPipe with the uncompressed HTML 
+            // text it needs to extract the SoundCloud client_id.
+            if (key.equals("Accept-Encoding", ignoreCase = true)) return@forEach
+            
             if (values.size == 1) {
                 requestBuilder.header(key, values[0])
             } else {
@@ -51,17 +56,23 @@ class NewPipeDownloader @Inject constructor(
         val okHttpRequest = requestBuilder.build()
         val response = client.newCall(okHttpRequest).execute()
 
-        val responseBody = response.body?.string() ?: ""
+        // CRITICAL YOUTUBE FIX: Fetch raw bytes! Do not use .string()!
+        // Because we bypassed Accept-Encoding above, OkHttp has already transparently 
+        // decompressed the stream. Returning .bytes() safely supports both text 
+        // (SoundCloud HTML/JSON) and binary formats (YouTube Protobufs).
+        val responseBytes = response.body?.bytes() ?: ByteArray(0)
+        
         val responseHeaders = mutableMapOf<String, List<String>>()
         response.headers.names().forEach { name ->
             responseHeaders[name] = response.headers.values(name)
         }
 
+        // Pass the raw byte[] so NewPipe isn't fed corrupted UTF-8 string data
         return ExtractorResponse(
             response.code,
             response.message,
             responseHeaders,
-            responseBody,
+            responseBytes,
             response.request.url.toString()
         )
     }
