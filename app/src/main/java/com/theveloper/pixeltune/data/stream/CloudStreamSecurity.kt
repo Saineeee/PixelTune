@@ -27,7 +27,16 @@ object CloudStreamSecurity {
         "audio/mp4",
         "video/webm",
         "audio/webm",
-        "application/vnd.yt-ump"
+        "application/vnd.yt-ump",
+        // DASH manifest content types — returned by googlevideo.com when the
+        // stream URL is a DASH MPD manifest URL (used as a fallback when
+        // NewPipe's audioStreams list is empty but getDashMpdUrl() returns
+        // a valid URL).
+        "application/dash+xml",
+        "application/x-mpegurl",
+        "application/vnd.apple.mpegurl",
+        "audio/mpegurl",
+        "text/xml"
     )
 
     data class RangeHeaderValidation(
