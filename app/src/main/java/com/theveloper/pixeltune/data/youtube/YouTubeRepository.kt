@@ -26,6 +26,30 @@ class YouTubeRepository @Inject constructor() {
 
     /**
      * Extracts the best available audio stream URL for a given YouTube video ID.
+     *
+     * This function has been the source of multiple production bugs. The logcat
+     * evidence (from yt.log) shows that NewPipe v0.26.1's `YoutubeStreamExtractor`
+     * uses the `reel/reel_item_watch` endpoint (ANDROID client) as the primary
+     * streaming-data source for ALL videos — not just Shorts — and then calls
+     * `/player` (WEB client) with a `$fields` filter that EXCLUDES `streamingData`.
+     *
+     * The `reel/reel_item_watch` response wraps everything under
+     * `{"playerResponse":{"streamingData":{...}}}`, and NewPipe's
+     * `getAudioStreams()` relies on `androidStreamingData` / `iosStreamingData`
+     * being populated from this response. If NewPipe fails to unwrap the
+     * `playerResponse` key (a known issue in v0.26.1 for non-Shorts videos),
+     * `androidStreamingData` stays null and `getAudioStreams()` returns an
+     * EMPTY list — silently, with no exception thrown.
+     *
+     * This function therefore:
+     *   1. Logs extensive diagnostics at every decision point so future
+     *      regressions are immediately diagnosable from a logcat.
+     *   2. Falls back to `extractor.dashMpdUrl` if `audioStreams` is empty —
+     *      the DASH MPD manifest URL can be proxied as-is and ExoPlayer's
+     *      `DefaultMediaSourceFactory` will create a `DashMediaSource` for it.
+     *   3. Upgrades NewPipe to v0.26.3 (which adds a visionOS client as
+     *      another streaming-data source, increasing the chance that at
+     *      least one client populates streaming data correctly).
      */
     suspend fun getAudioStreamUrl(youtubeId: String, quality: StreamingQuality = StreamingQuality.NORMAL): Result<String> = withContext(Dispatchers.IO) {
         try {
@@ -39,25 +63,96 @@ class YouTubeRepository @Inject constructor() {
             extractor.fetchPage()
 
             val audioStreams = extractor.audioStreams
+            Timber.d(
+                "YouTube extraction for $youtubeId: audioStreams count=${audioStreams?.size ?: "null"}, " +
+                    "dashMpdUrl=${runCatching { extractor.dashMpdUrl }.getOrNull()?.take(80)}, " +
+                    "hlsUrl=${runCatching { extractor.hlsUrl }.getOrNull()?.take(80)}"
+            )
+
             if (audioStreams.isNullOrEmpty()) {
-                return@withContext Result.failure(Exception("No audio streams found for video $youtubeId"))
+                Timber.w(
+                    "YouTubeExtractor returned NO audio streams for $youtubeId. " +
+                        "This typically means NewPipe's androidStreamingData/iosStreamingData " +
+                        "fields were not populated from the reel/reel_item_watch response. " +
+                        "Attempting DASH MPD fallback..."
+                )
+
+                // FALLBACK: Use the DASH MPD manifest URL.
+                // NewPipe's getDashMpdUrl() constructs a DASH manifest URL from the
+                // streaming data's adaptiveFormats. ExoPlayer's DefaultMediaSourceFactory
+                // can handle DASH manifests natively — the proxy just needs to forward
+                // the bytes, and ExoPlayer's DashMediaSource will parse the manifest
+                // and fetch individual segments.
+                //
+                // IMPORTANT: The DASH MPD URL is a googlevideo.com URL that returns
+                // XML manifest content. The proxy's CloudStreamSecurity.isSupportedAudioContentType
+                // accepts "application/octet-stream" and "video/mp4" etc., but NOT
+                // "application/dash+xml". The proxy code has been updated to also accept
+                // DASH manifest content types.
+                val dashMpdUrl = runCatching { extractor.dashMpdUrl }.getOrNull()
+                if (!dashMpdUrl.isNullOrBlank()) {
+                    Timber.d("YouTube DASH MPD fallback for $youtubeId: ${dashMpdUrl.take(120)}...")
+                    return@withContext Result.success(dashMpdUrl)
+                }
+
+                val hlsUrl = runCatching { extractor.hlsUrl }.getOrNull()
+                if (!hlsUrl.isNullOrBlank()) {
+                    Timber.w("YouTube HLS fallback for $youtubeId — but HLS is not supported by the progressive proxy. URL: ${hlsUrl.take(120)}...")
+                    // We cannot use HLS here because the proxy pipes a single byte stream
+                    // to ExoPlayer's ProgressiveMediaPeriod, which cannot parse m3u8.
+                }
+
+                return@withContext Result.failure(Exception("No audio streams and no DASH MPD URL found for video $youtubeId"))
             }
 
-            // Only use progressive HTTP streams that provide a direct URL.
-            // DASH streams return manifest XML in getContent(), which cannot be
-            // proxied as a simple byte stream to ExoPlayer.
-            val progressiveStreams = audioStreams.filter { stream ->
-                stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && stream.isUrl
+            // STRATEGY:
+            // Modern YouTube (2024+) no longer serves progressive HTTP audio streams for
+            // most videos — every audio itag (139/140/249/250/251/252/599/600) is
+            // served as DASH (segmented with initRange/indexRange). Forcing
+            // `DeliveryMethod.PROGRESSIVE_HTTP` here therefore filters out ALL audio
+            // streams, the proxy returns null → 404, and ExoPlayer sits frozen at 00:00.
+            //
+            // We therefore accept BOTH progressive HTTP and DASH audio streams, as long
+            // as `isUrl == true` (i.e. NewPipe gives us a direct googlevideo.com URL
+            // whose content is a self-contained MP4/WebM segment that ExoPlayer's
+            // ProgressiveMediaPeriod can extract directly — DASH manifests are not
+            // involved here because we don't pass `manifestUrl` to ExoPlayer).
+            val playableStreams = audioStreams.filter { stream ->
+                stream.isUrl && (
+                    stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP ||
+                        stream.deliveryMethod == DeliveryMethod.DASH
+                )
             }
 
-            if (progressiveStreams.isEmpty()) {
-                Timber.w("No progressive audio streams for $youtubeId. DeliveryMethods: ${audioStreams.map { it.deliveryMethod }}")
-                return@withContext Result.failure(Exception("No progressive audio streams found for video $youtubeId"))
+            Timber.d(
+                "YouTube playable audio streams for $youtubeId: ${playableStreams.size} of ${audioStreams.size}. " +
+                    "Details: ${playableStreams.map { "itag=${it.itag},br=${it.bitrate},delivery=${it.deliveryMethod}" }}"
+            )
+
+            if (playableStreams.isEmpty()) {
+                Timber.w(
+                    "No playable audio streams for $youtubeId. " +
+                        "All streams: ${audioStreams.map { "itag=${it.itag},delivery=${it.deliveryMethod},isUrl=${it.isUrl}" }}"
+                )
+
+                // FALLBACK: Try DASH MPD URL before giving up
+                val dashMpdUrl = runCatching { extractor.dashMpdUrl }.getOrNull()
+                if (!dashMpdUrl.isNullOrBlank()) {
+                    Timber.d("YouTube DASH MPD fallback (after filter) for $youtubeId: ${dashMpdUrl.take(120)}...")
+                    return@withContext Result.success(dashMpdUrl)
+                }
+
+                return@withContext Result.failure(Exception("No playable audio streams found for video $youtubeId"))
             }
 
-            val bestStream = findBestAudioStream(progressiveStreams, quality)
+            val bestStream = findBestAudioStream(playableStreams, quality)
 
             if (bestStream != null) {
+                Timber.d(
+                    "YouTube selected stream for $youtubeId: itag=${bestStream.itag}, " +
+                        "bitrate=${bestStream.bitrate}, delivery=${bestStream.deliveryMethod}, " +
+                        "url=${bestStream.content?.take(100)}..."
+                )
                 Result.success(bestStream.content)
             } else {
                 Result.failure(Exception("No suitable audio stream format found for video $youtubeId"))
