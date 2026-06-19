@@ -304,7 +304,7 @@ object AppModule {
         return SongMetadataEditor(context, musicDao, telegramDao)
     }
 
-    /**
+        /**
      * Provee una instancia singleton de OkHttpClient con logging e interceptor de User-Agent.
      * Retry logic with backoff is handled in coroutine-based callers.
      */
