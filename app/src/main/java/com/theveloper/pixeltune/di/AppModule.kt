@@ -333,12 +333,23 @@ object AppModule {
             .readTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
-            // Add User-Agent header (required by some APIs)
+            // Add User-Agent header (required by some APIs).
+            //
+            // IMPORTANT: Only set the app User-Agent when the request does NOT already
+            // have one. NewPipeDownloader explicitly sets a browser User-Agent on every
+            // request it issues (for YouTube / SoundCloud scraping), and YouTube will
+            // serve a "page needs to be reloaded" bot-check page if it sees a non-browser
+            // UA. Using `.header()` unconditionally here would override that browser UA
+            // and break YouTube playback (player stuck at 00:00).
             .addInterceptor { chain ->
                 val originalRequest = chain.request()
-                val requestWithUserAgent = originalRequest.newBuilder()
-                    .header("User-Agent", "PixelTune/1.0 (Android; Music Player)")
-                    .build()
+                val requestWithUserAgent = if (originalRequest.header("User-Agent") == null) {
+                    originalRequest.newBuilder()
+                        .header("User-Agent", "PixelTune/1.0 (Android; Music Player)")
+                        .build()
+                } else {
+                    originalRequest
+                }
                 chain.proceed(requestWithUserAgent)
             }
             .addInterceptor(loggingInterceptor)
