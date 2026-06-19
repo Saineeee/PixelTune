@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.search.SearchExtractor
 import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.channel.ChannelInfoItem
@@ -41,13 +42,47 @@ class SoundCloudRepository @Inject constructor() {
                 return@withContext Result.failure(Exception("No audio streams found for URL $soundCloudUrl"))
             }
 
+            // STRATEGY:
+            // SoundCloud serves each track as multiple "transcodings" — typically a mix
+            // of HLS (`.m3u8` playlists) and progressive (direct MP3). NewPipe surfaces
+            // all of them as AudioStreams, with `deliveryMethod` distinguishing the two.
+            //
+            // We MUST pick only PROGRESSIVE_HTTP streams here: PixelTune's proxy hands
+            // the chosen URL directly to ExoPlayer as a single byte stream, and
+            // ExoPlayer's ProgressiveMediaPeriod tries to extract audio frames from
+            // whatever bytes come back. If we hand it an HLS `.m3u8` playlist URL,
+            // the proxy fetches the playlist text (HTTP 200, content-type audio/mpegurl)
+            // and pipes it to ExoPlayer — which fails with
+            // `UnrecognizedInputFormatException: None of the available extractors ...
+            // could read the stream. sniff failures: [NoDeclaredBrand, NoDeclaredBrand]`,
+            // leaving the player frozen at 00:00.
+            //
+            // The SoundCloud API response observed in production logcats shows that
+            // every public track exposes at least one progressive MP3 transcoding
+            // (preset `mp3_1_0`, mime_type `audio/mpeg`, protocol `progressive`), so
+            // filtering to PROGRESSIVE_HTTP always yields a playable URL.
+            val progressiveStreams = audioStreams.filter { stream ->
+                stream.isUrl && stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP
+            }
+
+            if (progressiveStreams.isEmpty()) {
+                Timber.w(
+                    "No progressive audio streams for $soundCloudUrl. " +
+                        "DeliveryMethods: ${audioStreams.map { it.deliveryMethod }}"
+                )
+                return@withContext Result.failure(
+                    Exception("No progressive audio streams found for URL $soundCloudUrl")
+                )
+            }
+
             // Pick the best stream by bitrate based on quality
             val bestStream = when (quality) {
-                StreamingQuality.HIGH_RES -> audioStreams.maxByOrNull { it.bitrate }
-                StreamingQuality.DATA_SAVER -> audioStreams.minByOrNull { it.bitrate }
+                StreamingQuality.HIGH_RES -> progressiveStreams.maxByOrNull { it.bitrate }
+                StreamingQuality.DATA_SAVER -> progressiveStreams.minByOrNull { it.bitrate }
                 StreamingQuality.NORMAL -> {
-                    val sortedStreams = audioStreams.sortedBy { it.bitrate }
-                    sortedStreams.minByOrNull { kotlin.math.abs(it.bitrate - 128) } ?: sortedStreams.getOrNull(sortedStreams.size / 2)
+                    val sortedStreams = progressiveStreams.sortedBy { it.bitrate }
+                    sortedStreams.minByOrNull { kotlin.math.abs(it.bitrate - 128) }
+                        ?: sortedStreams.getOrNull(sortedStreams.size / 2)
                 }
             }
 
