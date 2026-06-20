@@ -17,11 +17,17 @@ object CloudStreamSecurity {
 
     private val GDRIVE_FILE_ID_REGEX = Regex("^[A-Za-z0-9_-]{10,200}$")
     private val FORBIDDEN_HOSTS = setOf("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]")
+    
+    // FIX: Added missing YouTube specific DASH audio formats
     private val EXTRA_ALLOWED_AUDIO_TYPES = setOf(
         "application/octet-stream",
         "binary/octet-stream",
         "application/mp4",
-        "video/mp4"
+        "video/mp4",
+        "audio/mp4",
+        "video/webm",
+        "audio/webm",
+        "application/vnd.yt-ump"
     )
 
     data class RangeHeaderValidation(
