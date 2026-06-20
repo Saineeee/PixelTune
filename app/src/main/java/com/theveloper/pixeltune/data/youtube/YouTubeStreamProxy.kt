@@ -8,11 +8,10 @@ import io.ktor.server.application.call
 import io.ktor.server.engine.*
 import io.ktor.server.cio.*
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondBytesWriter
+import io.ktor.server.response.respondBytes
 import io.ktor.server.response.header
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
-import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -168,76 +167,91 @@ class YouTubeStreamProxy @Inject constructor(
                             return@get
                         }
 
+                        Timber.d("YouTubeStreamProxy: fetching upstream for $youtubeId, url=${streamUrl.take(100)}")
+
                         // Proxy the audio stream
                         val requestBuilder = Request.Builder()
                             .url(streamUrl)
                             .header("Accept-Encoding", "identity") // MUST disable gzip to preserve Range requests for Media3/ExoPlayer
-                            // FIX: Add a standard browser User-Agent to bypass YouTube's 403 Forbidden bot checks
                             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                             
                         rangeValidation.normalizedHeader?.let {
                             requestBuilder.header("Range", it)
                         }
 
-                        val response = withContext(Dispatchers.IO) {
-                            okHttpClient.newCall(requestBuilder.build()).execute()
-                        }
-
-                        response.use { upstream ->
-                            if (upstream.code != 200 && upstream.code != 206) {
-                                call.respond(
-                                    CloudStreamSecurity.mapUpstreamStatusToProxyStatus(upstream.code),
-                                    "Upstream stream request failed"
-                                )
-                                return@get
-                            }
-
-                            val body = upstream.body ?: run {
-                                call.respond(HttpStatusCode.InternalServerError, "Empty body")
-                                return@get
-                            }
-
-                            val contentTypeHeader = upstream.header("Content-Type")
-                            if (!CloudStreamSecurity.isSupportedAudioContentType(contentTypeHeader)) {
-                                call.respond(HttpStatusCode.BadGateway, "Unsupported stream content type")
-                                return@get
-                            }
-
-                            val contentLength = upstream.header("Content-Length")
-                            if (!CloudStreamSecurity.isAcceptableContentLength(contentLength)) {
-                                call.respond(HttpStatusCode(413, "Payload Too Large"), "Stream content too large")
-                                return@get
-                            }
-
-                            val contentRange = upstream.header("Content-Range")
-                            val acceptRanges = upstream.header("Accept-Ranges")
-                            val responseContentType = contentTypeHeader
-                                ?.substringBefore(';')
-                                ?.trim()
-                                ?.let { raw -> runCatching { ContentType.parse(raw) }.getOrNull() }
-                                ?: ContentType.Audio.Any
-
-                            if (upstream.code == 206) {
-                                call.response.status(HttpStatusCode.PartialContent)
-                            } else {
-                                call.response.status(HttpStatusCode.OK)
-                            }
-                            call.response.header("Accept-Ranges", acceptRanges ?: "bytes")
-                            contentLength?.let { call.response.header("Content-Length", it) }
-                            contentRange?.let { call.response.header("Content-Range", it) }
-
-                            call.respondBytesWriter(contentType = responseContentType) {
-                                withContext(Dispatchers.IO) {
-                                    body.byteStream().use { input ->
-                                        val buffer = ByteArray(64 * 1024)
-                                        var bytesRead: Int
-                                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                                            writeFully(buffer, 0, bytesRead)
-                                        }
-                                    }
-                                }
+                        // CRITICAL FIX: Read the ENTIRE upstream response on Dispatchers.IO
+                        // BEFORE handing anything to Ktor's response pipeline.
+                        //
+                        // The previous implementation used `call.respondBytesWriter { withContext(Dispatchers.IO) { ... } }`
+                        // which caused a deadlock on Ktor's CIO engine: the CIO writer thread
+                        // waits for the first `writeFully` call to produce data, but `writeFully`
+                        // runs on Dispatchers.IO while the Ktor response headers haven't been
+                        // flushed yet (CIO buffers headers until the first body chunk is ready).
+                        // This left ExoPlayer stuck at `getResponseCode()` for 30 seconds until
+                        // its SocketTimeoutException fired, causing the "stuck at 00:00" bug.
+                        //
+                        // The fix: buffer the entire upstream body into a ByteArray on the IO
+                        // dispatcher, then send it with `call.respondBytes()`. Ktor's
+                        // `respondBytes` sets all headers and writes the body in one atomic
+                        // operation, eliminating the deadlock. Audio files are typically 3-10MB
+                        // (itag 251 Opus ~3MB, itag 140 AAC ~5MB), which is fine to buffer.
+                        val (upstreamCode, upstreamHeaders, bodyBytes) = withContext(Dispatchers.IO) {
+                            okHttpClient.newCall(requestBuilder.build()).execute().use { upstream ->
+                                val code = upstream.code
+                                val headers = upstream.headers
+                                val bytes = upstream.body?.bytes() ?: ByteArray(0)
+                                Triple(code, headers, bytes)
                             }
                         }
+
+                        Timber.d("YouTubeStreamProxy: upstream response for $youtubeId: code=$upstreamCode, bodySize=${bodyBytes.size}")
+
+                        if (upstreamCode != 200 && upstreamCode != 206) {
+                            call.respond(
+                                CloudStreamSecurity.mapUpstreamStatusToProxyStatus(upstreamCode),
+                                "Upstream stream request failed (code=$upstreamCode)"
+                            )
+                            return@get
+                        }
+
+                        val contentTypeHeader = upstreamHeaders["Content-Type"]
+                        if (!CloudStreamSecurity.isSupportedAudioContentType(contentTypeHeader)) {
+                            call.respond(HttpStatusCode.BadGateway, "Unsupported stream content type: $contentTypeHeader")
+                            return@get
+                        }
+
+                        val contentLength = upstreamHeaders["Content-Length"]
+                        if (!CloudStreamSecurity.isAcceptableContentLength(contentLength)) {
+                            call.respond(HttpStatusCode(413, "Payload Too Large"), "Stream content too large")
+                            return@get
+                        }
+
+                        val contentRange = upstreamHeaders["Content-Range"]
+                        val acceptRanges = upstreamHeaders["Accept-Ranges"]
+                        val responseContentType = contentTypeHeader
+                            ?.substringBefore(';')
+                            ?.trim()
+                            ?.let { raw -> runCatching { ContentType.parse(raw) }.getOrNull() }
+                            ?: ContentType.Audio.Any
+
+                        if (upstreamCode == 206) {
+                            call.response.status(HttpStatusCode.PartialContent)
+                        } else {
+                            call.response.status(HttpStatusCode.OK)
+                        }
+                        call.response.header("Accept-Ranges", acceptRanges ?: "bytes")
+                        contentRange?.let { call.response.header("Content-Range", it) }
+
+                        Timber.d("YouTubeStreamProxy: sending ${bodyBytes.size} bytes to ExoPlayer for $youtubeId")
+
+                        // Send the buffered body as a single atomic response.
+                        // Ktor's respondBytes sets Content-Length automatically from the
+                        // ByteArray size and writes everything in one call — no streaming
+                        // deadlock possible.
+                        call.respondBytes(
+                            bytes = bodyBytes,
+                            contentType = responseContentType
+                        )
                     } catch (e: Exception) {
                         val msg = e.toString()
                         if (msg.contains("ChannelWriteException") ||
