@@ -889,6 +889,12 @@ class MusicService : MediaLibraryService() {
                 val oldQueueSize = engine.masterPlayer.mediaItemCount
                 val currentItem = engine.masterPlayer.currentMediaItem
                 val queueIds = (0 until engine.masterPlayer.mediaItemCount).mapNotNull { engine.masterPlayer.getMediaItemAt(it).mediaId }
+                // Capture the remaining-items count and current index on the main thread
+                // (where this callback runs). Accessing ExoPlayer from a background
+                // dispatcher throws IllegalStateException: "Player is accessed on the wrong
+                // thread." See https://developer.android.com/guide/topics/media/issues/player-accessed-on-wrong-thread
+                val currentMediaItemIndex = engine.masterPlayer.currentMediaItemIndex
+                val currentlyRemaining = (oldQueueSize - 1) - currentMediaItemIndex
                 if (currentItem != null) {
                     serviceScope.launch(Dispatchers.IO) {
                         val mediaId = currentItem.mediaId
@@ -909,9 +915,12 @@ class MusicService : MediaLibraryService() {
                         // 5 upcoming songs after the current one, but cap the actual fetch
                         // count to the (cap - currentlyRemaining) delta so we don't
                         // re-fetch songs we already have queued behind the current index.
+                        //
+                        // NOTE: currentlyRemaining is captured on the main thread above —
+                        // do NOT re-read engine.masterPlayer.mediaItemCount here, as this
+                        // coroutine runs on Dispatchers.IO and ExoPlayer throws
+                        // IllegalStateException if accessed off the main thread.
                         val desiredUpcoming = 5
-                        val currentlyRemaining = (engine.masterPlayer.mediaItemCount - 1) -
-                            engine.masterPlayer.currentMediaItemIndex
                         val toFetch = (desiredUpcoming - currentlyRemaining).coerceAtLeast(1)
                             .coerceAtMost(desiredUpcoming)
                         val recommendations = youtubeRepository.getMultipleAutoplayRecommendations(
