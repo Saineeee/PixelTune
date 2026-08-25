@@ -293,49 +293,88 @@ class YouTubeRepository @Inject constructor() {
         currentQueueIds: List<String>,
         proxyUrlProvider: (String) -> String
     ): Result<Song> = withContext(Dispatchers.IO) {
+        val recommendations = getMultipleAutoplayRecommendations(
+            currentSong = currentSong,
+            currentQueueIds = currentQueueIds,
+            proxyUrlProvider = proxyUrlProvider,
+            limit = 1
+        )
+        if (recommendations.isNotEmpty()) Result.success(recommendations.first())
+        else Result.failure(Exception("No suitable autoplay recommendation found."))
+    }
+
+    /**
+     * Fetches multiple autoplay recommendations related to [currentSong].
+     *
+     * IMPROVE(more-up-next): the original [getAutoplayRecommendation] only
+     * returned a single next track. The Now Playing screen's "Up Next"
+     * carousel therefore only ever showed 1 upcoming song — the user
+     * explicitly asked for "more next queued songs related with exact same
+     * taste of the current songs".
+     *
+     * This implementation:
+     *  - reuses NewPipe's `extractor.relatedItems` (the same source
+     *    [getAutoplayRecommendation] uses), which returns the "Up next" /
+     *    "Related" list YouTube itself surfaces on the watch page;
+     *  - filters out items already in [currentQueueIds] so we never
+     *    recommend a song that's already queued or has just played;
+     *  - takes up to [limit] items;
+     *  - returns them as a List<Song> so the caller can batch-append them
+     *    to the player queue in one shot (avoiding the per-song network
+     *    round-trip the original one-at-a-time loop incurred).
+     *
+     * Falls back to a search query of `"${artist} ${title} mix"` if the
+     * current song has no youtubeId (so relatedItems can't be fetched).
+     */
+    suspend fun getMultipleAutoplayRecommendations(
+        currentSong: Song,
+        currentQueueIds: List<String>,
+        proxyUrlProvider: (String) -> String,
+        limit: Int = 5
+    ): List<Song> = withContext(Dispatchers.IO) {
+        if (limit <= 0) return@withContext emptyList()
+        val safeLimit = limit.coerceAtMost(20)  // safety cap to avoid hammering YouTube
         try {
-            val validItem = if (currentSong.youtubeId != null) {
+            val candidateItems: List<StreamInfoItem> = if (currentSong.youtubeId != null) {
                 val url = "https://www.youtube.com/watch?v=${currentSong.youtubeId}"
                 val extractor = ServiceList.YouTube.getStreamExtractor(url)
                 extractor.fetchPage()
-                extractor.relatedItems?.items?.filterIsInstance<StreamInfoItem>()?.firstOrNull { item ->
-                    val videoId = extractVideoId(item.url)
-                    videoId != null && !currentQueueIds.contains(videoId)
-                }
+                extractor.relatedItems?.items?.filterIsInstance<StreamInfoItem>() ?: emptyList()
             } else {
                 val query = "${currentSong.artist} ${currentSong.title} mix"
-                val extractor = ServiceList.YouTube.getSearchExtractor(query)
-                extractor.fetchPage()
-                extractor.initialPage.items.filterIsInstance<StreamInfoItem>().firstOrNull { item ->
-                    val videoId = extractVideoId(item.url)
-                    videoId != null && !currentQueueIds.contains(videoId)
-                }
+                val searchExtractor = ServiceList.YouTube.getSearchExtractor(query)
+                searchExtractor.fetchPage()
+                searchExtractor.initialPage.items.filterIsInstance<StreamInfoItem>()
             }
 
-            if (validItem != null) {
-                val youtubeId = extractVideoId(validItem.url)!!
-                val durationMs = if (validItem.duration > 0) validItem.duration * 1000L else 0L
+            val excludeIds = currentQueueIds.toHashSet()
+            val picked = ArrayList<Song>(safeLimit)
+            for (item in candidateItems) {
+                if (picked.size >= safeLimit) break
+                val videoId = extractVideoId(item.url) ?: continue
+                if (videoId in excludeIds) continue
+
+                val durationMs = if (item.duration > 0) item.duration * 1000L else 0L
                 val song = Song.emptySong().copy(
-                    id = youtubeId,
-                    title = validItem.name ?: "Unknown",
-                    artist = validItem.uploaderName ?: "Unknown",
+                    id = videoId,
+                    title = item.name ?: "Unknown",
+                    artist = item.uploaderName ?: "Unknown",
                     artistId = -1L,
                     album = "",
                     albumId = -1L,
-                    path = validItem.url,
-                    contentUriString = proxyUrlProvider(youtubeId),
-                    albumArtUriString = validItem.thumbnails.firstOrNull()?.url,
+                    path = item.url,
+                    contentUriString = proxyUrlProvider(videoId),
+                    albumArtUriString = item.thumbnails.firstOrNull()?.url,
                     duration = durationMs,
                     mimeType = "audio/mp4",
-                    youtubeId = youtubeId
+                    youtubeId = videoId
                 )
-                Result.success(song)
-            } else {
-                Result.failure(Exception("No suitable autoplay recommendation found."))
+                picked += song
             }
+            picked
         } catch (e: Exception) {
-            Timber.e(e, "Error getting autoplay recommendation")
-            Result.failure(e)
+            Timber.e(e, "Error getting multiple autoplay recommendations")
+            emptyList()
         }
     }
 }

@@ -482,7 +482,12 @@ class WearCommandReceiver : WearableListenerService() {
     private suspend fun ensureStartSongCloudUriResolved(song: Song): Boolean {
         val originalUri = runCatching { song.contentUriString.toUri() }.getOrNull() ?: return true
         val scheme = originalUri.scheme?.lowercase()
-        if (scheme != "telegram" && scheme != "netease") return true
+        // FIX(cloud-favorites): also resolve persisted YouTube / SoundCloud URIs
+        // (`youtube://<videoId>`, `soundcloud://<encoded>`) — needed when a
+        // favorited cloud song is started directly from the Wear device.
+        if (scheme != "telegram" && scheme != "netease" &&
+            scheme != "youtube" && scheme != "soundcloud"
+        ) return true
 
         return runCatching {
             val resolvedUri = dualPlayerEngine.resolveCloudUri(originalUri)

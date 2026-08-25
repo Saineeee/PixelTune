@@ -2,6 +2,7 @@ package com.theveloper.pixeltune.data.repository
 
 import android.content.ContentUris
 import android.content.Context
+import android.net.Uri
 import android.provider.MediaStore
 import android.util.Log
 import androidx.paging.Pager
@@ -422,7 +423,19 @@ class MediaStoreSongRepository @Inject constructor(
                 )
             }.flatMapLatest { it }
         }.map { pagingData ->
-            pagingData.map { entity -> entity.toSong().copy(isFavorite = true) }
+            // FIX(cloud-favorites): restore the original cloud-streamed song ID
+            // (e.g. YouTube video ID) from the persisted scheme URI. Cloud songs
+            // were stored with a stable hashCode-derived Long id to fit Room's
+            // Long primary-key domain, but the rest of the app (playback queue,
+            // recently-played lookup, like-button state) keys off the original
+            // string ID. Without this restoration, a favorited YouTube song would
+            // appear in the Liked tab with an opaque numeric id that doesn't
+            // match the playback-history entry, breaking the recently-played
+            // section AND making the heart icon show as "not liked" when the
+            // song is currently playing from search.
+            pagingData.map { entity ->
+                entity.toSong().copy(isFavorite = true).withRestoredCloudId()
+            }
         }
     }
 
@@ -438,7 +451,9 @@ class MediaStoreSongRepository @Inject constructor(
             applyDirectoryFilter = applyDirectoryFilter,
             filterMode = storageFilter.value
         )
-            .map { entity -> entity.toSong().copy(isFavorite = true) }
+            .map { entity ->
+                entity.toSong().copy(isFavorite = true).withRestoredCloudId()
+            }
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -463,5 +478,45 @@ class MediaStoreSongRepository @Inject constructor(
                 )
             }
         }
+    }
+}
+
+/**
+ * Restores the original cloud-streamed song ID from the persisted scheme URI
+ * (`youtube://<videoId>` / `soundcloud://<encoded>`) so the rest of the app,
+ * which keys off string IDs, can match the song against playback history,
+ * playback queue, and the like-button state.
+ *
+ * Local MediaStore songs (whose persisted SongEntity.id is the numeric
+ * MediaStore row id) are returned unchanged because their Song.id is already
+ * correct after [com.theveloper.pixeltune.data.database.SongEntity.toSong].
+ *
+ * This is the read-side counterpart of
+ * [com.theveloper.pixeltune.data.repository.MusicRepositoryImpl.normalizeCloudUriForStorage]
+ * — that function converts the live HTTP proxy URL to a restart-safe scheme
+ * URI at *write* time; this one restores the original cloud ID at *read* time.
+ */
+internal fun com.theveloper.pixeltune.data.model.Song.withRestoredCloudId(): com.theveloper.pixeltune.data.model.Song {
+    val uriString = this.contentUriString
+    if (uriString.isEmpty()) return this
+    val parsed = runCatching { Uri.parse(uriString) }.getOrNull() ?: return this
+    return when (parsed.scheme?.lowercase()) {
+        "youtube" -> {
+            val videoId = parsed.host?.takeIf { it.isNotBlank() } ?: return this
+            // Only override if the current id is the hashed Long form (i.e. a row
+            // loaded from the favorites DB). If a caller already set the original
+            // video id, leave it alone.
+            if (this.id == videoId || this.id.toLongOrNull() == null) {
+                this.copy(id = videoId, youtubeId = videoId)
+            } else {
+                this.copy(youtubeId = videoId)
+            }
+        }
+        "soundcloud" -> {
+            val encoded = parsed.host?.takeIf { it.isNotBlank() } ?: return this
+            if (this.id == encoded || this.id.toLongOrNull() == null) this
+            else this.copy(id = encoded)
+        }
+        else -> this
     }
 }

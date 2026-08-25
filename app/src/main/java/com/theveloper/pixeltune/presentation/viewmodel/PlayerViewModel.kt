@@ -207,6 +207,66 @@ class PlayerViewModel @Inject constructor(
         listeningStatsTracker.clearHistory()
     }
 
+    /**
+     * Accumulates cloud-streamed songs (YouTube / SoundCloud / Netease / etc.)
+     * encountered during the current app session — sourced from the playback
+     * queue, the current playing song, and any cloud songs that were favorited.
+     *
+     * This is required because the local Room-backed `_allSongs` only contains
+     * MediaStore songs with Long IDs. Cloud songs have string IDs (e.g. YouTube
+     * video IDs like "dQw4w9WgXcQ") and are never inserted into the songs table
+     * unless favorited. Without this registry, `mapRecentlyPlayedSongs` cannot
+     * resolve cloud song IDs from playback history, so the "Recently Played"
+     * section on Home never shows cloud-streamed tracks.
+     */
+    private val _cloudSongsRegistry = MutableStateFlow<Map<String, Song>>(emptyMap())
+
+    /** Whether the given song is a cloud-streamed song (not in the local MediaStore). */
+    private fun Song.isCloudStreamed(): Boolean {
+        val id = this.id
+        // Local MediaStore song IDs are always numeric strings; cloud IDs are not.
+        if (id.toLongOrNull() != null) return false
+        // Defensive: also check the URI scheme for known cloud prefixes.
+        val scheme = runCatching { Uri.parse(contentUriString).scheme }.getOrNull()
+        return scheme == "http" || scheme == "https" ||
+            scheme == "youtube" || scheme == "soundcloud" ||
+            scheme == "telegram" || scheme == "netease" || scheme == "gdrive"
+    }
+
+    private fun registerCloudSongs(songs: List<Song>) {
+        if (songs.isEmpty()) return
+        val cloudSongs = songs.filter { it.isCloudStreamed() }
+        if (cloudSongs.isEmpty()) return
+        val current = _cloudSongsRegistry.value
+        val merged = LinkedHashMap<String, Song>(current.size + cloudSongs.size)
+        merged.putAll(current)
+        var changed = false
+        for (song in cloudSongs) {
+            // Prefer keeping an existing entry to avoid identity churn for state observers,
+            // but update if the new one has richer metadata (e.g. non-blank title where the
+            // existing one was blank).
+            val existing = merged[song.id]
+            if (existing == null) {
+                merged[song.id] = song
+                changed = true
+            } else if (
+                (existing.title.isBlank() && song.title.isNotBlank()) ||
+                (existing.artist.isBlank() && song.artist.isNotBlank()) ||
+                (existing.albumArtUriString.isNullOrBlank() && !song.albumArtUriString.isNullOrBlank())
+            ) {
+                merged[song.id] = song
+                changed = true
+            }
+        }
+        if (changed) {
+            _cloudSongsRegistry.value = merged
+        }
+    }
+
+    /** Public read-only access to the cloud songs registry (id -> Song). */
+    val cloudSongsRegistry: StateFlow<Map<String, Song>> =
+        _cloudSongsRegistry.asStateFlow()
+
     // Removed: _masterAllSongs was a duplicate of libraryStateHolder.allSongs
     // All reads now delegate to libraryStateHolder.allSongs
 
@@ -1857,6 +1917,7 @@ class PlayerViewModel @Inject constructor(
                 ?: libraryStateHolder.allSongsById.value[mediaItem.mediaId]
                 ?: _playerUiState.value.currentPlaybackQueue.find { it.id == mediaItem.mediaId }
                 ?: mediaMapper.resolveSongFromMediaItem(mediaItem)
+                ?: mediaMapper.resolveSongFromMediaItemMetadataOnly(mediaItem)
 
         return resolvedSong?.let { normalizeArtworkForResolvedSong(it, mediaItem) }
     }
@@ -1905,6 +1966,10 @@ class PlayerViewModel @Inject constructor(
             _playerUiState.update { it.copy(currentPlaybackQueue = queue.toImmutableList()) }
             if (queue.isNotEmpty()) {
                 _isSheetVisible.value = true
+                // FIX(recently-played): accumulate cloud-streamed songs so the
+                // "Recently Played" section on Home can resolve their IDs even
+                // though they're not in the local MediaStore-backed _allSongs.
+                registerCloudSongs(queue)
             }
         }
     }
@@ -2226,6 +2291,11 @@ class PlayerViewModel @Inject constructor(
                         _playerUiState.update { it.copy(currentPosition = 0L) }
 
                         song?.let { currentSongValue ->
+                            // FIX(recently-played): also register the currently playing
+                            // song (covers cases where it's a single-item queue / the
+                            // queue hasn't been updated yet / it was loaded directly via
+                            // loadAndPlaySong rather than playSongs).
+                            registerCloudSongs(listOf(currentSongValue))
                             listeningStatsTracker.onSongChanged(
                                 song = currentSongValue,
                                 positionMs = 0L,
@@ -2568,8 +2638,19 @@ class PlayerViewModel @Inject constructor(
 
             // Pre-resolve the starting song's cloud URI before ExoPlayer touches it.
             // This populates the resolvedUriCache so resolveDataSpec finds it instantly.
+            //
+            // FIX(cloud-favorites): also pre-resolve YouTube and SoundCloud URIs,
+            // which are the persisted scheme form (`youtube://<videoId>`,
+            // `soundcloud://<encoded>`) for favorited cloud songs. Without this,
+            // ExoPlayer would hit the synchronous resolver with a cache miss and
+            // fall through to playing the raw scheme URI, which the underlying
+            // DefaultHttpDataSource cannot fetch — leaving the player frozen at
+            // 00:00 (the same symptom as the original YouTube bug).
             val startingUri = MediaItemBuilder.playbackUri(effectiveStartSong.contentUriString)
-            if (startingUri.scheme == "telegram" || startingUri.scheme == "netease") {
+            val startingScheme = startingUri.scheme
+            if (startingScheme == "telegram" || startingScheme == "netease" ||
+                startingScheme == "youtube" || startingScheme == "soundcloud"
+            ) {
                 dualPlayerEngine.resolveCloudUri(startingUri)
             }
 
@@ -2578,23 +2659,44 @@ class PlayerViewModel @Inject constructor(
                 val enginePlayer = dualPlayerEngine.masterPlayer
 
                 val mediaItems = songsToPlay.map { song ->
-                    val metadataBuilder = MediaMetadata.Builder()
-                        .setTitle(song.title)
-                        .setArtist(song.displayArtist)
-                    playlistId?.let {
-                        val extras = Bundle()
-                        extras.putString("playlistId", it)
-                        metadataBuilder.setExtras(extras)
+                    // FIX(cloud-metadata): use the shared [MediaItemBuilder.build]
+                    // helper instead of an inline [MediaMetadata.Builder]. The inline
+                    // version was only setting title / artist / artworkUri and a
+                    // `playlistId` extra — it was NOT populating the
+                    // EXTERNAL_EXTRA_CONTENT_URI / EXTERNAL_EXTRA_DURATION /
+                    // EXTERNAL_EXTRA_ALBUM_ART extras that the
+                    // MediaMapper.resolveSongFromMediaItem fallback relies on
+                    // to reconstruct a Song when the in-memory queue hasn't been
+                    // updated yet (which happens for cloud-streamed autoplay
+                    // songs that aren't in the local MediaStore).
+                    //
+                    // As a result, after transitioning to a YouTube / SoundCloud
+                    // song, resolveSongFromMediaItem fell through to mediaMapper
+                    // → mediaMapper returned null because EXTERNAL_EXTRA_CONTENT_URI
+                    // was missing AND localConfiguration was null (ExoPlayer hadn't
+                    // started loading yet) → currentSong was set to null → the
+                    // player UI showed blank title / artist.
+                    //
+                    // MediaItemBuilder.build also sets a richer Bundle (album,
+                    // duration, genre, track, year, etc.) which is used by the
+                    // external controller surface (Android Auto, Bluetooth, etc.)
+                    // and by the metadata fallback path.
+                    val baseItem = MediaItemBuilder.build(song)
+                    if (playlistId == null) {
+                        baseItem
+                    } else {
+                        // Preserve the optional playlistId extra that the
+                        // inline builder used to set, by merging it into the
+                        // MediaItemBuilder extras Bundle.
+                        val mergedExtras = (baseItem.mediaMetadata.extras ?: Bundle())
+                        mergedExtras.putString("playlistId", playlistId)
+                        val mergedMetadata = baseItem.mediaMetadata.buildUpon()
+                            .setExtras(mergedExtras)
+                            .build()
+                        baseItem.buildUpon()
+                            .setMediaMetadata(mergedMetadata)
+                            .build()
                     }
-                    song.albumArtUriString?.toUri()?.let { uri ->
-                        metadataBuilder.setArtworkUri(uri)
-                    }
-                    val metadata = metadataBuilder.build()
-                    MediaItem.Builder()
-                        .setMediaId(song.id)
-                        .setUri(MediaItemBuilder.playbackUri(song.contentUriString))
-                        .setMediaMetadata(metadata)
-                        .build()
                 }
                 val startIndex = songsToPlay.indexOfFirst { it.id == effectiveStartSong.id }.coerceAtLeast(0)
 
@@ -2726,33 +2828,23 @@ class PlayerViewModel @Inject constructor(
 
     fun addSongToQueue(song: Song) {
         mediaController?.let { controller ->
-            val mediaItem = MediaItem.Builder()
-                .setMediaId(song.id)
-                .setUri(MediaItemBuilder.playbackUri(song.contentUriString))
-                .setMediaMetadata(MediaMetadata.Builder()
-                    .setTitle(song.title)
-                    .setArtist(song.displayArtist)
-                    .setArtworkUri(song.albumArtUriString?.toUri())
-                    .build())
-                .build()
-            controller.addMediaItem(mediaItem)
+            // FIX(cloud-metadata): use the shared MediaItemBuilder helper so the
+            // MediaItem carries the full EXTERNAL_EXTRA_* extras Bundle — this
+            // lets MediaMapper.resolveSongFromMediaItem reconstruct the Song
+            // when the in-memory playback queue hasn't been updated yet, which
+            // is exactly what happens when onMediaItemTransition fires before
+            // updateCurrentPlaybackQueueFromPlayer finishes its background work.
+            controller.addMediaItem(MediaItemBuilder.build(song))
             // Queue UI is synced via onTimelineChanged listener
         }
     }
 
     fun addSongNextToQueue(song: Song) {
         mediaController?.let { controller ->
-            val mediaItem = MediaItem.Builder()
-                .setMediaId(song.id)
-                .setUri(MediaItemBuilder.playbackUri(song.contentUriString))
-                .setMediaMetadata(
-                    MediaMetadata.Builder()
-                        .setTitle(song.title)
-                        .setArtist(song.displayArtist)
-                        .setArtworkUri(song.albumArtUriString?.toUri())
-                        .build()
-                )
-                .build()
+            // FIX(cloud-metadata): see addSongToQueue — use MediaItemBuilder.build
+            // so the full EXTERNAL_EXTRA_* extras Bundle is present for the
+            // MediaMapper fallback used during cloud-song transitions.
+            val mediaItem = MediaItemBuilder.build(song)
 
             val insertionIndex = if (controller.currentMediaItemIndex != C.INDEX_UNSET) {
                 (controller.currentMediaItemIndex + 1).coerceAtMost(controller.mediaItemCount)

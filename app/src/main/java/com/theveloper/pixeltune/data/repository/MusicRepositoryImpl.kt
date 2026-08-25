@@ -97,6 +97,29 @@ class MusicRepositoryImpl @Inject constructor(
         private const val UNKNOWN_GENRE_ID = "unknown"
         /** Max IDs per query batch for getSongsByIds to stay within SQLite variable limits. */
         private const val SQLITE_QUERY_BATCH_SIZE = 999
+
+        /**
+         * Stable Long ID derived from an arbitrary String ID via hashCode, forced
+         * to be non-negative so it fits into the same positive-Long primary-key
+         * domain as MediaStore song IDs.
+         *
+         * Used for cloud-streamed songs (YouTube video IDs, SoundCloud encoded
+         * URLs, etc.) that don't have a natural Long form. The mapping is
+         * deterministic across app restarts, so the same cloud song always maps
+         * to the same Room row id — making re-liking / unliking after restart
+         * correctly find the existing row.
+         *
+         * Note: hashCode collisions are theoretically possible, but for typical
+         * 11-char YouTube IDs and short SoundCloud encoded URLs the collision
+         * space is well below the Long domain, and the practical impact of a
+         * collision is at most a single song being replaced in the favorites
+         * tab (which the user can re-like to fix).
+         */
+        internal fun stableLongIdFromString(id: String): Long {
+            if (id.isEmpty()) return 0L
+            val hash = id.hashCode().toLong()
+            return if (hash >= 0) hash else -hash
+        }
     }
 
     private val directoryScanMutex = Mutex()
@@ -106,6 +129,52 @@ class MusicRepositoryImpl @Inject constructor(
 
     private fun normalizePath(path: String): String =
         runCatching { File(path).canonicalPath }.getOrElse { File(path).absolutePath }
+
+    /**
+     * Converts a cloud-streamed playback URI to a stable, restart-safe scheme
+     * URI so it can be persisted to the Room DB without breaking when the local
+     * HTTP proxy rebinds to a different port on the next app launch.
+     *
+     * Examples:
+     *   "http://127.0.0.1:53719/youtube/dQw4w9WgXcQ"
+     *     → "youtube://dQw4w9WgXcQ"
+     *   "http://127.0.0.1:53719/soundcloud/encodedPayload"
+     *     → "soundcloud://encodedPayload"
+     *
+     * URIs that are already in scheme form (telegram://, netease://, gdrive://,
+     * youtube://, soundcloud://) and local file/content URIs are returned
+     * unchanged. Plain absolute paths are also returned unchanged.
+     */
+    internal fun normalizeCloudUriForStorage(contentUriString: String): String {
+        if (contentUriString.isEmpty()) return contentUriString
+        // Already in scheme form — leave alone.
+        val knownSchemes = setOf(
+            "youtube", "soundcloud", "telegram", "netease", "gdrive",
+            "content", "file"
+        )
+        val parsed = runCatching { Uri.parse(contentUriString) }.getOrNull() ?: return contentUriString
+        val scheme = parsed.scheme?.lowercase()
+        if (scheme != null && scheme in knownSchemes) return contentUriString
+        // Convert localhost HTTP proxy URLs back to their scheme form.
+        if (scheme == "http" || scheme == "https") {
+            val host = parsed.host?.lowercase()
+            if (host == "127.0.0.1" || host == "localhost") {
+                val pathSegments = parsed.pathSegments
+                // Path shape: ["youtube", "<id>"] or ["soundcloud", "<encoded>"]
+                if (pathSegments.size >= 2) {
+                    val provider = pathSegments[0].lowercase()
+                    val payload = pathSegments.subList(1, pathSegments.size)
+                        .joinToString("/") { it }
+                    return when (provider) {
+                        "youtube" -> "youtube://$payload"
+                        "soundcloud" -> "soundcloud://$payload"
+                        else -> contentUriString
+                    }
+                }
+            }
+        }
+        return contentUriString
+    }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun getAudioFiles(): Flow<List<Song>> {
@@ -480,10 +549,32 @@ class MusicRepositoryImpl @Inject constructor(
     }
 
     override suspend fun setFavoriteStatus(song: Song, isFavorite: Boolean) = withContext(Dispatchers.IO) {
-        val id = song.id.toLongOrNull() ?: return@withContext
-        val isOffline = song.path.isNotEmpty() || song.contentUriString.startsWith("content://") || song.contentUriString.startsWith("file://")
-        
+        // FIX(cloud-favorites): Cloud-streamed songs (YouTube / SoundCloud / etc.) have
+        // string IDs that aren't parseable as Long (e.g. "dQw4w9WgXcQ"). The previous
+        // implementation called `song.id.toLongOrNull() ?: return@withContext`, which
+        // silently bailed out for ALL cloud songs — so the like button did nothing.
+        //
+        // We now generate a stable Long ID from the string ID via hashCode (forced
+        // positive to fit the non-negative primary key domain of MediaStore IDs).
+        // The hashCode is deterministic across app restarts, so the same cloud song
+        // always maps to the same Long row id — meaning re-liking after restart still
+        // finds the existing row, and the Liked tab paginated query (which joins
+        // `songs.id` with `favorites.songId`) returns the cloud song correctly.
+        val id = song.id.toLongOrNull() ?: stableLongIdFromString(song.id)
+
+        val isOffline = song.path.isNotEmpty() ||
+            song.contentUriString.startsWith("content://") ||
+            song.contentUriString.startsWith("file://")
+
         if (isFavorite && !isOffline) {
+            // Normalize cloud URIs to their scheme form so the stored row survives
+            // app restarts. The current session's HTTP proxy URL contains an
+            // ephemeral port (e.g. "http://127.0.0.1:53719/youtube/<id>"), so we
+            // can't store that as-is. Instead we persist the scheme URI
+            // ("youtube://<id>" / "soundcloud://<encoded>") and let
+            // DualPlayerEngine.resolveCloudUri translate it to the live proxy URL
+            // at play time. (Telegram/netease already work this way.)
+            val normalizedContentUri = normalizeCloudUriForStorage(song.contentUriString)
             val entity = com.theveloper.pixeltune.data.database.SongEntity(
                 id = id,
                 title = song.title,
@@ -491,11 +582,11 @@ class MusicRepositoryImpl @Inject constructor(
                 artistId = song.artistId,
                 albumName = song.album,
                 albumId = song.albumId,
-                contentUriString = song.contentUriString,
+                contentUriString = normalizedContentUri,
                 albumArtUriString = song.albumArtUriString,
                 duration = song.duration,
                 genre = song.genre,
-                filePath = song.path.ifEmpty { song.contentUriString },
+                filePath = normalizedContentUri,
                 parentDirectoryPath = "online_favorites",
                 isFavorite = true,
                 dateAdded = System.currentTimeMillis()
@@ -517,7 +608,12 @@ class MusicRepositoryImpl @Inject constructor(
     }
 
     override suspend fun setFavoriteStatus(songId: String, isFavorite: Boolean) = withContext(Dispatchers.IO) {
-        val id = songId.toLongOrNull() ?: return@withContext
+        // FIX(cloud-favorites): same as above — accept non-numeric string IDs by
+        // hashing them to a stable Long. The previous implementation bailed out
+        // for cloud song IDs, so calls like `syncFavoritesStores` (which tries to
+        // reconcile preference favorites with the Room favorites table) silently
+        // skipped every cloud song, leaving them out of the Liked tab.
+        val id = songId.toLongOrNull() ?: stableLongIdFromString(songId)
         if (isFavorite) {
             favoritesDao.setFavorite(
                 com.theveloper.pixeltune.data.database.FavoritesEntity(
@@ -538,7 +634,7 @@ class MusicRepositoryImpl @Inject constructor(
     }
 
     override suspend fun toggleFavoriteStatus(songId: String): Boolean = withContext(Dispatchers.IO) {
-        val id = songId.toLongOrNull() ?: return@withContext false
+        val id = songId.toLongOrNull() ?: stableLongIdFromString(songId)
         val isFav = favoritesDao.isFavorite(id) ?: false
         val newFav = !isFav
         setFavoriteStatus(songId, newFav)

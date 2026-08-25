@@ -107,6 +107,11 @@ fun RecentlyPlayedScreen(
 
     val allSongs by playerViewModel.allSongsFlow.collectAsStateWithLifecycle()
     val playbackHistory by playerViewModel.playbackHistory.collectAsStateWithLifecycle()
+    // FIX(recently-played): also include cloud-streamed songs (YouTube/SoundCloud/etc.)
+    // — they have non-numeric IDs that are not present in the local MediaStore-backed
+    // `allSongs`, so without this merge they would be silently filtered out of the
+    // Recently Played screen even though they have valid playback history entries.
+    val cloudSongsById by playerViewModel.cloudSongsRegistry.collectAsStateWithLifecycle()
     val currentSongId by remember(playerViewModel.stablePlayerState) {
         playerViewModel.stablePlayerState.map { it.currentSong?.id }.distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = null)
@@ -123,10 +128,25 @@ fun RecentlyPlayedScreen(
     var selectedSongForInfo by remember { mutableStateOf<Song?>(null) }
     val bottomBarHeightDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
-    val recentlyPlayedSongs = remember(playbackHistory, allSongs, selectedRange) {
+    val recentlyPlayedSongs = remember(playbackHistory, allSongs, cloudSongsById, selectedRange) {
+        // Merge local MediaStore songs + cloud-streamed songs we've encountered this
+        // session so YouTube/SoundCloud/etc. tracks appear in the Recently Played list.
+        val mergedSongs = if (cloudSongsById.isEmpty()) {
+            allSongs
+        } else {
+            val seen = HashSet<String>(allSongs.size + cloudSongsById.size)
+            val combined = ArrayList<Song>(allSongs.size + cloudSongsById.size)
+            for (song in allSongs) {
+                if (seen.add(song.id)) combined += song
+            }
+            for (song in cloudSongsById.values) {
+                if (seen.add(song.id)) combined += song
+            }
+            combined
+        }
         mapRecentlyPlayedSongs(
             playbackHistory = playbackHistory,
-            songs = allSongs,
+            songs = mergedSongs,
             range = selectedRange,
             maxItems = Int.MAX_VALUE
         )

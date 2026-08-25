@@ -40,7 +40,9 @@ import javax.inject.Singleton
 import kotlin.coroutines.resume
 
 import com.theveloper.pixeltune.data.netease.NeteaseStreamProxy
+import com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy
 import com.theveloper.pixeltune.data.telegram.TelegramRepository
+import com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DataSpec
@@ -63,7 +65,15 @@ class DualPlayerEngine @Inject constructor(
     private val telegramStreamProxy: com.theveloper.pixeltune.data.telegram.TelegramStreamProxy,
     private val neteaseStreamProxy: NeteaseStreamProxy,
     private val telegramCacheManager: com.theveloper.pixeltune.data.telegram.TelegramCacheManager,
-    private val connectivityStateHolder: com.theveloper.pixeltune.presentation.viewmodel.ConnectivityStateHolder
+    private val connectivityStateHolder: com.theveloper.pixeltune.presentation.viewmodel.ConnectivityStateHolder,
+    // FIX(cloud-favorites): YouTube + SoundCloud proxies are required so that
+    // URIs persisted as `youtube://<videoId>` or `soundcloud://<encoded>` (e.g.
+    // favorited cloud songs loaded from the Liked tab) can be resolved to the
+    // current session's localhost HTTP proxy URL at play time. Without this,
+    // a favorited YouTube song becomes unplayable after an app restart because
+    // the stored HTTP proxy URL had an ephemeral port.
+    private val youTubeStreamProxy: YouTubeStreamProxy,
+    private val soundCloudStreamProxy: SoundCloudStreamProxy
 ) {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var transitionJob: Job? = null
@@ -317,7 +327,9 @@ class DualPlayerEngine @Inject constructor(
         val resolver = object : ResolvingDataSource.Resolver {
             override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
                 val scheme = dataSpec.uri.scheme
-                if (scheme == "telegram" || scheme == "netease") {
+                if (scheme == "telegram" || scheme == "netease" ||
+                    scheme == "youtube" || scheme == "soundcloud"
+                ) {
                     val originalUri = dataSpec.uri.toString()
                     val resolved = resolvedUriCache[originalUri]
                     if (resolved != null) {
@@ -394,6 +406,12 @@ class DualPlayerEngine @Inject constructor(
         val resolved: Uri? = when (uri.scheme) {
             "telegram" -> resolveTelegramUriAsync(uri, uriString)
             "netease" -> resolveNeteaseUriAsync(uriString)
+            // FIX(cloud-favorites): resolve persisted youtube://<videoId> and
+            // soundcloud://<encoded> scheme URIs to the current session's
+            // localhost HTTP proxy URL. This is what makes favorited cloud
+            // songs playable after an app restart.
+            "youtube" -> resolveYouTubeUriAsync(uriString)
+            "soundcloud" -> resolveSoundCloudUriAsync(uriString)
             else -> null
         }
 
@@ -475,13 +493,78 @@ class DualPlayerEngine @Inject constructor(
     }
 
     /**
+     * Resolves a `youtube://<videoId>` URI to the current session's YouTube proxy
+     * HTTP URL. The proxy URL contains an ephemeral port, so we can never persist
+     * it directly — we always resolve from the scheme form at play time.
+     *
+     * Returns null if the proxy isn't ready after the standard 5-second wait,
+     * or if the URI's host (the video ID) is missing / doesn't match YouTube's
+     * 11-char video ID format.
+     */
+    private suspend fun resolveYouTubeUriAsync(uriString: String): Uri? {
+        Timber.tag("DualPlayerEngine").d("Async resolving YouTube URI: $uriString")
+
+        if (!youTubeStreamProxy.isReady()) {
+            Timber.tag("DualPlayerEngine").w("YouTubeStreamProxy not ready, awaiting...")
+            val proxyReady = youTubeStreamProxy.awaitReady(5_000L)
+            if (!proxyReady) {
+                Timber.tag("DualPlayerEngine").e("YouTubeStreamProxy not ready after timeout")
+                return null
+            }
+        }
+
+        val proxyUrl = youTubeStreamProxy.resolveYouTubeUri(uriString)
+        if (!proxyUrl.isNullOrBlank()) {
+            return Uri.parse(proxyUrl)
+        }
+
+        Timber.tag("DualPlayerEngine").w("Failed to resolve YouTube URI: $uriString")
+        return null
+    }
+
+    /**
+     * Resolves a `soundcloud://<encoded>` URI to the current session's SoundCloud
+     * proxy HTTP URL. Mirrors [resolveYouTubeUriAsync] — see that function's docs
+     * for why we cannot persist the proxy URL directly.
+     */
+    private suspend fun resolveSoundCloudUriAsync(uriString: String): Uri? {
+        Timber.tag("DualPlayerEngine").d("Async resolving SoundCloud URI: $uriString")
+
+        if (!soundCloudStreamProxy.isReady()) {
+            Timber.tag("DualPlayerEngine").w("SoundCloudStreamProxy not ready, awaiting...")
+            val proxyReady = soundCloudStreamProxy.awaitReady(5_000L)
+            if (!proxyReady) {
+                Timber.tag("DualPlayerEngine").e("SoundCloudStreamProxy not ready after timeout")
+                return null
+            }
+        }
+
+        val proxyUrl = soundCloudStreamProxy.resolveSoundCloudUri(uriString)
+        if (!proxyUrl.isNullOrBlank()) {
+            return Uri.parse(proxyUrl)
+        }
+
+        // SoundCloud's resolveSoundCloudUri currently always returns null (it's
+        // a stub — the SoundCloud proxy stores encoded URLs in the path segment
+        // of its HTTP proxy URL, not as a host in a scheme URI). For the
+        // favorites-from-Liked-tab flow, the URI persisted at favorite time was
+        // already the HTTP proxy URL (SoundCloud search results store the proxy
+        // URL directly in song.contentUriString), so this code path is rarely
+        // hit. We still log to make any future regression diagnosable.
+        Timber.tag("DualPlayerEngine").w("Failed to resolve SoundCloud URI: $uriString")
+        return null
+    }
+
+    /**
      * Resolves a MediaItem's cloud URI (if any) and returns a copy with the resolved URI.
      * For non-cloud URIs, returns the original MediaItem unchanged.
      */
     suspend fun resolveMediaItem(mediaItem: MediaItem): MediaItem {
         val uri = mediaItem.localConfiguration?.uri ?: return mediaItem
         val scheme = uri.scheme
-        if (scheme != "telegram" && scheme != "netease") return mediaItem
+        if (scheme != "telegram" && scheme != "netease" &&
+            scheme != "youtube" && scheme != "soundcloud"
+        ) return mediaItem
 
         val resolvedUri = resolveCloudUri(uri)
         if (resolvedUri == uri) return mediaItem // Resolution failed or not needed

@@ -20,7 +20,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -32,6 +37,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
@@ -104,9 +110,23 @@ fun UnifiedPlayerSheetV2(
     isNavBarHidden: Boolean = false
 ) {
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarScope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
+        // IMPROVE(streaming-toast): see UnifiedPlayerSheet.kt — same M3 Snackbar
+        // migration. Toast kept as a defensive fallback in case the SnackbarHost
+        // is ever not yet composed (e.g. early app-launch race), but the
+        // SnackbarHost below is the primary surface.
         playerViewModel.toastEvents.collect { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarScope.launch {
+                snackbarHostState.showSnackbar(
+                    message = message,
+                    actionLabel = null,
+                    duration = SnackbarDuration.Short,
+                    withDismissAction = false
+                )
+            }
         }
     }
 
@@ -639,6 +659,27 @@ fun UnifiedPlayerSheetV2(
                 onNavigateToArtist = sheetActionHandlers.onNavigateToArtist
             )
         }
+
+        // IMPROVE(streaming-toast): M3 SnackbarHost overlaying the player sheet.
+        // Anchored to the bottom of the player sheet's Box so the snackbar
+        // appears above the system nav bar / above the mini-player when the
+        // sheet is collapsed, and inside the safe-drawing area when expanded.
+        // Same surface styling as UnifiedPlayerSheet.kt for visual parity.
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 8.dp, start = 12.dp, end = 12.dp),
+            snackbar = { data ->
+                Snackbar(
+                    snackbarData = data,
+                    shape = RoundedCornerShape(16.dp),
+                    containerColor = MaterialTheme.colorScheme.inverseSurface,
+                    contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                    actionColor = MaterialTheme.colorScheme.inversePrimary
+                )
+            }
+        )
     }
 
     UnifiedPlayerCastLayer(

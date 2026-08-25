@@ -39,7 +39,7 @@ class MediaMapper @Inject constructor(
         val dateAdded = extras?.getLong(MediaItemBuilder.EXTERNAL_EXTRA_DATE_ADDED) ?: System.currentTimeMillis()
         val id = mediaItem.mediaId
 
-        // Note: This creates a partial Song object. 
+        // Note: This creates a partial Song object.
         // Some fields like path, genre, year might be missing if not in extras.
         return Song(
             id = id,
@@ -53,7 +53,61 @@ class MediaMapper @Inject constructor(
             albumArtUriString = metadata.artworkUri?.toString(),
             duration = duration,
             dateAdded = dateAdded,
-            mimeType = null, 
+            mimeType = null,
+            bitrate = null,
+            sampleRate = null
+        )
+    }
+
+    /**
+     * Lightweight fallback that extracts whatever song metadata is available
+     * directly from a [MediaItem]'s public [androidx.media3.common.MediaMetadata]
+     * fields, without requiring the EXTERNAL_EXTRA_* extras Bundle.
+     *
+     * Used as a last-resort fallback in [com.theveloper.pixeltune.presentation.viewmodel.PlayerViewModel.resolveSongFromMediaItem]
+     * when:
+     *  1. The song ID is not in the local Room DB (e.g. cloud-streamed YouTube /
+     *     SoundCloud autoplay recommendations that were appended at runtime by
+     *     MusicService and never persisted to the in-memory playback queue yet).
+     *  2. The richer [resolveSongFromMediaItem] fallback returns null because
+     *     the MediaItem was built without the EXTERNAL_EXTRA_CONTENT_URI extra
+     *     (e.g. by old callers using an inline [androidx.media3.common.MediaMetadata.Builder]
+     *     instead of [com.theveloper.pixeltune.utils.MediaItemBuilder.build]).
+     *
+     * Without this fallback, [com.theveloper.pixeltune.presentation.viewmodel.PlaybackStateHolder]
+     * would set currentSong = null after a cloud-song transition, causing the
+     * full-player UI to render blank title / artist / artwork until the in-memory
+     * playback queue updated asynchronously — the exact symptom reported in the
+     * "cloud metadata doesn't show up" bug.
+     */
+    fun resolveSongFromMediaItemMetadataOnly(mediaItem: MediaItem): Song? {
+        val metadata = mediaItem.mediaMetadata
+        val title = metadata.title?.toString()?.takeIf { it.isNotBlank() }
+            ?: return null
+        val artist = metadata.artist?.toString()?.takeIf { it.isNotBlank() }
+            ?: context.getString(R.string.unknown_artist)
+        val album = metadata.albumTitle?.toString()?.takeIf { it.isNotBlank() }
+            ?: context.getString(R.string.unknown_album)
+
+        // The MediaItem's localConfiguration.uri is set whenever the MediaItem
+        // was built via MediaItem.Builder.setUri(...). For cloud songs this is
+        // the proxy URL (or scheme URI for favorited cloud songs after restart).
+        val contentUri = mediaItem.localConfiguration?.uri?.toString()
+            ?: return null
+
+        return Song(
+            id = mediaItem.mediaId,
+            title = title,
+            artist = artist,
+            artistId = -1L,
+            album = album,
+            albumId = -1L,
+            path = "",
+            contentUriString = contentUri,
+            albumArtUriString = metadata.artworkUri?.toString(),
+            duration = 0L,
+            dateAdded = System.currentTimeMillis(),
+            mimeType = null,
             bitrate = null,
             sampleRate = null
         )

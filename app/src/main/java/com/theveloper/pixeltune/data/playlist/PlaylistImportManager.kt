@@ -6,6 +6,7 @@ import com.theveloper.pixeltune.data.database.MusicDao
 import com.theveloper.pixeltune.data.database.SongEntity
 import com.theveloper.pixeltune.data.model.SearchFilterType
 import com.theveloper.pixeltune.data.model.SearchResultItem
+import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
 import com.theveloper.pixeltune.data.youtube.YouTubeRepository
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +31,32 @@ class PlaylistImportManager @Inject constructor(
 
     data class ScrapedTrack(val title: String, val artist: String)
 
-    suspend fun importPlaylist(url: String): Result<String> = withContext(Dispatchers.IO) {
+    /**
+     * Result of matching a single [ScrapedTrack] against YouTube search results.
+     * Used by [previewPlaylist] so the UI can show the user exactly what each
+     * scraped track resolved to — letting them remove mis-matches BEFORE the
+     * expensive insert-into-DB step (IMPROVE 2: import preview screen).
+     */
+    data class TrackMatch(
+        /** 0-based index in the original scraped track list. */
+        val sourceIndex: Int,
+        val scrapedTitle: String,
+        val scrapedArtist: String,
+        /** The YouTube [Song] that best matched, or null if no match was found. */
+        val matchedSong: Song?,
+        /** Why this match was picked — shown to the user as a hint chip. */
+        val matchReason: String,
+        /** Whether the user has selected / deselected this match for import. */
+        var isSelected: Boolean = matchedSong != null
+    )
+
+    /**
+     * Phase 1 of the import flow: scrape the source URL, search YouTube for
+     * each track, and return a list of [TrackMatch]es WITHOUT persisting
+     * anything to the DB. The caller (UI) presents this list to the user, who
+     * can deselect unwanted matches before calling [commitPreview].
+     */
+    suspend fun previewPlaylist(url: String): Result<Pair<String, List<TrackMatch>>> = withContext(Dispatchers.IO) {
         try {
             val (playlistName, tracks) = when {
                 url.contains("youtube.com") || url.contains("youtu.be") -> {
@@ -45,38 +71,57 @@ class PlaylistImportManager @Inject constructor(
                 throw Exception("No tracks found in the playlist.")
             }
 
+            val matches = tracks.mapIndexed { index, track ->
+                resolveTrackToMatch(index, track)
+            }
+
+            Result.success(Pair(playlistName, matches))
+        } catch (e: Exception) {
+            Timber.e(e, "Playlist preview failed for url: $url")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Phase 2 of the import flow: persist the user-curated subset of the
+     * preview matches to the DB and create a playlist. Called by the import
+     * preview screen after the user has deselected any unwanted matches.
+     */
+    suspend fun commitPreview(
+        playlistName: String,
+        matches: List<TrackMatch>
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val selected = matches.filter { it.isSelected && it.matchedSong != null }
+            if (selected.isEmpty()) {
+                throw Exception("No tracks selected for import.")
+            }
+
             val songEntities = mutableListOf<SongEntity>()
-            for (track in tracks) {
-                // Background text matching using YouTubeRepository
-                val query = "${track.title} ${track.artist}"
-                val results = youtubeRepository.searchYouTube(query, SearchFilterType.SONGS) { id -> "youtube://$id" }
-                val bestMatch = results.firstOrNull() as? SearchResultItem.SongItem
-                
-                if (bestMatch != null) {
-                    val proxyUrl = bestMatch.song.contentUriString
-                    val songId = bestMatch.song.youtubeId?.hashCode()?.toLong() 
-                        ?: bestMatch.song.id.hashCode().toLong()
-                        
-                    val entity = SongEntity(
-                        id = songId,
-                        title = bestMatch.song.title,
-                        artistName = bestMatch.song.artist,
-                        artistId = bestMatch.song.artistId,
-                        albumName = bestMatch.song.album,
-                        albumId = bestMatch.song.albumId,
-                        contentUriString = proxyUrl, // Proxy ID mapping
-                        albumArtUriString = bestMatch.song.albumArtUriString,
-                        duration = bestMatch.song.duration,
-                        genre = bestMatch.song.genre,
-                        filePath = proxyUrl,
-                        parentDirectoryPath = "imported_playlists", // helps filter it conceptually
-                        isFavorite = false,
-                        dateAdded = System.currentTimeMillis()
-                    )
-                    // We only add distinct matches
-                    if (songEntities.none { it.id == songId }) {
-                        songEntities.add(entity)
-                    }
+            for (match in selected) {
+                val song = match.matchedSong ?: continue
+                val proxyUrl = normalizeCloudUriForStorage(song.contentUriString)
+                val songId = com.theveloper.pixeltune.data.repository.MusicRepositoryImpl
+                    .stableLongIdFromString(song.youtubeId ?: song.id)
+
+                val entity = SongEntity(
+                    id = songId,
+                    title = song.title,
+                    artistName = song.artist,
+                    artistId = song.artistId,
+                    albumName = song.album,
+                    albumId = song.albumId,
+                    contentUriString = proxyUrl,
+                    albumArtUriString = song.albumArtUriString,
+                    duration = song.duration,
+                    genre = song.genre,
+                    filePath = proxyUrl,
+                    parentDirectoryPath = "imported_playlists",
+                    isFavorite = false,
+                    dateAdded = System.currentTimeMillis()
+                )
+                if (songEntities.none { it.id == songId }) {
+                    songEntities.add(entity)
                 }
             }
 
@@ -84,7 +129,6 @@ class PlaylistImportManager @Inject constructor(
                 throw Exception("Could not match any tracks to playable streams.")
             }
 
-            // Insert parent Artist and Album entities first to satisfy Foreign Key constraints
             val newArtists = songEntities.map {
                 ArtistEntity(
                     id = it.artistId,
@@ -107,20 +151,261 @@ class PlaylistImportManager @Inject constructor(
 
             musicDao.insertArtistsIgnoreConflicts(newArtists)
             musicDao.insertAlbumsIgnoreConflicts(newAlbums)
-
-            // Now proceed with saving the songs
             musicDao.insertSongsIgnoreConflicts(songEntities)
-            
-            // Playlist Creation
+
             val newSongIds = songEntities.map { it.id.toString() }
             val finalName = playlistName.ifBlank { "Imported Playlist" }
             userPreferencesRepository.createPlaylist(finalName, newSongIds)
-            
+
             Result.success("Imported $finalName with ${newSongIds.size} matching tracks!")
         } catch (e: Exception) {
-            Timber.e(e, "Playlist import failed for url: $url")
+            Timber.e(e, "Playlist commit failed for playlistName: $playlistName")
             Result.failure(e)
         }
+    }
+
+    /**
+     * Legacy single-shot import entry point — kept for callers that don't
+     * want a preview step. Equivalent to calling [previewPlaylist] followed
+     * by [commitPreview] with all matches selected.
+     *
+     * New callers should prefer the preview → commit two-phase flow so the
+     * user can review and deselect mis-matched tracks (see IMPROVE 2 in the
+     * product spec).
+     */
+    suspend fun importPlaylist(url: String): Result<String> = withContext(Dispatchers.IO) {
+        val previewResult = previewPlaylist(url)
+        if (previewResult.isFailure) {
+            return@withContext Result.failure(previewResult.exceptionOrNull() ?: Exception("Preview failed"))
+        }
+        val (playlistName, matches) = previewResult.getOrNull()!!
+        // Auto-select only the matches that found a song (the deselection of
+        // no-match entries is already done inside [resolveTrackToMatch]).
+        val selected = matches.map { it.copy(isSelected = it.matchedSong != null) }
+        commitPreview(playlistName, selected)
+    }
+
+    /**
+     * Picks the best YouTube search result for a single scraped track.
+     *
+     * The previous implementation blindly took `results.firstOrNull()`, which
+     * often returned a "Topic" channel auto-generated cover, a remix, or a
+     * lyrics video — producing the "gibberish titles / artist" symptom the
+     * user reported (e.g. uploaderName "- Topic" → stored as artistName).
+     *
+     * The new implementation:
+     *  1. Searches YouTube with `"${title} ${artist}"` (filtered to SONGS).
+     *  2. For every result, computes a similarity score using a normalized
+     *     Jaccard token-overlap on title + artist, plus a small bonus if the
+     *     artist name appears in the uploader name (covers "Official Artist
+     *     Channel" matches).
+     *  3. Rejects any result whose similarity score is below a conservative
+     *     threshold — preferring "no match" over a wrong match.
+     *  4. Cleans up the matched song's title / artist fields:
+     *     - strips "- Topic", "Official Audio", "(Lyrics)" suffixes that
+     *       NewPipe returns as part of uploaderName / item.name.
+     *     - falls back to the *original* scraped title / artist when the
+     *       YouTube result's fields are clearly worse (e.g. "Various Artists"
+     *       or empty).
+     */
+    private suspend fun resolveTrackToMatch(
+        sourceIndex: Int,
+        track: ScrapedTrack
+    ): TrackMatch {
+        val query = "${track.title} ${track.artist}".trim()
+        if (query.isBlank()) {
+            return TrackMatch(
+                sourceIndex = sourceIndex,
+                scrapedTitle = track.title,
+                scrapedArtist = track.artist,
+                matchedSong = null,
+                matchReason = "Empty query"
+            )
+        }
+
+        val results = runCatching {
+            youtubeRepository.searchYouTube(query, SearchFilterType.SONGS) { id -> "youtube://$id" }
+        }.getOrDefault(emptyList())
+
+        val songItems = results.filterIsInstance<SearchResultItem.SongItem>()
+        if (songItems.isEmpty()) {
+            return TrackMatch(
+                sourceIndex = sourceIndex,
+                scrapedTitle = track.title,
+                scrapedArtist = track.artist,
+                matchedSong = null,
+                matchReason = "No YouTube results"
+            )
+        }
+
+        val targetTitleTokens = normalizeForMatching(track.title)
+        val targetArtistTokens = normalizeForMatching(track.artist)
+
+        val scored = songItems.map { item ->
+            val candidateTitleTokens = normalizeForMatching(item.song.title)
+            val candidateArtistTokens = normalizeForMatching(item.song.artist)
+
+            val titleScore = jaccardSimilarity(targetTitleTokens, candidateTitleTokens)
+            val artistScore = jaccardSimilarity(targetArtistTokens, candidateArtistTokens)
+
+            // Bonus: scraped artist appears in the YouTube uploader name (e.g.
+            // official artist channel) → strong signal that this is the right
+            // track even if the title has minor formatting differences.
+            val uploaderContainsArtist = targetArtistTokens.isNotEmpty() &&
+                targetArtistTokens.any { it.length >= 3 && it in candidateArtistTokens }
+
+            val combinedScore = (titleScore * 0.7f) + (artistScore * 0.3f) +
+                (if (uploaderContainsArtist) 0.1f else 0f)
+
+            Triple(item, combinedScore, uploaderContainsArtist)
+        }.sortedByDescending { it.second }
+
+        val (bestItem, bestScore, bestUploaderMatch) = scored.first()
+
+        if (bestScore < MIN_MATCH_SCORE) {
+            return TrackMatch(
+                sourceIndex = sourceIndex,
+                scrapedTitle = track.title,
+                scrapedArtist = track.artist,
+                matchedSong = null,
+                matchReason = "Best score %.2f below threshold".format(bestScore)
+            )
+        }
+
+        // Clean up the matched song's metadata so the user sees the original
+        // track title / artist (from Spotify/Apple Music), not NewPipe's
+        // uploaderName which frequently contains "- Topic" or similar noise.
+        val cleanedTitle = pickBetterTitle(
+            original = track.title,
+            candidate = bestItem.song.title
+        )
+        val cleanedArtist = pickBetterArtist(
+            original = track.artist,
+            candidate = bestItem.song.artist
+        )
+
+        val reason = if (bestUploaderMatch) {
+            "Official channel match (score %.2f)".format(bestScore)
+        } else {
+            "Title match (score %.2f)".format(bestScore)
+        }
+
+        val cleanedSong = bestItem.song.copy(
+            title = cleanedTitle,
+            artist = cleanedArtist
+        )
+
+        return TrackMatch(
+            sourceIndex = sourceIndex,
+            scrapedTitle = track.title,
+            scrapedArtist = track.artist,
+            matchedSong = cleanedSong,
+            matchReason = reason
+        )
+    }
+
+    private fun normalizeForMatching(text: String): Set<String> {
+        if (text.isBlank()) return emptySet()
+        // Lowercase, strip common noise tokens, split on non-alphanumeric.
+        val cleaned = text.lowercase()
+            .replace(Regex("[\\p{Punct}]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (cleaned.isEmpty()) return emptySet()
+        return cleaned.split(" ")
+            .filter { it.isNotBlank() && it !in NOISE_TOKENS && it.length >= 2 }
+            .toSet()
+    }
+
+    private fun jaccardSimilarity(a: Set<String>, b: Set<String>): Float {
+        if (a.isEmpty() && b.isEmpty()) return 0f
+        if (a.isEmpty() || b.isEmpty()) return 0f
+        val intersection = a.intersect(b).size.toFloat()
+        val union = a.union(b).size.toFloat()
+        return if (union == 0f) 0f else intersection / union
+    }
+
+    /**
+     * Pick the better of the scraped title vs. the YouTube result title.
+     * We prefer the scraped (Spotify/Apple) title when they're close, because
+     * the scraped source is canonical — YouTube titles often have
+     * "(Official Audio)", "- Topic", etc. suffixed.
+     */
+    private fun pickBetterTitle(original: String, candidate: String): String {
+        if (original.isBlank()) return candidate
+        if (candidate.isBlank()) return original
+        // Strip noise suffixes from the YouTube title first.
+        val cleanedCandidate = stripTitleNoise(candidate)
+        // If the cleaned candidate still differs significantly from the
+        // original, prefer the original (canonical).
+        val tokens1 = normalizeForMatching(original)
+        val tokens2 = normalizeForMatching(cleanedCandidate)
+        val sim = jaccardSimilarity(tokens1, tokens2)
+        return if (sim >= 0.4f || original.length <= cleanedCandidate.length + 6) original
+        else cleanedCandidate
+    }
+
+    private fun pickBetterArtist(original: String, candidate: String): String {
+        if (original.isBlank()) return candidate.ifBlank { "Unknown Artist" }
+        if (candidate.isBlank()) return original
+        val cleanedCandidate = stripArtistNoise(candidate)
+        return if (normalizeForMatching(original).intersect(normalizeForMatching(cleanedCandidate)).isNotEmpty()) {
+            original
+        } else cleanedCandidate.ifBlank { original }
+    }
+
+    private fun stripTitleNoise(title: String): String {
+        var t = title.trim()
+        // Remove trailing "- Topic" (NewPipe's auto-generated music channel suffix).
+        t = t.replace(Regex("\\s*-?\\s*Topic\\s*$", RegexOption.IGNORE_CASE), "")
+        // Remove "(Official Audio)", "(Official Video)", "(Lyrics)", "[Audio]" etc.
+        t = t.replace(Regex("\\s*[\\[\\(](?:official\\s+(?:audio|video|music\\s+video|visualizer)|lyrics?|audio|hd|hq)[\\]\\)]", RegexOption.IGNORE_CASE), "")
+        // Collapse whitespace.
+        return t.trim().replace(Regex("\\s+"), " ")
+    }
+
+    private fun stripArtistNoise(artist: String): String {
+        var a = artist.trim()
+        a = a.replace(Regex("\\s*-?\\s*Topic\\s*$", RegexOption.IGNORE_CASE), "")
+        return a.trim().replace(Regex("\\s+"), " ")
+    }
+
+    /**
+     * Persistence-time URI normalizer — same logic as
+     * [com.theveloper.pixeltune.data.repository.MusicRepositoryImpl.normalizeCloudUriForStorage],
+     * duplicated locally because that function is internal to the repository
+     * module. Converts the current session's YouTube proxy URL
+     * (`http://127.0.0.1:<port>/youtube/<id>`) to the restart-safe
+     * `youtube://<id>` scheme form so the persisted SongEntity doesn't break
+     * after the proxy rebinds to a different port on next launch.
+     */
+    internal fun normalizeCloudUriForStorage(contentUriString: String): String {
+        if (contentUriString.isEmpty()) return contentUriString
+        val knownSchemes = setOf(
+            "youtube", "soundcloud", "telegram", "netease", "gdrive",
+            "content", "file"
+        )
+        val parsed = runCatching { android.net.Uri.parse(contentUriString) }.getOrNull()
+            ?: return contentUriString
+        val scheme = parsed.scheme?.lowercase()
+        if (scheme != null && scheme in knownSchemes) return contentUriString
+        if (scheme == "http" || scheme == "https") {
+            val host = parsed.host?.lowercase()
+            if (host == "127.0.0.1" || host == "localhost") {
+                val pathSegments = parsed.pathSegments
+                if (pathSegments.size >= 2) {
+                    val provider = pathSegments[0].lowercase()
+                    val payload = pathSegments.subList(1, pathSegments.size)
+                        .joinToString("/") { it }
+                    return when (provider) {
+                        "youtube" -> "youtube://$payload"
+                        "soundcloud" -> "soundcloud://$payload"
+                        else -> contentUriString
+                    }
+                }
+            }
+        }
+        return contentUriString
     }
 
     private suspend fun extractYouTubePlaylist(url: String): Pair<String, List<ScrapedTrack>> {
@@ -276,5 +561,36 @@ class PlaylistImportManager @Inject constructor(
         }
 
         return Pair(playlistName, tracks)
+    }
+
+    private companion object {
+        /**
+         * Minimum combined Jaccard similarity score for a YouTube search result
+         * to be considered a "match" for a scraped Spotify/Apple track. Below
+         * this threshold, [resolveTrackToMatch] prefers reporting "no match"
+         * over a wrong match — the user can still see the scraped row in the
+         * preview screen and either deselect it or accept that no streamable
+         * equivalent was found.
+         *
+         * 0.35 is conservative: it requires ~35% token overlap between the
+         * scraped "{title} {artist}" query and the YouTube result's
+         * "{title} {uploaderName}" — enough to reject obvious mis-matches
+         * (remixes, lyric videos, covers) while still accepting legitimate
+         * matches where one side has slightly different formatting.
+         */
+        private const val MIN_MATCH_SCORE = 0.35f
+
+        /**
+         * Tokens that are too generic to discriminate between tracks — they
+         * appear in nearly every pop/hip-hop track title and so contribute
+         * almost no information to the Jaccard similarity. Dropping them
+         * prevents "feat" / "official" / "audio" from inflating the score.
+         */
+        private val NOISE_TOKENS = setOf(
+            "official", "audio", "video", "lyrics", "lyric", "hd", "hq",
+            "feat", "ft", "the", "and", "of", "a", "an",
+            "remastered", "remaster", "version", "edit",
+            "topic", "music", "song", "single", "album"
+        )
     }
 }

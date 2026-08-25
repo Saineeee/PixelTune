@@ -42,18 +42,22 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -143,9 +147,33 @@ fun UnifiedPlayerSheet(
     isNavBarHidden: Boolean = false
 ) {
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarScope = rememberCoroutineScope()
     LaunchedEffect(key1 = Unit) {
+        // IMPROVE(streaming-toast): forward PlayerViewModel.toastEvents to a
+        // Material 3 Snackbar instead of the legacy native android.widget.Toast.
+        //
+        // The native Toast has two problems the user reported:
+        //   1. It looks stylistically off in a heavy Material 3 expressive UI.
+        //   2. It persists across app backgrounding, gets visually stuck over
+        //      system UI, and is generally jarring to dismiss.
+        //
+        // The M3 Snackbar lives inside the player sheet's composition tree, so
+        // it inherits the active ColorScheme (e.g. the album-art-derived dynamic
+        // theme), respects safe insets, and animates in/out with M3 standard
+        // motion. The SnackbarHost itself is rendered below in the Box.
         playerViewModel.toastEvents.collect { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            // Cancel any in-flight snackbar so the latest message wins (matches
+            // the DROP_OLDEST buffer-overflow policy of the underlying SharedFlow).
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarScope.launch {
+                snackbarHostState.showSnackbar(
+                    message = message,
+                    actionLabel = null,
+                    duration = SnackbarDuration.Short,
+                    withDismissAction = false
+                )
+            }
         }
     }
 
@@ -675,6 +703,26 @@ fun UnifiedPlayerSheet(
         UnifiedPlayerSaveQueueLayer(
             pendingOverlay = pendingSaveQueueOverlay,
             onDismissOverlay = { sheetModalOverlayController.dismissSaveQueueOverlay() }
+        )
+
+        // IMPROVE(streaming-toast): M3 SnackbarHost overlaying the player sheet.
+        // Anchored to the bottom of the player sheet's Box so the snackbar
+        // appears above the system nav bar / above the mini-player when the
+        // sheet is collapsed, and inside the safe-drawing area when expanded.
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 8.dp, start = 12.dp, end = 12.dp),
+            snackbar = { data ->
+                Snackbar(
+                    snackbarData = data,
+                    shape = RoundedCornerShape(16.dp),
+                    containerColor = MaterialTheme.colorScheme.inverseSurface,
+                    contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                    actionColor = MaterialTheme.colorScheme.inversePrimary
+                )
+            }
         )
     }
 }

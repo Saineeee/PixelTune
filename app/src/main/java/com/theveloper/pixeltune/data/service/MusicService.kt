@@ -899,11 +899,38 @@ class MusicService : MediaLibraryService() {
                             Timber.tag(TAG).d(e, "Error fetching current song from database")
                         }
                         val safeSong = currentSong ?: com.theveloper.pixeltune.data.model.Song.emptySong().copy(title = currentItem.mediaMetadata.title?.toString() ?: "Unknown", artist = currentItem.mediaMetadata.artist?.toString() ?: "Unknown", id = mediaId, youtubeId = mediaId)
-                        val result = youtubeRepository.getAutoplayRecommendation(safeSong, queueIds) { youtubeStreamProxy.getProxyUrl(it) }
-                        if (result.isSuccess) {
+                        // IMPROVE(more-up-next): fetch up to 5 autoplay recommendations
+                        // in a single NewPipe page fetch (instead of the previous 1-at-a-time
+                        // fetch that left the "Up Next" carousel showing only the immediately
+                        // next song). The user explicitly asked for "more next queued songs
+                        // related with exact same taste of the current songs".
+                        //
+                        // We compute the desired queue depth dynamically: aim for at least
+                        // 5 upcoming songs after the current one, but cap the actual fetch
+                        // count to the (cap - currentlyRemaining) delta so we don't
+                        // re-fetch songs we already have queued behind the current index.
+                        val desiredUpcoming = 5
+                        val currentlyRemaining = (engine.masterPlayer.mediaItemCount - 1) -
+                            engine.masterPlayer.currentMediaItemIndex
+                        val toFetch = (desiredUpcoming - currentlyRemaining).coerceAtLeast(1)
+                            .coerceAtMost(desiredUpcoming)
+                        val recommendations = youtubeRepository.getMultipleAutoplayRecommendations(
+                            currentSong = safeSong,
+                            currentQueueIds = queueIds,
+                            proxyUrlProvider = { youtubeStreamProxy.getProxyUrl(it) },
+                            limit = toFetch
+                        )
+                        if (recommendations.isNotEmpty()) {
                             withContext(Dispatchers.Main) {
+                                // Only append if the queue hasn't changed underneath us
+                                // (e.g. the user manually added/removed songs while we
+                                // were fetching recommendations). If it has, the next
+                                // onMediaItemTransition will re-trigger this block anyway.
                                 if (engine.masterPlayer.mediaItemCount == oldQueueSize) {
-                                    engine.masterPlayer.addMediaItem(com.theveloper.pixeltune.utils.MediaItemBuilder.build(result.getOrNull()!!))
+                                    val mediaItems = recommendations.map {
+                                        com.theveloper.pixeltune.utils.MediaItemBuilder.build(it)
+                                    }
+                                    engine.masterPlayer.addMediaItems(mediaItems)
                                 }
                             }
                         }

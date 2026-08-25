@@ -119,6 +119,10 @@ fun HomeScreen(
     val dailyMixSongs by playerViewModel.dailyMixSongs.collectAsStateWithLifecycle()
     val curatedYourMixSongs by playerViewModel.yourMixSongs.collectAsStateWithLifecycle()
     val playbackHistory by playerViewModel.playbackHistory.collectAsStateWithLifecycle()
+    // FIX(recently-played): observe cloud-streamed songs (YouTube / SoundCloud / etc.)
+    // so we can resolve their IDs when filtering playback history. Cloud songs have
+    // string IDs that aren't in the local MediaStore-derived `allSongs`.
+    val cloudSongsById by playerViewModel.cloudSongsRegistry.collectAsStateWithLifecycle()
 
     val yourMixSongs = remember(curatedYourMixSongs, dailyMixSongs, allSongs) {
         when {
@@ -127,10 +131,28 @@ fun HomeScreen(
             else -> allSongs.toImmutableList()
         }
     }
-    val recentlyPlayedSongs = remember(playbackHistory, allSongs) {
+    val recentlyPlayedSongs = remember(playbackHistory, allSongs, cloudSongsById) {
+        // Merge local MediaStore songs + cloud songs we've encountered this session,
+        // so YouTube/SoundCloud/etc. tracks that were actually played appear in the
+        // "Recently Played" section even though their IDs aren't numeric.
+        val mergedSongs = if (cloudSongsById.isEmpty()) {
+            allSongs
+        } else {
+            val seen = HashSet<String>(allSongs.size + cloudSongsById.size)
+            val combined = ArrayList<com.theveloper.pixeltune.data.model.Song>(
+                allSongs.size + cloudSongsById.size
+            )
+            for (song in allSongs) {
+                if (seen.add(song.id)) combined += song
+            }
+            for (song in cloudSongsById.values) {
+                if (seen.add(song.id)) combined += song
+            }
+            combined
+        }
         mapRecentlyPlayedSongs(
             playbackHistory = playbackHistory,
-            songs = allSongs,
+            songs = mergedSongs,
             maxItems = 64
         )
     }
@@ -396,6 +418,19 @@ fun HomeScreen(
             },
             onProviderSelected = { provider ->
                 playerViewModel.setOnlineProvider(provider)
+                // IMPROVE(streaming-toast): surface a Material 3 toast via the
+                // existing _toastEvents flow so the user gets clear feedback that
+                // the cloud streaming provider was switched. The actual snackbar
+                // rendering is centralized in UnifiedPlayerSheet/V2 which
+                // collects toastEvents and forwards them to a M3 SnackbarHost.
+                playerViewModel.sendToast(
+                    when (provider) {
+                        com.theveloper.pixeltune.presentation.viewmodel.SearchStateHolder.OnlineProvider.YOUTUBE ->
+                            "Switched to YouTube streaming"
+                        com.theveloper.pixeltune.presentation.viewmodel.SearchStateHolder.OnlineProvider.SOUNDCLOUD ->
+                            "Switched to SoundCloud streaming"
+                    }
+                )
             }
         )
     }
