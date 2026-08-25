@@ -709,21 +709,29 @@ fun UnifiedPlayerSheet(
         // Anchored to the bottom of the player sheet's Box so the snackbar
         // appears above the system nav bar / above the mini-player when the
         // sheet is collapsed, and inside the safe-drawing area when expanded.
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 8.dp, start = 12.dp, end = 12.dp),
-            snackbar = { data ->
-                Snackbar(
-                    snackbarData = data,
-                    shape = RoundedCornerShape(16.dp),
-                    containerColor = MaterialTheme.colorScheme.inverseSurface,
-                    contentColor = MaterialTheme.colorScheme.inverseOnSurface,
-                    actionColor = MaterialTheme.colorScheme.inversePrimary
-                )
-            }
-        )
+        //
+        // Note: Surface's content lambda is `@Composable () -> Unit` (not a
+        // BoxScope), so `Modifier.align(...)` does not resolve at this level.
+        // We wrap the SnackbarHost in a Box(Modifier.fillMaxSize()) to provide
+        // a BoxScope receiver, then anchor the snackbar to BottomCenter inside
+        // it so the snackbar overlays the full sheet area.
+        Box(modifier = Modifier.fillMaxSize()) {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 8.dp, start = 12.dp, end = 12.dp),
+                snackbar = { data ->
+                    Snackbar(
+                        snackbarData = data,
+                        shape = RoundedCornerShape(16.dp),
+                        containerColor = MaterialTheme.colorScheme.inverseSurface,
+                        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                        actionColor = MaterialTheme.colorScheme.inversePrimary
+                    )
+                }
+            )
+        }
     }
 }
 
