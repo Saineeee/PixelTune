@@ -357,6 +357,69 @@ object AppModule {
     }
 
     /**
+     * Dedicated OkHttpClient for the cloud-streaming proxies
+     * (YouTube / Netease / SoundCloud / GDrive).
+     *
+     * CRITICAL FIX for the "YouTube playback stuck at 00:00" bug:
+     *
+     * The default app-wide client uses readTimeout=8s. YouTube throttles audio
+     * streams adaptively; reading a 5 MB body via OkHttp's `bytes()` (or any
+     * per-chunk read) can stall for >8s between bytes, which throws
+     * `SocketTimeoutException`. The proxy then has nothing to send to ExoPlayer,
+     * ExoPlayer's own connect timeout fires (also 8s), and the progress bar
+     * stays frozen at 00:00 with no error surfaced to the UI.
+     *
+     * This streaming client removes the per-read timeout entirely so that
+     * throttled upstream reads don't abort the call. The proxies now also
+     * stream bytes through `respondOutputStream` instead of buffering the
+     * entire body — see [CloudStreamForwarder] for the streaming pipeline.
+     */
+    @Provides
+    @Singleton
+    @StreamingOkHttpClient
+    fun provideStreamingOkHttpClient(): OkHttpClient {
+        val loggingInterceptor = HttpLoggingInterceptor().apply {
+            level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.HEADERS
+                    else HttpLoggingInterceptor.Level.NONE
+        }
+
+        val connectionPool = okhttp3.ConnectionPool(
+            maxIdleConnections = 8,
+            keepAliveDuration = 60,
+            timeUnit = java.util.concurrent.TimeUnit.SECONDS
+        )
+
+        return OkHttpClient.Builder()
+            .connectionPool(connectionPool)
+            // Generous connect timeout for slow DNS / TLS handshake.
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            // 0 = no read timeout. REQUIRED for YouTube's adaptive throttling:
+            // the gap between upstream chunks can exceed the app's default 8s.
+            .readTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            // 0 = no overall call timeout. The call ends when the upstream body
+            // is fully consumed (or the client disconnects).
+            .callTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            // The streaming proxies set their own browser User-Agent per-source
+            // (YouTube needs a browser UA to bypass bot checks). This interceptor
+            // only injects a default UA when none is present, so per-call UAs win.
+            .addInterceptor { chain ->
+                val originalRequest = chain.request()
+                val requestWithUserAgent = if (originalRequest.header("User-Agent") == null) {
+                    originalRequest.newBuilder()
+                        .header("User-Agent", "PixelTune/1.0 (Android; Music Player)")
+                        .build()
+                } else {
+                    originalRequest
+                }
+                chain.proceed(requestWithUserAgent)
+            }
+            .addInterceptor(loggingInterceptor)
+            .build()
+    }
+
+    /**
      * Provee una instancia de OkHttpClient con timeouts para búsquedas de lyrics.
      * Includes DNS resolver, modern TLS, connection pool, and connection retry.
      */
@@ -473,7 +536,7 @@ object AppModule {
     @Provides
     fun provideYouTubeStreamProxy(
         repository: com.theveloper.pixeltune.data.youtube.YouTubeRepository,
-        okHttpClient: OkHttpClient,
+        @StreamingOkHttpClient okHttpClient: OkHttpClient,
         userPreferencesRepository: UserPreferencesRepository
     ): com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy {
         return com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy(repository, okHttpClient, userPreferencesRepository)
@@ -489,7 +552,7 @@ object AppModule {
     @Provides
     fun provideSoundCloudStreamProxy(
         repository: com.theveloper.pixeltune.data.soundcloud.SoundCloudRepository,
-        okHttpClient: OkHttpClient,
+        @StreamingOkHttpClient okHttpClient: OkHttpClient,
         userPreferencesRepository: UserPreferencesRepository
     ): com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy {
         return com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy(repository, okHttpClient, userPreferencesRepository)

@@ -1,15 +1,13 @@
 package com.theveloper.pixeltune.data.soundcloud
 
 import android.net.Uri
+import com.theveloper.pixeltune.data.stream.CloudStreamForwarder
 import com.theveloper.pixeltune.data.stream.CloudStreamSecurity
-import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.engine.*
 import io.ktor.server.cio.*
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondBytes
-import io.ktor.server.response.header
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.CoroutineScope
@@ -20,7 +18,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import timber.log.Timber
@@ -30,12 +27,13 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
+import com.theveloper.pixeltune.di.StreamingOkHttpClient
 import kotlinx.coroutines.flow.first
 
 @Singleton
 class SoundCloudStreamProxy @Inject constructor(
     private val repository: SoundCloudRepository,
-    private val okHttpClient: OkHttpClient,
+    @StreamingOkHttpClient private val okHttpClient: OkHttpClient,
     private val userPreferencesRepository: UserPreferencesRepository
 ) {
     private companion object {
@@ -154,68 +152,21 @@ class SoundCloudStreamProxy @Inject constructor(
                             return@get
                         }
 
-                        // Proxy the audio stream
+                        // Proxy the audio stream.
                         val requestBuilder = Request.Builder().url(streamUrl)
                         rangeValidation.normalizedHeader?.let {
                             requestBuilder.header("Range", it)
                         }
 
-                        // CRITICAL FIX: Read the ENTIRE upstream response on Dispatchers.IO
-                        // BEFORE handing anything to Ktor's response pipeline.
-                        //
-                        // Same fix as YouTubeStreamProxy: the previous `respondBytesWriter`
-                        // + `withContext(Dispatchers.IO)` pattern caused a deadlock on Ktor's
-                        // CIO engine where response headers were never flushed, leaving
-                        // ExoPlayer stuck at `getResponseCode()` until SocketTimeoutException.
-                        val (upstreamCode, upstreamHeaders, bodyBytes) = withContext(Dispatchers.IO) {
-                            okHttpClient.newCall(requestBuilder.build()).execute().use { upstream ->
-                                val code = upstream.code
-                                val headers = upstream.headers
-                                val bytes = upstream.body?.bytes() ?: ByteArray(0)
-                                Triple(code, headers, bytes)
-                            }
-                        }
-
-                        if (upstreamCode != 200 && upstreamCode != 206) {
-                            call.respond(
-                                CloudStreamSecurity.mapUpstreamStatusToProxyStatus(upstreamCode),
-                                "Upstream stream request failed (code=$upstreamCode)"
-                            )
-                            return@get
-                        }
-
-                        val contentTypeHeader = upstreamHeaders["Content-Type"]
-                        if (!CloudStreamSecurity.isSupportedAudioContentType(contentTypeHeader)) {
-                            call.respond(HttpStatusCode.BadGateway, "Unsupported stream content type: $contentTypeHeader")
-                            return@get
-                        }
-
-                        val contentLength = upstreamHeaders["Content-Length"]
-                        if (!CloudStreamSecurity.isAcceptableContentLength(contentLength)) {
-                            call.respond(HttpStatusCode(413, "Payload Too Large"), "Stream content too large")
-                            return@get
-                        }
-
-                        val contentRange = upstreamHeaders["Content-Range"]
-                        val acceptRanges = upstreamHeaders["Accept-Ranges"]
-                        val responseContentType = contentTypeHeader
-                            ?.substringBefore(';')
-                            ?.trim()
-                            ?.let { raw -> runCatching { ContentType.parse(raw) }.getOrNull() }
-                            ?: ContentType.Audio.Any
-
-                        if (upstreamCode == 206) {
-                            call.response.status(HttpStatusCode.PartialContent)
-                        } else {
-                            call.response.status(HttpStatusCode.OK)
-                        }
-                        call.response.header("Accept-Ranges", acceptRanges ?: "bytes")
-                        contentRange?.let { call.response.header("Content-Range", it) }
-
-                        // Send the buffered body as a single atomic response.
-                        call.respondBytes(
-                            bytes = bodyBytes,
-                            contentType = responseContentType
+                        // FIX: Stream chunk-by-chunk through CloudStreamForwarder
+                        // instead of buffering the whole upstream body in memory.
+                        // Same root-cause fix as YouTubeStreamProxy — see the
+                        // forwarder's KDoc for the full analysis of the original
+                        // "playback stuck at 00:00" production bug.
+                        CloudStreamForwarder.forwardStream(
+                            call = call,
+                            client = okHttpClient,
+                            upstreamRequest = requestBuilder.build()
                         )
                     } catch (e: Exception) {
                         val msg = e.toString()

@@ -1,15 +1,13 @@
 package com.theveloper.pixeltune.data.youtube
 
 import android.net.Uri
+import com.theveloper.pixeltune.data.stream.CloudStreamForwarder
 import com.theveloper.pixeltune.data.stream.CloudStreamSecurity
-import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.engine.*
 import io.ktor.server.cio.*
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondBytes
-import io.ktor.server.response.header
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.CoroutineScope
@@ -20,12 +18,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import timber.log.Timber
 import java.net.ServerSocket
 import java.util.concurrent.ConcurrentHashMap
+import com.theveloper.pixeltune.di.StreamingOkHttpClient
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.first
@@ -33,7 +31,7 @@ import kotlinx.coroutines.flow.first
 @Singleton
 class YouTubeStreamProxy @Inject constructor(
     private val repository: YouTubeRepository,
-    private val okHttpClient: OkHttpClient,
+    @StreamingOkHttpClient private val okHttpClient: OkHttpClient,
     private val userPreferencesRepository: com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
 ) {
     private companion object {
@@ -167,88 +165,60 @@ class YouTubeStreamProxy @Inject constructor(
                             return@get
                         }
 
-                        // Proxy the audio stream
+                        // Build the upstream OkHttp request.
+                        //
+                        // The browser User-Agent is REQUIRED — YouTube serves a
+                        // "page needs to be reloaded" bot-check page to non-browser
+                        // UAs, which surfaces as a 404 to ExoPlayer and keeps the
+                        // player frozen at 00:00. The streaming OkHttpClient
+                        // (see @StreamingOkHttpClient in di/) only injects a
+                        // default app UA when no UA is present, so this explicit
+                        // header wins end-to-end.
+                        //
+                        // Accept-Encoding: identity disables gzip so the upstream
+                        // byte ranges line up 1:1 with what we forward to
+                        // ExoPlayer — Media3's DefaultHttpDataSource relies on
+                        // exact byte offsets for Range-based seeking.
                         val requestBuilder = Request.Builder()
                             .url(streamUrl)
-                            .header("Accept-Encoding", "identity") // MUST disable gzip to preserve Range requests for Media3/ExoPlayer
-                            // FIX: Add a standard browser User-Agent to bypass YouTube's 403 Forbidden bot checks
+                            .header("Accept-Encoding", "identity")
                             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                            
+
                         rangeValidation.normalizedHeader?.let {
                             requestBuilder.header("Range", it)
                         }
 
-                        // CRITICAL FIX: Read the ENTIRE upstream response on Dispatchers.IO
-                        // BEFORE handing anything to Ktor's response pipeline.
+                        // FIX: Stream the upstream response chunk-by-chunk through
+                        // CloudStreamForwarder instead of buffering the entire body
+                        // in memory via OkHttp's `bytes()`. This is the actual fix
+                        // for the "YouTube playback stuck at 00:00" bug.
                         //
-                        // The previous `respondBytesWriter` + `withContext(Dispatchers.IO)`
-                        // pattern caused a deadlock on Ktor's CIO engine: response headers
-                        // were never flushed until the first `writeFully` call returned, but
-                        // the first `writeFully` could not return until bytes were read from
-                        // the upstream OkHttp body — which itself could be delayed by YouTube's
-                        // adaptive throttling. ExoPlayer's `DefaultHttpDataSource.open`
-                        // therefore sat in `HttpURLConnectionImpl.getResponseCode()` waiting
-                        // for the HTTP status line, eventually throwing
-                        // `SocketTimeoutException: timeout` after the 8 s default read timeout.
-                        // User-visible symptom: player loads but stays frozen at 00:00 with
-                        // no error shown.
+                        // The previous "fix" in this file (calling `bytes()` then
+                        // `respondBytes`) didn't actually solve the issue — it just
+                        // shifted the timeout from ExoPlayer's side to OkHttp's side.
+                        // With the default 8s readTimeout, OkHttp's `bytes()` would
+                        // throw SocketTimeoutException on throttled YouTube audio
+                        // streams, and the catch block swallowed the error without
+                        // ever sending a response to ExoPlayer. ExoPlayer's own
+                        // connect timeout then fired, leaving the progress bar
+                        // frozen at 00:00 with no error surfaced to the UI.
                         //
-                        // Buffering the entire body first lets us send the response as a
-                        // single atomic `respondBytes` call, which forces Ktor to flush
-                        // status + headers + body in one shot. Memory cost is bounded by
-                        // `CloudStreamSecurity.MAX_STREAM_CONTENT_LENGTH_BYTES` (2 GiB)
-                        // checked above, and YouTube audio streams are typically a few MB.
-                        val (upstreamCode, upstreamHeaders, bodyBytes) = withContext(Dispatchers.IO) {
-                            okHttpClient.newCall(requestBuilder.build()).execute().use { upstream ->
-                                val code = upstream.code
-                                val headers = upstream.headers
-                                val bytes = upstream.body?.bytes() ?: ByteArray(0)
-                                Triple(code, headers, bytes)
-                            }
-                        }
-
-                        if (upstreamCode != 200 && upstreamCode != 206) {
-                            call.respond(
-                                CloudStreamSecurity.mapUpstreamStatusToProxyStatus(upstreamCode),
-                                "Upstream stream request failed (code=$upstreamCode)"
-                            )
-                            return@get
-                        }
-
-                        val contentTypeHeader = upstreamHeaders["Content-Type"]
-                        if (!CloudStreamSecurity.isSupportedAudioContentType(contentTypeHeader)) {
-                            call.respond(HttpStatusCode.BadGateway, "Unsupported stream content type: $contentTypeHeader")
-                            return@get
-                        }
-
-                        val contentLength = upstreamHeaders["Content-Length"]
-                        if (!CloudStreamSecurity.isAcceptableContentLength(contentLength)) {
-                            call.respond(HttpStatusCode(413, "Payload Too Large"), "Stream content too large")
-                            return@get
-                        }
-
-                        val contentRange = upstreamHeaders["Content-Range"]
-                        val acceptRanges = upstreamHeaders["Accept-Ranges"]
-                        val responseContentType = contentTypeHeader
-                            ?.substringBefore(';')
-                            ?.trim()
-                            ?.let { raw -> runCatching { ContentType.parse(raw) }.getOrNull() }
-                            ?: ContentType.Audio.Any
-
-                        if (upstreamCode == 206) {
-                            call.response.status(HttpStatusCode.PartialContent)
-                        } else {
-                            call.response.status(HttpStatusCode.OK)
-                        }
-                        call.response.header("Accept-Ranges", acceptRanges ?: "bytes")
-                        contentRange?.let { call.response.header("Content-Range", it) }
-
-                        // Send the buffered body as a single atomic response. Ktor will
-                        // compute Content-Length from the byte array size and flush status
-                        // + headers + body together, avoiding the CIO engine deadlock.
-                        call.respondBytes(
-                            bytes = bodyBytes,
-                            contentType = responseContentType
+                        // The forwarder:
+                        //   1. Opens the upstream connection on Dispatchers.IO.
+                        //   2. Sets Ktor response status + headers IMMEDIATELY
+                        //      (Ktor flushes them before the body lambda runs).
+                        //   3. Streams bytes from the OkHttp InputStream to the
+                        //      Ktor OutputStream in 8 KB chunks.
+                        //
+                        // Combined with the streaming OkHttpClient's
+                        // readTimeout=0, throttled YouTube streams no longer
+                        // abort mid-read, and ExoPlayer receives the HTTP
+                        // status line + first audio bytes within milliseconds
+                        // of the upstream's response.
+                        CloudStreamForwarder.forwardStream(
+                            call = call,
+                            client = okHttpClient,
+                            upstreamRequest = requestBuilder.build()
                         )
                     } catch (e: Exception) {
                         val msg = e.toString()

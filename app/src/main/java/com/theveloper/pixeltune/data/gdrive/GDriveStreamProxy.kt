@@ -1,15 +1,13 @@
 package com.theveloper.pixeltune.data.gdrive
 
 import android.net.Uri
+import com.theveloper.pixeltune.data.stream.CloudStreamForwarder
 import com.theveloper.pixeltune.data.stream.CloudStreamSecurity
-import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.engine.*
 import io.ktor.server.cio.*
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondBytes
-import io.ktor.server.response.header
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.CoroutineScope
@@ -24,6 +22,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import timber.log.Timber
 import java.net.ServerSocket
+import com.theveloper.pixeltune.di.StreamingOkHttpClient
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,12 +31,19 @@ import javax.inject.Singleton
  *
  * Resolves `gdrive://{fileId}` URIs by proxying requests to the Drive REST API
  * with the required Authorization header. Follows the same architectural pattern
- * as [NeteaseStreamProxy] and [TelegramStreamProxy] using Ktor CIO.
+ * as [com.theveloper.pixeltune.data.netease.NeteaseStreamProxy] and
+ * [com.theveloper.pixeltune.data.telegram.TelegramStreamProxy] using Ktor CIO.
+ *
+ * Streams the upstream body chunk-by-chunk through [CloudStreamForwarder]
+ * instead of buffering the entire body in memory via OkHttp's `bytes()`.
+ * Same fix as [com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy] —
+ * see the forwarder's KDoc for the root-cause analysis of the original
+ * "playback stuck at 00:00" production bug.
  */
 @Singleton
 class GDriveStreamProxy @Inject constructor(
     private val repository: GDriveRepository,
-    private val okHttpClient: OkHttpClient
+    @StreamingOkHttpClient private val okHttpClient: OkHttpClient
 ) {
     private companion object {
         val ALLOWED_REMOTE_HOST_SUFFIXES = setOf(
@@ -115,6 +121,7 @@ class GDriveStreamProxy @Inject constructor(
                         return@get
                     }
 
+                    var openedResponse: okhttp3.Response? = null
                     try {
                         val rangeValidation = CloudStreamSecurity.validateRangeHeader(call.request.headers["Range"])
                         if (!rangeValidation.isValid) {
@@ -175,63 +182,23 @@ class GDriveStreamProxy @Inject constructor(
                             }
                         }
 
-                        // CRITICAL FIX: Read the ENTIRE upstream response on Dispatchers.IO
-                        // BEFORE handing anything to Ktor's response pipeline.
+                        // Hand the opened Response to CloudStreamForwarder, which
+                        // will validate the upstream status / headers, set the Ktor
+                        // response status + headers IMMEDIATELY, and stream the body
+                        // chunk-by-chunk through respondOutputStream.
                         //
-                        // The previous `respondBytesWriter` + `withContext(Dispatchers.IO)`
-                        // pattern caused a deadlock on Ktor's CIO engine where response
-                        // headers were never flushed, leaving ExoPlayer stuck at
-                        // `getResponseCode()` until `SocketTimeoutException`. Same fix as
-                        // SoundCloudStreamProxy / YouTubeStreamProxy / NeteaseStreamProxy.
-                        val (upstreamCode, upstreamHeaders, bodyBytes) = withContext(Dispatchers.IO) {
-                            response.use { upstream ->
-                                val code = upstream.code
-                                val headers = upstream.headers
-                                val bytes = upstream.body?.bytes() ?: ByteArray(0)
-                                Triple(code, headers, bytes)
-                            }
-                        }
-
-                        if (upstreamCode != 200 && upstreamCode != 206) {
-                            call.respond(
-                                CloudStreamSecurity.mapUpstreamStatusToProxyStatus(upstreamCode),
-                                "Upstream stream request failed (code=$upstreamCode)"
-                            )
-                            return@get
-                        }
-
-                        val contentTypeHeader = upstreamHeaders["Content-Type"]
-                        if (!CloudStreamSecurity.isSupportedAudioContentType(contentTypeHeader)) {
-                            call.respond(HttpStatusCode.BadGateway, "Unsupported stream content type: $contentTypeHeader")
-                            return@get
-                        }
-
-                        val contentLength = upstreamHeaders["Content-Length"]
-                        if (!CloudStreamSecurity.isAcceptableContentLength(contentLength)) {
-                            call.respond(HttpStatusCode(413, "Payload Too Large"), "Stream content too large")
-                            return@get
-                        }
-
-                        val contentRange = upstreamHeaders["Content-Range"]
-                        val acceptRanges = upstreamHeaders["Accept-Ranges"]
-                        val responseContentType = contentTypeHeader
-                            ?.substringBefore(';')
-                            ?.trim()
-                            ?.let { raw -> runCatching { ContentType.parse(raw) }.getOrNull() }
-                            ?: ContentType.Audio.Any
-
-                        if (upstreamCode == 206) {
-                            call.response.status(HttpStatusCode.PartialContent)
-                        } else {
-                            call.response.status(HttpStatusCode.OK)
-                        }
-                        call.response.header("Accept-Ranges", acceptRanges ?: "bytes")
-                        contentRange?.let { call.response.header("Content-Range", it) }
-
-                        // Send the buffered body as a single atomic response.
-                        call.respondBytes(
-                            bytes = bodyBytes,
-                            contentType = responseContentType
+                        // The forwarder takes responsibility for closing the Response
+                        // (it uses `forwardOpenedStream` here, NOT the higher-level
+                        // `forwardStream`, because we've already opened the upstream
+                        // connection above to handle the 401-refresh flow).
+                        //
+                        // NOTE: this means we don't close the response ourselves —
+                        // the forwarder is the single owner of the response lifecycle
+                        // once it's handed off.
+                        openedResponse = response
+                        CloudStreamForwarder.forwardOpenedStream(
+                            call = call,
+                            upstream = response
                         )
                     } catch (e: Exception) {
                         val msg = e.toString()
@@ -243,6 +210,16 @@ class GDriveStreamProxy @Inject constructor(
                             // Client disconnected, normal behavior
                         } else {
                             Timber.e(e, "Error streaming GDrive file $fileId")
+                        }
+                    } finally {
+                        // Safety net: ensure the upstream Response is always closed
+                        // even if the forwarder threw or the route handler was
+                        // cancelled before forwardOpenedStream completed. Closing
+                        // an already-closed Response is a no-op.
+                        openedResponse?.let { resp ->
+                            withContext(Dispatchers.IO) {
+                                runCatching { resp.close() }
+                            }
                         }
                     }
                 }
