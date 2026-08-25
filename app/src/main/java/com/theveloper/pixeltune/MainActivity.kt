@@ -51,6 +51,10 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
@@ -680,8 +684,64 @@ class MainActivity : ComponentActivity() {
                 }
         ) {
 
+                // FIX(streaming-toast): top-level SnackbarHost that is ALWAYS
+                // composed, regardless of whether the player sheet is visible.
+                // The SnackbarHost inside UnifiedPlayerSheet/V2 lives inside
+                // `if (actuallyShowSheetContent)` and is therefore not
+                // composed when the sheet is collapsed (the default state on
+                // HomeScreen). Without this top-level host, snackbars triggered
+                // from outside the expanded player sheet (e.g. when the user
+                // switches the online cloud streaming provider from the
+                // HomeScreen's StreamingProviderSheet) were silently dropped —
+                // the collector called showSnackbar() on a host that wasn't
+                // attached to any composition.
+                //
+                // This top-level host also serves as the primary surface for
+                // app-wide toasts (queue additions, favorite toggles, cast
+                // errors, etc.) so they appear regardless of which screen is
+                // currently active. The player-sheet-level SnackbarHost
+                // remains for theming continuity when the sheet IS expanded.
+                val topSnackbarHostState = remember { SnackbarHostState() }
+                val topSnackbarScope = rememberCoroutineScope()
+                LaunchedEffect(Unit) {
+                    playerViewModel.toastEvents.collect { message ->
+                        // Cancel any in-flight snackbar so the latest message
+                        // wins (matches the DROP_OLDEST buffer-overflow policy
+                        // of the underlying SharedFlow).
+                        topSnackbarHostState.currentSnackbarData?.dismiss()
+                        topSnackbarScope.launch {
+                            topSnackbarHostState.showSnackbar(
+                                message = message,
+                                actionLabel = null,
+                                duration = SnackbarDuration.Short,
+                                withDismissAction = false
+                            )
+                        }
+                    }
+                }
+
                 Scaffold(
                 modifier = Modifier.fillMaxSize(),
+                snackbarHost = {
+                    SnackbarHost(hostState = topSnackbarHostState) { data ->
+                        Snackbar(
+                            snackbarData = data,
+                            shape = AbsoluteSmoothCornerShape(
+                                cornerRadiusTL = 16.dp,
+                                smoothnessAsPercentTL = 60,
+                                cornerRadiusTR = 16.dp,
+                                smoothnessAsPercentTR = 60,
+                                cornerRadiusBL = 16.dp,
+                                smoothnessAsPercentBL = 60,
+                                cornerRadiusBR = 16.dp,
+                                smoothnessAsPercentBR = 60
+                            ),
+                            containerColor = MaterialTheme.colorScheme.inverseSurface,
+                            contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                            actionColor = MaterialTheme.colorScheme.inversePrimary
+                        )
+                    }
+                },
                 bottomBar = {
                     if (!shouldHideNavigationBar) {
                         val playerContentExpansionFraction = playerViewModel.playerContentExpansionFraction.value

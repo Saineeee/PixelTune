@@ -149,34 +149,18 @@ fun UnifiedPlayerSheet(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val snackbarScope = rememberCoroutineScope()
-    LaunchedEffect(key1 = Unit) {
-        // IMPROVE(streaming-toast): forward PlayerViewModel.toastEvents to a
-        // Material 3 Snackbar instead of the legacy native android.widget.Toast.
-        //
-        // The native Toast has two problems the user reported:
-        //   1. It looks stylistically off in a heavy Material 3 expressive UI.
-        //   2. It persists across app backgrounding, gets visually stuck over
-        //      system UI, and is generally jarring to dismiss.
-        //
-        // The M3 Snackbar lives inside the player sheet's composition tree, so
-        // it inherits the active ColorScheme (e.g. the album-art-derived dynamic
-        // theme), respects safe insets, and animates in/out with M3 standard
-        // motion. The SnackbarHost itself is rendered below in the Box.
-        playerViewModel.toastEvents.collect { message ->
-            // Cancel any in-flight snackbar so the latest message wins (matches
-            // the DROP_OLDEST buffer-overflow policy of the underlying SharedFlow).
-            snackbarHostState.currentSnackbarData?.dismiss()
-            snackbarScope.launch {
-                snackbarHostState.showSnackbar(
-                    message = message,
-                    actionLabel = null,
-                    duration = SnackbarDuration.Short,
-                    withDismissAction = false
-                )
-            }
-        }
-    }
-
+    // FIX(streaming-toast): the toastEvents collector has been hoisted to
+    // MainActivity's Scaffold-level SnackbarHost (see `topSnackbarHostState`
+    // in MainActivity.kt) so toasts are visible REGARDLESS of whether the
+    // player sheet is currently expanded. The previous collector here was
+    // silently dropping snackbars whenever the sheet was collapsed because
+    // the SnackbarHost below is composed inside `if (actuallyShowSheetContent)`,
+    // so showSnackbar() was being called on a host with no UI attached.
+    //
+    // The player-sheet SnackbarHost + snackbarHostState below are kept so
+    // any future player-sheet-local snackbar (e.g. for player-only errors)
+    // can be triggered via `snackbarHostState.showSnackbar(...)` directly,
+    // without involving the global toastEvents flow.
     val infrequentPlayerStateReference = playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
     val infrequentPlayerState = infrequentPlayerStateReference.value
 

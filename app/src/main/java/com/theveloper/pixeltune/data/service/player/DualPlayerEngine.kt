@@ -45,6 +45,7 @@ import com.theveloper.pixeltune.data.telegram.TelegramRepository
 import com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import android.net.Uri
@@ -345,7 +346,33 @@ class DualPlayerEngine @Inject constructor(
             }
         }
         
-        val dataSourceFactory = DefaultDataSource.Factory(context)
+        val dataSourceFactory = DefaultDataSource.Factory(
+            context,
+            // FIX(youtube-crash): ExoPlayer's default DefaultHttpDataSource has
+            // 8s connect + 8s read timeouts. When the URI is a localhost cloud
+            // proxy URL (`http://127.0.0.1:<port>/youtube/<id>` etc.), the
+            // proxy's Ktor handler must FIRST fetch the upstream stream URL
+            // via NewPipe (which can take several seconds for YouTube's
+            // bot-detection dance) and THEN open the OkHttp connection to
+            // googlevideo before it can flush the HTTP status line back to
+            // ExoPlayer. With the default 8s timeout, ExoPlayer's
+            // DefaultHttpDataSource.open() was throwing SocketTimeoutException
+            // at `HttpURLConnectionImpl.getResponseCode()` before the proxy's
+            // first byte arrived — surfacing to the user as "app freezes /
+            // crashes when tapping a YouTube search result to play".
+            //
+            // Bumping both timeouts to 30s gives the proxy enough headroom
+            // for the NewPipe + OkHttp upstream fetch under typical
+            // residential mobile latency. The actual byte streaming
+            // (CloudStreamForwarder) uses the @StreamingOkHttpClient which
+            // already has readTimeout=0 (infinite), so the 30s read timeout
+            // here only gates the initial response status line — once bytes
+            // start flowing, this timeout no longer fires.
+            DefaultHttpDataSource.Factory()
+                .setConnectTimeoutMs(30_000)
+                .setReadTimeoutMs(30_000)
+                .setAllowCrossProtocolRedirects(true)
+        )
         val resolvingFactory = ResolvingDataSource.Factory(dataSourceFactory, resolver)
 
         // Tune LoadControl to prevent "loop of death" (underrun -> start -> underrun)

@@ -112,24 +112,13 @@ fun UnifiedPlayerSheetV2(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val snackbarScope = rememberCoroutineScope()
-    LaunchedEffect(Unit) {
-        // IMPROVE(streaming-toast): see UnifiedPlayerSheet.kt — same M3 Snackbar
-        // migration. Toast kept as a defensive fallback in case the SnackbarHost
-        // is ever not yet composed (e.g. early app-launch race), but the
-        // SnackbarHost below is the primary surface.
-        playerViewModel.toastEvents.collect { message ->
-            snackbarHostState.currentSnackbarData?.dismiss()
-            snackbarScope.launch {
-                snackbarHostState.showSnackbar(
-                    message = message,
-                    actionLabel = null,
-                    duration = SnackbarDuration.Short,
-                    withDismissAction = false
-                )
-            }
-        }
-    }
-
+    // FIX(streaming-toast): the toastEvents collector has been hoisted to
+    // MainActivity's Scaffold-level SnackbarHost (see `topSnackbarHostState`
+    // in MainActivity.kt) so toasts are visible regardless of whether the
+    // player sheet is expanded. The SnackbarHostState is kept here so any
+    // future player-sheet-local snackbar can be triggered directly via
+    // `snackbarHostState.showSnackbar(...)` without involving the global
+    // toastEvents flow.
     var showNoInternetDialog by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         playerViewModel.showNoInternetDialog.collect {
