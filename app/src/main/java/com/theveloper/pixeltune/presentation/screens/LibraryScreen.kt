@@ -67,6 +67,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -121,6 +122,8 @@ import com.theveloper.pixeltune.data.model.FolderSource
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.model.SortOption
 import com.theveloper.pixeltune.data.model.StorageFilter
+import com.theveloper.pixeltune.data.downloads.DownloadState
+import com.theveloper.pixeltune.data.downloads.toSong
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
 import com.theveloper.pixeltune.presentation.components.NavBarContentHeight
 import com.theveloper.pixeltune.presentation.components.SmartImage
@@ -312,6 +315,40 @@ fun LibraryScreen(
                 tabCount = tabTitles.size,
                 compactMode = isCompactNavigation
             )
+        }
+    }
+
+    // IMPROVE(downloads-chip): external tab selections (e.g. tapping a
+    // download notification, which asks for the DOWNLOADS chip) update the
+    // ViewModel's tab id directly — sync the pager when it diverges. User
+    // swipes already keep the two in sync, so this only fires on external
+    // selections and cannot feed back on itself. The first execution is
+    // skipped on purpose: at initial composition the ViewModel's tab id can
+    // legitimately differ from the pager's restored last-tab page, and the
+    // existing PageChangeTabLoad effect is what reconciles them.
+    var handledInitialTabSync by remember { mutableStateOf(false) }
+    LaunchedEffect(currentTabId, tabTitles) {
+        if (!handledInitialTabSync) {
+            handledInitialTabSync = true
+            return@LaunchedEffect
+        }
+        val requestedIndex = tabTitles.indexOfFirst {
+            it == currentTabId.storageKey
+        }
+        if (requestedIndex >= 0 && requestedIndex != currentTabIndex) {
+            try {
+                pagerState.animateScrollToPage(
+                    targetPageForTabIndex(
+                        currentPage = pagerState.currentPage,
+                        targetTabIndex = requestedIndex,
+                        tabCount = tabTitles.size,
+                        compactMode = isCompactNavigation
+                    )
+                )
+            } catch (_: Exception) {
+                // Page out of range / pager not yet composed — the initial
+                // page fallback (lastTabIndex) already covers fresh opens.
+            }
         }
     }
     val isSortSheetVisible by playerViewModel.isSortingSheetVisible.collectAsStateWithLifecycle()
@@ -770,6 +807,9 @@ fun LibraryScreen(
                             LibraryTabId.PLAYLISTS -> playlistUiState.currentPlaylistSortOption
                             LibraryTabId.LIKED -> playerUiState.currentFavoriteSortOption
                             LibraryTabId.FOLDERS -> playerUiState.currentFolderSortOption
+                            // IMPROVE(downloads-chip): fixed newest-first ordering,
+                            // same curated behaviour as the history page.
+                            LibraryTabId.DOWNLOADS -> null
                         }
 
                         val showLocateButton = when (currentTabId) {
@@ -794,6 +834,9 @@ fun LibraryScreen(
                                     LibraryTabId.PLAYLISTS -> playlistViewModel.sortPlaylists(option)
                                     LibraryTabId.LIKED -> playerViewModel.sortFavoriteSongs(option)
                                     LibraryTabId.FOLDERS -> playerViewModel.sortFolders(option)
+                                    // IMPROVE(downloads-chip): no sort menu on the
+                                    // downloads chip (curated newest-first list).
+                                    LibraryTabId.DOWNLOADS -> Unit
                                 }
                             }
                         }
@@ -880,11 +923,18 @@ fun LibraryScreen(
                                             LibraryTabId.LIKED -> playerViewModel.shuffleFavoriteSongs()
                                             LibraryTabId.ALBUMS -> playerViewModel.shuffleRandomAlbum()
                                             LibraryTabId.ARTISTS -> playerViewModel.shuffleRandomArtist()
+                                            // IMPROVE(downloads-chip): the shuffle FAB
+                                            // on the downloads chip shuffles the offline
+                                            // library (app-private files, no network).
+                                            LibraryTabId.DOWNLOADS -> playerViewModel.shuffleDownloadedSongs()
                                             else -> playerViewModel.shuffleAllSongs()
                                         }
                                     },
                                     iconRotation = iconRotation,
-                                    showSortButton = sanitizedSortOptions.isNotEmpty(),
+                                    showSortButton = sanitizedSortOptions.isNotEmpty() &&
+                                        // IMPROVE(downloads-chip): curated newest-first
+                                        // list — the sort menu is hidden entirely.
+                                        currentTabId != LibraryTabId.DOWNLOADS,
                                     showLocateButton = showLocateButton,
                                     onSortClick = { playerViewModel.showSortingSheet() },
                                     onLocateClick = { locateAction?.invoke() },
@@ -1159,6 +1209,20 @@ fun LibraryScreen(
                                             onLocateCurrentSongVisibilityChanged = { likedShowLocateButton = it },
                                             onRegisterLocateCurrentSongAction = { likedLocateAction = it },
                                             storageFilter = playerUiState.currentStorageFilter
+                                        )
+                                    }
+
+                                    LibraryTabId.DOWNLOADS -> {
+                                        // IMPROVE(downloads-chip): the offline
+                                        // downloads page — active downloads with
+                                        // live progress on top, completed
+                                        // app-private downloads below (newest
+                                        // first), fully matching the Library's
+                                        // Material 3 expressive design language.
+                                        LibraryDownloadsTab(
+                                            playerViewModel = playerViewModel,
+                                            bottomBarHeight = bottomBarHeightDp,
+                                            onMoreOptionsClick = stableOnMoreOptionsClick
                                         )
                                     }
 
@@ -2021,6 +2085,7 @@ private fun LibraryTabId.iconRes(): Int = when (this) {
     LibraryTabId.PLAYLISTS -> R.drawable.rounded_playlist_play_24
     LibraryTabId.FOLDERS -> R.drawable.rounded_folder_24
     LibraryTabId.LIKED -> R.drawable.rounded_favorite_24
+    LibraryTabId.DOWNLOADS -> R.drawable.rounded_download_24
 }
 
 private fun LibraryTabId.displayTitle(): String =
@@ -2538,6 +2603,300 @@ fun LibraryFavoritesTab(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * IMPROVE(downloads-chip): the Library DOWNLOADS page.
+ *
+ * A Netflix-style offline section rendered with the app's existing Material 3
+ * expressive language (same rounded LazyColumn container, same
+ * [EnhancedSongListItem] rows, same scroll-bar overlay as the Liked/Songs
+ * tabs):
+ *
+ *  - Active downloads appear at the top as live progress rows (animated
+ *    LinearProgressIndicator + percentage) that mirror the notification-panel
+ *    card; tapping one cancels the download.
+ *  - Completed downloads follow, newest first, and play fully offline from
+ *    app-private storage via the standard play pipeline.
+ *  - The pull-to-refresh gesture, scroll-bar and bottom padding conventions
+ *    of the sibling tabs are preserved.
+ */
+@Composable
+fun LibraryDownloadsTab(
+    playerViewModel: PlayerViewModel,
+    bottomBarHeight: Dp,
+    onMoreOptionsClick: (Song) -> Unit
+) {
+    val stablePlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
+    val downloadedSongs by playerViewModel.downloadedSongs.collectAsStateWithLifecycle()
+    val downloadStates by playerViewModel.downloadStates.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
+
+    // Completed offline downloads, newest first, mapped to playable Songs.
+    val completedDownloads = remember(downloadedSongs) {
+        downloadedSongs.values
+            .sortedByDescending { it.downloadedAtMs }
+            .map { it.toSong() }
+    }
+
+    // In-flight downloads (songId → live state, stable keys for the lazy
+    // list). The title is carried by the state itself, so rows survive
+    // recomposition / tab switches without extra bookkeeping.
+    val activeDownloads = remember(downloadStates) {
+        downloadStates.entries
+            .filter { it.value is DownloadState.Downloading }
+            .map { it.key to (it.value as DownloadState.Downloading) }
+    }
+
+    if (completedDownloads.isEmpty() && activeDownloads.isEmpty()) {
+        LibraryExpressiveEmptyState(
+            tabId = LibraryTabId.DOWNLOADS,
+            storageFilter = StorageFilter.ALL,
+            bottomBarHeight = bottomBarHeight
+        )
+    } else {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            val downloadsPullToRefreshState = rememberPullToRefreshState()
+            PullToRefreshBox(
+                isRefreshing = false,
+                onRefresh = { /* The downloads index is live in memory; nothing to refresh. */ },
+                state = downloadsPullToRefreshState,
+                modifier = Modifier.fillMaxSize(),
+                indicator = {
+                    PullToRefreshDefaults.LoadingIndicator(
+                        state = downloadsPullToRefreshState,
+                        isRefreshing = false,
+                        modifier = Modifier.align(Alignment.TopCenter)
+                    )
+                }
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(
+                                start = 12.dp,
+                                end = if (listState.canScrollForward || listState.canScrollBackward) 22.dp else 12.dp,
+                                bottom = 6.dp
+                            )
+                            .clip(
+                                RoundedCornerShape(
+                                    topStart = 26.dp,
+                                    topEnd = 26.dp,
+                                    bottomStart = PlayerSheetCollapsedCornerRadius,
+                                    bottomEnd = PlayerSheetCollapsedCornerRadius
+                                )
+                            ),
+                        state = listState,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(bottom = bottomBarHeight + MiniPlayerHeight + 30.dp)
+                    ) {
+                        if (activeDownloads.isNotEmpty()) {
+                            item(key = "downloads_active_header", contentType = "header") {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 4.dp, top = 6.dp, bottom = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.rounded_download_24),
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = stringResource(R.string.downloads_active_section_title),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontFamily = GoogleSansRounded,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+
+                            items(
+                                count = activeDownloads.size,
+                                key = { index -> "active_${activeDownloads[index].first}" },
+                                contentType = { "active_download" }
+                            ) { index ->
+                                val (activeSongId, activeState) = activeDownloads[index]
+                                ActiveDownloadRow(
+                                    state = activeState,
+                                    onCancel = {
+                                        // Same toggle the player screen's download
+                                        // button uses: in-flight → cancel.
+                                        playerViewModel.toggleDownloadForSong(
+                                            Song(
+                                                id = activeSongId,
+                                                title = activeState.title,
+                                                artist = "",
+                                                artistId = -1L,
+                                                artists = emptyList(),
+                                                album = "",
+                                                albumId = -1L,
+                                                albumArtist = null,
+                                                path = "youtube://$activeSongId",
+                                                contentUriString = "youtube://$activeSongId",
+                                                albumArtUriString = null,
+                                                duration = 0L,
+                                                genre = null,
+                                                lyrics = null,
+                                                isFavorite = false,
+                                                trackNumber = 0,
+                                                year = 0,
+                                                dateAdded = 0,
+                                                dateModified = 0,
+                                                mimeType = "audio/mp4",
+                                                bitrate = 0,
+                                                sampleRate = 0,
+                                                telegramFileId = null,
+                                                telegramChatId = null,
+                                                neteaseId = null,
+                                                gdriveFileId = null,
+                                                youtubeId = null
+                                            )
+                                        )
+                                    }
+                                )
+                            }
+                        }
+
+                        items(
+                            count = completedDownloads.size,
+                            key = { index -> completedDownloads[index].id },
+                            contentType = { "song" }
+                        ) { index ->
+                            val song = completedDownloads[index]
+                            val isPlayingThisSong =
+                                song.id == stablePlayerState.currentSong?.id && stablePlayerState.isPlaying
+                            EnhancedSongListItem(
+                                song = song,
+                                isCurrentSong = stablePlayerState.currentSong?.id == song.id,
+                                isPlaying = isPlayingThisSong,
+                                onMoreOptionsClick = { onMoreOptionsClick(song) },
+                                onClick = {
+                                    playerViewModel.showAndPlaySong(
+                                        song,
+                                        completedDownloads,
+                                        "Downloads"
+                                    )
+                                }
+                            )
+                        }
+                    }
+
+                    // ScrollBar Overlay — same convention as the sibling tabs.
+                    val bottomPadding = if (
+                        stablePlayerState.currentSong != null &&
+                        stablePlayerState.currentSong != Song.emptySong()
+                    ) {
+                        bottomBarHeight + MiniPlayerHeight + 16.dp
+                    } else {
+                        bottomBarHeight + 16.dp
+                    }
+
+                    ExpressiveScrollBar(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 4.dp, top = 16.dp, bottom = bottomPadding),
+                        listState = listState
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * IMPROVE(downloads-chip): one active-download row — M3 surface card with the
+ * song title, a live (indeterminate-aware) LinearProgressIndicator and a
+ * percentage label. Tapping cancels the download.
+ */
+@Composable
+private fun ActiveDownloadRow(
+    state: DownloadState.Downloading,
+    onCancel: () -> Unit
+) {
+    val progressFraction = state.progressFraction.coerceIn(0f, 1f)
+    val indeterminate = state.progressFraction < 0f || state.totalBytes <= 0L
+    val percent = if (indeterminate) 0 else (progressFraction * 100f).toInt().coerceIn(0, 100)
+
+    Surface(
+        shape = AbsoluteSmoothCornerShape(
+            cornerRadiusTL = 22.dp,
+            smoothnessAsPercentTL = 60,
+            cornerRadiusTR = 22.dp,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusBL = 22.dp,
+            smoothnessAsPercentBL = 60,
+            cornerRadiusBR = 22.dp,
+            smoothnessAsPercentBR = 60
+        ),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(
+                AbsoluteSmoothCornerShape(
+                    cornerRadiusTL = 22.dp,
+                    smoothnessAsPercentTL = 60,
+                    cornerRadiusTR = 22.dp,
+                    smoothnessAsPercentTR = 60,
+                    cornerRadiusBL = 22.dp,
+                    smoothnessAsPercentBL = 60,
+                    cornerRadiusBR = 22.dp,
+                    smoothnessAsPercentBR = 60
+                )
+            )
+            .clickable(onClick = onCancel)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.rounded_download_24),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = state.title.ifBlank { "Downloading…" },
+                    style = MaterialTheme.typography.titleSmall,
+                    fontFamily = GoogleSansRounded,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = if (indeterminate) "…" else "$percent%",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            LinearProgressIndicator(
+                progress = {
+                    if (indeterminate) 0f else progressFraction
+                },
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+            )
         }
     }
 }

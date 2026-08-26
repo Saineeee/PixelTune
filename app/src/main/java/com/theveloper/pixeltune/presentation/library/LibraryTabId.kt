@@ -74,6 +74,13 @@ enum class LibraryTabId(
             SortOption.LikedSongAlbum,
             SortOption.LikedSongDateLiked
         )
+    ),
+    Downloads(
+        stableKey = "DOWNLOADS",
+        label = "DOWNLOADS",
+        sortOptions = listOf(
+            SortOption.SongDateAdded
+        )
     );
 
     companion object {

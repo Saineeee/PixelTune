@@ -46,6 +46,7 @@ import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.EotStateHolder
 import com.theveloper.pixeltune.data.ai.SongMetadata
 import com.theveloper.pixeltune.data.database.AlbumArtThemeDao
+import com.theveloper.pixeltune.data.downloads.toSong
 import com.theveloper.pixeltune.data.media.CoverArtUpdate
 import com.theveloper.pixeltune.data.model.Album
 import com.theveloper.pixeltune.data.model.Artist
@@ -332,7 +333,9 @@ class PlayerViewModel @Inject constructor(
      *  - downloading     -> cancels it;
      *  - downloaded      -> removes the offline copy.
      *
-     * Feedback is surfaced through [toastEvents]; progress through
+     * Feedback is surfaced through [toastEvents] (via the repository's
+     * [com.theveloper.pixeltune.data.downloads.DownloadEvent] stream, which
+     * also drives the notification-panel progress card); progress through
      * [downloadStates].
      */
     fun toggleDownloadForSong(song: Song?) {
@@ -350,10 +353,37 @@ class PlayerViewModel @Inject constructor(
                 viewModelScope.launch { _toastEvents.emit("Download removed: ${song.title}") }
             }
             else -> {
-                viewModelScope.launch { _toastEvents.emit("Downloading: ${song.title}") }
+                // IMPROVE(download-feedback): the "Download started"
+                // confirmation snackbar is emitted by the repository's
+                // DownloadEvent.Started once the job actually begins — an
+                // optimistic toast here would be wrong when the dedupe /
+                // already-downloaded checks inside downloadSong() reject it.
                 downloadedSongsRepository.downloadSong(song)
             }
         }
+    }
+
+    /**
+     * IMPROVE(downloads-chip): shuffle-play action for the Library DOWNLOADS
+     * tab's main FAB. Builds the offline queue from the persisted downloads
+     * index (newest first), shuffles it and hands it to the regular
+     * play pipeline — DualPlayerEngine resolves each item to its
+     * app-private file, so playback works fully offline.
+     */
+    fun shuffleDownloadedSongs() {
+        val downloaded = downloadedSongsRepository.downloadedSongs.value.values
+            .sortedByDescending { it.downloadedAtMs }
+            .map { it.toSong() }
+        if (downloaded.isEmpty()) {
+            sendToast("No downloaded songs yet.")
+            return
+        }
+        val queue = downloaded.shuffled()
+        showAndPlaySong(
+            song = queue.first(),
+            contextSongs = queue,
+            queueName = "Downloads"
+        )
     }
 
     // Removed: _masterAllSongs was a duplicate of libraryStateHolder.allSongs
@@ -778,6 +808,33 @@ class PlayerViewModel @Inject constructor(
         lyricsStateHolder.messageEvents
             .onEach { msg: String -> _toastEvents.emit(msg) }
             .launchIn(viewModelScope)
+
+        // IMPROVE(download-feedback): snackbar updates for download lifecycle
+        // transitions — started / completed / couldn't start / failed midway /
+        // cancelled — surfaced through the app-wide toast/snackbar pipeline
+        // (collected by MainActivity's top-level SnackbarHost). Progress
+        // updates are deliberately NOT toasted: they live in the Downloads
+        // chip's active rows and the system notification panel instead.
+        downloadedSongsRepository.downloadEvents
+            .onEach { event ->
+                val message = when (event) {
+                    is com.theveloper.pixeltune.data.downloads.DownloadEvent.Started ->
+                        "Download started: ${event.title}"
+                    is com.theveloper.pixeltune.data.downloads.DownloadEvent.Completed ->
+                        "Download completed: ${event.title} · available offline"
+                    is com.theveloper.pixeltune.data.downloads.DownloadEvent.Failed ->
+                        if (event.startedStreaming) {
+                            "Download failed: ${event.title}"
+                        } else {
+                            "Download couldn't start: ${event.title}"
+                        }
+                    is com.theveloper.pixeltune.data.downloads.DownloadEvent.Cancelled ->
+                        "Download cancelled: ${event.title}"
+                    is com.theveloper.pixeltune.data.downloads.DownloadEvent.Progress -> null
+                }
+                if (message != null) _toastEvents.emit(message)
+            }
+            .launchIn(viewModelScope)
     }
 
     fun setTrackVolume(volume: Float) {
@@ -809,17 +866,29 @@ class PlayerViewModel @Inject constructor(
 
     val libraryTabsFlow: StateFlow<List<String>> = userPreferencesRepository.libraryTabsOrderFlow
         .map { orderJson ->
-            if (orderJson != null) {
+            val defaultTabs = listOf(
+                "SONGS", "ALBUMS", "ARTIST", "PLAYLISTS", "FOLDERS", "LIKED", "DOWNLOADS"
+            )
+            val decoded = if (orderJson != null) {
                 try {
                     Json.decodeFromString<List<String>>(orderJson)
                 } catch (e: Exception) {
-                    listOf("SONGS", "ALBUMS", "ARTIST", "PLAYLISTS", "FOLDERS", "LIKED")
+                    defaultTabs
                 }
             } else {
-                listOf("SONGS", "ALBUMS", "ARTIST", "PLAYLISTS", "FOLDERS", "LIKED")
+                defaultTabs
             }
+            // IMPROVE(downloads-chip): guarantee the DOWNLOADS chip exists even
+            // for users whose persisted tab order predates it (stored order
+            // JSON lacks the new key). Appended at the end so a user's custom
+            // ordering of the original six tabs is fully preserved.
+            if (decoded.contains("DOWNLOADS")) decoded else decoded + "DOWNLOADS"
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), listOf("SONGS", "ALBUMS", "ARTIST", "PLAYLISTS", "FOLDERS", "LIKED"))
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            listOf("SONGS", "ALBUMS", "ARTIST", "PLAYLISTS", "FOLDERS", "LIKED", "DOWNLOADS")
+        )
 
     private val _loadedTabs = MutableStateFlow(emptySet<String>())
     private var lastBlockedDirectories: Set<String>? = null
@@ -840,6 +909,9 @@ class PlayerViewModel @Inject constructor(
                 LibraryTabId.PLAYLISTS -> SortOption.PLAYLISTS
                 LibraryTabId.FOLDERS -> SortOption.FOLDERS
                 LibraryTabId.LIKED -> SortOption.LIKED
+                // IMPROVE(downloads-chip): the downloads list is a curated,
+                // newest-first view (like listening history) — no sort menu.
+                LibraryTabId.DOWNLOADS -> emptyList()
             }
             Trace.endSection()
             options

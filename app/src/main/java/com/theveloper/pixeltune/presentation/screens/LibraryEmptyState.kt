@@ -121,6 +121,14 @@ private fun libraryEmptySpec(
             title = "No playlists yet",
             subtitle = "Create your first playlist to organize your library."
         )
+
+        // IMPROVE(downloads-chip): offline downloads empty state, shown when
+        // neither an active nor a completed download exists.
+        LibraryTabId.DOWNLOADS -> LibraryEmptySpec(
+            iconRes = R.drawable.rounded_download_24,
+            title = "No downloads yet",
+            subtitle = "Tap the download icon on an online song to save it here for offline playback."
+        )
     }
 }
 

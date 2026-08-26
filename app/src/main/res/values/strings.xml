@@ -106,4 +106,13 @@
     <string name="widget_control_4x2_desc">Full controls with shuffle and repeat</string>
     <string name="widget_grid_2x2_desc">Minimalist square player</string>
     <string name="service_processing_action">Processing playback action…</string>
+
+    <!-- Offline downloads -->
+    <string name="download_notifications_channel_name">Downloads</string>
+    <string name="download_notifications_channel_description">Shows the progress of songs being downloaded for offline playback</string>
+    <string name="download_notification_preparing">Preparing download…</string>
+    <string name="download_notification_progress">Downloading · %1$d%% (%2$s of %3$s)</string>
+    <string name="download_notification_completed">Downloaded · available offline</string>
+    <string name="download_notification_failed">Download failed · %1$s</string>
+    <string name="downloads_active_section_title">Downloading now</string>
 </resources>

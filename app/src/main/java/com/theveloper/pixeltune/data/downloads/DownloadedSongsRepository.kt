@@ -67,6 +67,65 @@ data class DownloadedSong(
 )
 
 /**
+ * IMPROVE(download-feedback): lifecycle events for a download, consumed by
+ * the PlayerViewModel (snackbars) and the DownloadNotificationManager
+ * (system notifications). Emitted only on real transitions — progress is
+ * delivered as [Progress] events at the same throttled cadence as the
+ * in-memory state updates (250 ms).
+ */
+sealed class DownloadEvent {
+    abstract val songId: String
+    abstract val title: String
+
+    /** The download job actually started (passed dedupe + already-downloaded checks). */
+    data class Started(
+        override val songId: String,
+        override val title: String
+    ) : DownloadEvent()
+
+    data class Progress(
+        override val songId: String,
+        override val title: String,
+        val progressPercent: Int,
+        val indeterminate: Boolean,
+        val bytesDownloaded: Long,
+        val totalBytes: Long
+    ) : DownloadEvent()
+
+    data class Completed(
+        override val songId: String,
+        override val title: String
+    ) : DownloadEvent()
+
+    /**
+     * @param startedStreaming false → the download could not even start
+     *        (stream URL resolution failed / DASH-only / HTTP error before any
+     *        byte arrived); true → a download that had already started
+     *        streaming failed part-way through.
+     */
+    data class Failed(
+        override val songId: String,
+        override val title: String,
+        val message: String,
+        val startedStreaming: Boolean
+    ) : DownloadEvent()
+
+    data class Cancelled(
+        override val songId: String,
+        override val title: String
+    ) : DownloadEvent()
+}
+
+/** Download aborted before a single byte was streamed ("couldn't start"). */
+private class DownloadStartException(message: String) : IllegalStateException(message)
+
+/** A download that was already streaming failed part-way through. */
+private class DownloadMidwayException(
+    message: String,
+    cause: Throwable? = null
+) : IllegalStateException(message, cause)
+
+/**
  * Live state of an in-flight (or just-failed) download, keyed by song id.
  * Absence of an entry means "not downloading".
  */
@@ -74,15 +133,55 @@ sealed class DownloadState {
     /**
      * @param progressFraction 0..1, or a negative value when the total size is
      *        unknown (indeterminate).
+     * @param title song display title, carried so UI surfaces that only see
+     *        the state map (e.g. the Library DOWNLOADS chip's active rows)
+     *        can label the download without extra bookkeeping.
      */
     data class Downloading(
         val progressFraction: Float,
         val bytesDownloaded: Long,
-        val totalBytes: Long
+        val totalBytes: Long,
+        val title: String = ""
     ) : DownloadState()
 
     data class Failed(val message: String) : DownloadState()
 }
+
+/**
+ * IMPROVE(downloads-chip): maps a persisted [DownloadedSong] back to the
+ * [Song] shape the player consumes. The content URI keeps its restart-safe
+ * scheme form (`youtube://<id>` / `soundcloud://<encoded>`), which
+ * DualPlayerEngine already resolves to the app-private file when offline.
+ */
+fun DownloadedSong.toSong(): Song = Song(
+    id = songId,
+    title = title,
+    artist = artist,
+    artistId = -1L,
+    artists = emptyList(),
+    album = album ?: "",
+    albumId = -1L,
+    albumArtist = null,
+    path = contentUri,
+    contentUriString = contentUri,
+    albumArtUriString = albumArtUri,
+    duration = durationMs,
+    genre = null,
+    lyrics = null,
+    isFavorite = false,
+    trackNumber = 0,
+    year = 0,
+    dateAdded = downloadedAtMs / 1000L,
+    dateModified = downloadedAtMs / 1000L,
+    mimeType = mimeType ?: "audio/mp4",
+    bitrate = null,
+    sampleRate = null,
+    telegramFileId = null,
+    telegramChatId = null,
+    neteaseId = null,
+    gdriveFileId = null,
+    youtubeId = youtubeId
+)
 
 /**
  * IMPROVE(offline-downloads): repository that owns the lifecycle of downloaded
@@ -106,7 +205,10 @@ class DownloadedSongsRepository @Inject constructor(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val youTubeRepository: YouTubeRepository,
     private val soundCloudRepository: SoundCloudRepository,
-    @StreamingOkHttpClient private val okHttpClient: OkHttpClient
+    @StreamingOkHttpClient private val okHttpClient: OkHttpClient,
+    // IMPROVE(download-progress-notification): real-time progress cards in
+    // the system notification panel, driven directly from the download loop.
+    private val downloadNotificationManager: DownloadNotificationManager
 ) {
 
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -128,8 +230,26 @@ class DownloadedSongsRepository @Inject constructor(
     /** In-flight / just-failed downloads, keyed by song id. */
     val downloadStates: StateFlow<Map<String, DownloadState>> = _downloadStates.asStateFlow()
 
+    // IMPROVE(download-feedback): lifecycle events for snackbars + notifications.
+    private val _downloadEvents = MutableSharedFlow<DownloadEvent>(
+        extraBufferCapacity = 16,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+    )
+    val downloadEvents: kotlinx.coroutines.flow.SharedFlow<DownloadEvent> =
+        _downloadEvents.asSharedFlow()
+
     private val downloadJobs = ConcurrentHashMap<String, Job>()
     private val indexLoaded = CompletableDeferred<Unit>()
+
+    // Titles of in-flight downloads, so failure/cancel events can name the
+    // song even when the Song object is no longer reachable.
+    private val inFlightTitles = ConcurrentHashMap<String, String>()
+    // Last integer percent posted to the notification manager, so the system
+    // card refreshes only on visible change instead of every 250 ms tick.
+    private val lastNotifiedPercent = ConcurrentHashMap<String, Int>()
+    // Last timestamp an indeterminate progress card was refreshed — keeps
+    // size-unknown downloads to one notification post per second.
+    private val lastNotifiedAt = ConcurrentHashMap<String, Long>()
 
     private val downloadsDir: File
         get() = File(context.filesDir, "downloads").apply { if (!exists()) mkdirs() }
@@ -248,23 +368,65 @@ class DownloadedSongsRepository @Inject constructor(
             if (isDownloaded(songId)) {
                 return@launch
             }
-            _downloadStates.value = _downloadStates.value + (songId to DownloadState.Downloading(-1f, 0L, -1L))
+            inFlightTitles[songId] = song.title.ifBlank { "Unknown" }
+            _downloadStates.value = _downloadStates.value +
+                (songId to DownloadState.Downloading(
+                    progressFraction = -1f,
+                    bytesDownloaded = 0L,
+                    totalBytes = -1L,
+                    title = inFlightTitles[songId] ?: ""
+                ))
+            // IMPROVE(download-feedback): confirm the start via snackbar + a
+            // live indeterminate progress card in the notification panel.
+            _downloadEvents.tryEmit(DownloadEvent.Started(songId, inFlightTitles[songId] ?: ""))
+            postProgressNotification(
+                songId = songId,
+                title = inFlightTitles[songId] ?: "",
+                fraction = -1f,
+                bytesDownloaded = 0L,
+                totalBytes = -1L
+            )
             try {
                 val downloaded = performDownload(song)
                 _downloadStates.value = _downloadStates.value - songId
                 publishDownloadedSongs(_downloadedSongs.value + (songId to downloaded))
                 persistIndex()
                 Timber.i("Downloaded '%s' (%s) to %s", song.title, songId, downloaded.filePath)
+                // IMPROVE(download-feedback): completion snackbar + a
+                // short-lived "Downloaded" system notification.
+                _downloadEvents.tryEmit(DownloadEvent.Completed(songId, downloaded.title))
+                downloadNotificationManager.notifyCompleted(songId, downloaded.title)
             } catch (e: CancellationException) {
                 cleanupPartialDownload(songId)
                 _downloadStates.value = _downloadStates.value - songId
                 Timber.i("Download cancelled for %s", songId)
+                _downloadEvents.tryEmit(
+                    DownloadEvent.Cancelled(songId, inFlightTitles[songId] ?: "")
+                )
+                downloadNotificationManager.cancelProgress(songId)
                 throw e
             } catch (e: Exception) {
                 cleanupPartialDownload(songId)
                 _downloadStates.value = _downloadStates.value +
                     (songId to DownloadState.Failed(e.message ?: "Download failed"))
                 Timber.e(e, "Download failed for %s", songId)
+                // IMPROVE(download-feedback): distinguish "couldn't start"
+                // (no byte ever streamed) from "failed midway" — the user
+                // asked to be informed of both, differently.
+                val startedStreaming = e !is DownloadStartException
+                _downloadEvents.tryEmit(
+                    DownloadEvent.Failed(
+                        songId = songId,
+                        title = inFlightTitles[songId] ?: "",
+                        message = e.message ?: "Download failed",
+                        startedStreaming = startedStreaming
+                    )
+                )
+                downloadNotificationManager.notifyFailed(
+                    songId = songId,
+                    title = inFlightTitles[songId] ?: "",
+                    reason = e.message ?: "Download failed"
+                )
                 // Clear the failure flag after a short delay so a retry tap
                 // works without the UI permanently showing an error state.
                 delay(4_000L)
@@ -273,6 +435,9 @@ class DownloadedSongsRepository @Inject constructor(
                 }
             } finally {
                 downloadJobs.remove(songId)
+                inFlightTitles.remove(songId)
+                lastNotifiedPercent.remove(songId)
+                lastNotifiedAt.remove(songId)
             }
         }
         downloadJobs[songId] = job
@@ -289,6 +454,7 @@ class DownloadedSongsRepository @Inject constructor(
     /** Deletes the downloaded file + index entry for [songId]. */
     fun deleteDownload(songId: String) {
         downloadJobs[songId]?.cancel()
+        downloadNotificationManager.cancelProgress(songId)
         repositoryScope.launch {
             val entry = _downloadedSongs.value[songId] ?: return@launch
             runCatching { File(entry.filePath).delete() }
@@ -347,10 +513,67 @@ class DownloadedSongsRepository @Inject constructor(
         runCatching { partial.delete() }
     }
 
+    /**
+     * IMPROVE(download-progress-notification): posts / refreshes the live
+     * progress card, throttled to integer-percent changes (plus a forced
+     * refresh on the indeterminate → determinate transition) so the system
+     * notification panel shows smooth real-time progress without flooding
+     * NotificationManager.notify.
+     */
+    private fun postProgressNotification(
+        songId: String,
+        title: String,
+        fraction: Float,
+        bytesDownloaded: Long,
+        totalBytes: Long
+    ) {
+        val indeterminate = fraction < 0f || totalBytes <= 0L
+        val percent = if (indeterminate) 0 else (fraction * 100f).toInt().coerceIn(0, 100)
+        val now = System.currentTimeMillis()
+        if (indeterminate) {
+            // At most one indeterminate refresh per second (the bar itself is
+            // animated by the system, so the card only needs a periodic touch).
+            val last = lastNotifiedAt[songId] ?: 0L
+            if (now - last < 1_000L) return
+            lastNotifiedAt[songId] = now
+        } else {
+            val last = lastNotifiedPercent[songId]
+            if (last != null && percent == last && percent != 100) {
+                return
+            }
+            lastNotifiedPercent[songId] = percent
+        }
+        // IMPROVE(download-feedback): Progress events also flow to the event
+        // stream so any UI observer (e.g. the Downloads chip's active rows)
+        // can mirror the notification cadence.
+        _downloadEvents.tryEmit(
+            DownloadEvent.Progress(
+                songId = songId,
+                title = title,
+                progressPercent = percent,
+                indeterminate = indeterminate,
+                bytesDownloaded = bytesDownloaded,
+                totalBytes = totalBytes
+            )
+        )
+        runCatching {
+            downloadNotificationManager.notifyProgress(
+                songId = songId,
+                title = title,
+                progressPercent = percent,
+                indeterminate = indeterminate,
+                bytesDownloaded = bytesDownloaded,
+                totalBytes = totalBytes
+            )
+        }
+    }
+
     private suspend fun performDownload(song: Song): DownloadedSong {
         // 1. Resolve the direct upstream audio stream URL for the song.
+        //    IMPROVE(download-feedback): every failure in this pre-stream phase
+        //    is a DownloadStartException — the download "couldn't start".
         val provider = providerOf(song)
-            ?: throw IllegalStateException("This song is not a downloadable online song.")
+            ?: throw DownloadStartException("This song is not a downloadable online song.")
         val quality = runCatching {
             userPreferencesRepository.streamingQualityFlow.first()
         }.getOrNull() ?: StreamingQuality.NORMAL
@@ -360,25 +583,27 @@ class DownloadedSongsRepository @Inject constructor(
                 val videoId = song.youtubeId
                     ?: songIdFromCloudUri(song.contentUriString)
                     ?: song.id.takeIf { it.length == 11 }
-                    ?: throw IllegalStateException("Missing YouTube video id.")
+                    ?: throw DownloadStartException("Missing YouTube video id.")
                 youTubeRepository.getAudioStreamUrl(videoId, quality).getOrElse {
-                    throw IllegalStateException("Could not resolve this song's audio stream.")
+                    throw DownloadStartException("Could not resolve this song's audio stream.")
                 }
             }
             PROVIDER_SOUNDCLOUD -> {
                 val trackUrl = soundCloudTrackUrl(song)
-                    ?: throw IllegalStateException("Missing SoundCloud track URL.")
+                    ?: throw DownloadStartException("Missing SoundCloud track URL.")
                 soundCloudRepository.getAudioStreamUrl(trackUrl, quality).getOrElse {
-                    throw IllegalStateException("Could not resolve this song's audio stream.")
+                    throw DownloadStartException("Could not resolve this song's audio stream.")
                 }
             }
-            else -> throw IllegalStateException("Unsupported provider.")
+            else -> throw DownloadStartException("Unsupported provider.")
         }
 
         // DASH manifests are not self-contained audio files — they only work
         // while online, which defeats the purpose of an offline download.
         if (streamUrl.contains(".mpd") || streamUrl.contains("/api/manifest/dash")) {
-            throw IllegalStateException("This song only offers a streamed manifest and can't be downloaded.")
+            throw DownloadStartException(
+                "This song only offers a streamed manifest and can't be downloaded."
+            )
         }
 
         // 2. Stream the body to a .part file, reporting progress.
@@ -404,12 +629,24 @@ class DownloadedSongsRepository @Inject constructor(
             try {
                 call.execute().use { response ->
                     if (!response.isSuccessful) {
-                        throw IllegalStateException("Download failed (HTTP ${response.code}).")
+                        throw DownloadStartException("Download failed (HTTP ${response.code}).")
                     }
-                    val body = response.body ?: throw IllegalStateException("Empty download response.")
+                    val body = response.body ?: throw DownloadStartException("Empty download response.")
                     totalBytes = body.contentLength()
                     _downloadStates.value = _downloadStates.value +
-                        (song.id to DownloadState.Downloading(if (totalBytes > 0) 0f else -1f, 0L, totalBytes))
+                        (song.id to DownloadState.Downloading(
+                            progressFraction = if (totalBytes > 0) 0f else -1f,
+                            bytesDownloaded = 0L,
+                            totalBytes = totalBytes,
+                            title = inFlightTitles[song.id] ?: song.title
+                        ))
+                    postProgressNotification(
+                        songId = song.id,
+                        title = inFlightTitles[song.id] ?: song.title,
+                        fraction = if (totalBytes > 0) 0f else -1f,
+                        bytesDownloaded = 0L,
+                        totalBytes = totalBytes
+                    )
 
                     partFile.outputStream().use { output ->
                         body.byteStream().use { input ->
@@ -429,7 +666,21 @@ class DownloadedSongsRepository @Inject constructor(
                                         -1f
                                     }
                                     _downloadStates.value = _downloadStates.value +
-                                        (song.id to DownloadState.Downloading(fraction, downloadedBytes, totalBytes))
+                                        (song.id to DownloadState.Downloading(
+                                            progressFraction = fraction,
+                                            bytesDownloaded = downloadedBytes,
+                                            totalBytes = totalBytes,
+                                            title = inFlightTitles[song.id] ?: song.title
+                                        ))
+                                    // IMPROVE(download-progress-notification): live
+                                    // progress card in the notification panel.
+                                    postProgressNotification(
+                                        songId = song.id,
+                                        title = inFlightTitles[song.id] ?: song.title,
+                                        fraction = fraction,
+                                        bytesDownloaded = downloadedBytes,
+                                        totalBytes = totalBytes
+                                    )
                                 }
                             }
                         }
@@ -438,7 +689,7 @@ class DownloadedSongsRepository @Inject constructor(
 
                 if (downloadedBytes <= 0L) {
                     runCatching { partFile.delete() }
-                    throw IllegalStateException("Downloaded file was empty.")
+                    throw DownloadStartException("Downloaded file was empty.")
                 }
 
                 if (finalFile.exists()) {
@@ -446,7 +697,18 @@ class DownloadedSongsRepository @Inject constructor(
                 }
                 if (!partFile.renameTo(finalFile)) {
                     runCatching { partFile.delete() }
-                    throw IllegalStateException("Could not finalize the download.")
+                    throw DownloadMidwayException("Could not finalize the download.")
+                }
+            } catch (e: java.io.IOException) {
+                // IMPROVE(download-feedback): an IO failure before the first
+                // byte means the download couldn't start; once bytes have
+                // streamed, it's a mid-way failure. Cancellation passes through
+                // untouched (handled by the outer catch).
+                runCatching { call.cancel() }
+                throw if (downloadedBytes > 0L) {
+                    DownloadMidwayException("Connection lost during download.", e)
+                } else {
+                    DownloadStartException("Could not reach the download server.")
                 }
             } catch (e: Exception) {
                 // Ensure a cancelled coroutine also aborts the OkHttp call's

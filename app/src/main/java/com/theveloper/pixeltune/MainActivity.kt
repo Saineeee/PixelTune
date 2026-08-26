@@ -164,6 +164,10 @@ class MainActivity : ComponentActivity() {
     lateinit var userPreferencesRepository: UserPreferencesRepository // Inject here
     // For handling shortcut navigation - using StateFlow so composables can observe changes
     private val _pendingPlaylistNavigation = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    // IMPROVE(downloads-chip): set when a download notification is tapped —
+    // the UI then navigates to the Library and selects the DOWNLOADS chip.
+    private val _pendingDownloadsNavigation = kotlinx.coroutines.flow.MutableStateFlow(false)
     private val _pendingShuffleAll = kotlinx.coroutines.flow.MutableStateFlow(false)
 
     private val requestAllFilesAccessLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
@@ -355,6 +359,17 @@ class MainActivity : ComponentActivity() {
                 intent.action = null
             }
 
+            // IMPROVE(downloads-chip): a download notification was tapped —
+            // open the Library on the DOWNLOADS chip.
+            intent.hasExtra(
+                com.theveloper.pixeltune.data.downloads.DownloadNotificationManager.EXTRA_OPEN_DOWNLOADS
+            ) -> {
+                _pendingDownloadsNavigation.value = true
+                intent.removeExtra(
+                    com.theveloper.pixeltune.data.downloads.DownloadNotificationManager.EXTRA_OPEN_DOWNLOADS
+                )
+            }
+
             intent.getBooleanExtra("ACTION_SHOW_PLAYER", false) -> {
                 playerViewModel.showPlayer()
             }
@@ -477,6 +492,38 @@ class MainActivity : ComponentActivity() {
         // Observe pending playlist navigation
         val pendingPlaylistNav by _pendingPlaylistNavigation.collectAsStateWithLifecycle()
         var processedPlaylistId by remember { mutableStateOf<String?>(null) }
+
+        // IMPROVE(downloads-chip): consume the download-notification tap —
+        // navigate to the Library and select the DOWNLOADS chip.
+        val pendingDownloadsNav by _pendingDownloadsNavigation.collectAsStateWithLifecycle()
+        LaunchedEffect(pendingDownloadsNav) {
+            if (!pendingDownloadsNav) return@LaunchedEffect
+            var success = false
+            var attempts = 0
+            while (!success && attempts < 50) { // 5 seconds max, same as playlist nav
+                try {
+                    success = navController.navigateSafely(Screen.Library.route)
+                    if (success) {
+                        // Select the DOWNLOADS chip via its index in the
+                        // persisted tab order (the Library pager opens on the
+                        // saved last-tab index, so this lands the user on the
+                        // downloads page directly).
+                        val downloadsIndex = playerViewModel.libraryTabsFlow.value
+                            .indexOfFirst { it == "DOWNLOADS" }
+                        if (downloadsIndex >= 0) {
+                            playerViewModel.onLibraryTabSelected(downloadsIndex)
+                        }
+                        _pendingDownloadsNavigation.value = false
+                    } else {
+                        delay(100)
+                        attempts++
+                    }
+                } catch (e: IllegalArgumentException) {
+                    delay(100)
+                    attempts++
+                }
+            }
+        }
         
         LaunchedEffect(pendingPlaylistNav, isMediaControllerReady) {
             val playlistId = pendingPlaylistNav

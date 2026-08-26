@@ -1710,8 +1710,14 @@ constructor(
                         } else {
                             order.add("FOLDERS") // Fallback
                         }
-                        preferences[PreferencesKeys.LIBRARY_TABS_ORDER] = json.encodeToString(order)
                     }
+                    // IMPROVE(downloads-chip): append the DOWNLOADS tab for
+                    // users whose persisted order predates it (same migration
+                    // pattern FOLDERS used). A no-op when it already exists.
+                    if (!order.contains("DOWNLOADS")) {
+                        order.add("DOWNLOADS")
+                    }
+                    preferences[PreferencesKeys.LIBRARY_TABS_ORDER] = json.encodeToString(order)
                 } catch (e: Exception) {
                     // Si la deserialización falla, no hacemos nada para evitar sobrescribir los
                     // datos del usuario.

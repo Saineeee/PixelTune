@@ -1,0 +1,11 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:height="24dp" android:tint="#000000" android:viewportHeight="960" android:viewportWidth="960" android:width="24dp">
+
+    <!-- IMPROVE(downloads-chip): Material-Symbols-style rounded download
+         glyph (down arrow into a tray), built on the same 960 viewport
+         grid as the project's other rounded_*_24 icons. -->
+    <!-- Down arrow: shaft 80 wide (x 440-520), head 240 wide (x 360-600), tip at (480,640) -->
+    <path android:fillColor="@android:color/white" android:pathData="M440,220 L520,220 L520,490 L600,490 L480,640 L360,490 L440,490 Z"/>
+    <!-- Tray: pill from x 220-740, y 720-800 (radius 40) -->
+    <path android:fillColor="@android:color/white" android:pathData="M260,720 L700,720 Q740,720 740,760 Q740,800 700,800 L260,800 Q220,800 220,760 Q220,720 260,720 Z"/>
+    
+</vector>

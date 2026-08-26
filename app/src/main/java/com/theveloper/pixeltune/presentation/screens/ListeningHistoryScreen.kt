@@ -669,20 +669,23 @@ private fun HistoryOptionRow(
                     .background(iconContainerColor),
                 contentAlignment = Alignment.Center
             ) {
-                if (imageVector != null) {
-                    Icon(
-                        imageVector = imageVector,
-                        contentDescription = label,
-                        tint = iconContentColor,
-                        modifier = Modifier.size(22.dp)
-                    )
-                } else {
-                    Icon(
-                        painter = icon,
-                        contentDescription = label,
-                        tint = iconContentColor,
-                        modifier = Modifier.size(22.dp)
-                    )
+                when {
+                    imageVector != null -> {
+                        Icon(
+                            imageVector = imageVector,
+                            contentDescription = label,
+                            tint = iconContentColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    icon != null -> {
+                        Icon(
+                            painter = icon,
+                            contentDescription = label,
+                            tint = iconContentColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
             }
             Spacer(modifier = Modifier.width(14.dp))
