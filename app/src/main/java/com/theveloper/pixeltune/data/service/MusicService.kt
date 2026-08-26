@@ -80,6 +80,7 @@ import com.theveloper.pixeltune.data.service.auto.AutoMediaBrowseTree
 import com.theveloper.pixeltune.data.service.wear.WearStatePublisher
 import com.theveloper.pixeltune.presentation.viewmodel.ColorSchemePair
 import com.theveloper.pixeltune.shared.WearIntents
+import com.theveloper.pixeltune.utils.CloudUriUtils
 import com.theveloper.pixeltune.utils.MediaItemBuilder
 import kotlin.math.abs
 
@@ -112,6 +113,10 @@ class MusicService : MediaLibraryService() {
     lateinit var youtubeRepository: com.theveloper.pixeltune.data.youtube.YouTubeRepository
     @Inject
     lateinit var youtubeStreamProxy: com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy
+    @Inject
+    lateinit var soundCloudRepository: com.theveloper.pixeltune.data.soundcloud.SoundCloudRepository
+    @Inject
+    lateinit var soundCloudStreamProxy: com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy
     @Inject
     lateinit var replayGainManager: com.theveloper.pixeltune.data.media.ReplayGainManager
 
@@ -146,6 +151,16 @@ class MusicService : MediaLibraryService() {
     private var castRemoteClientCallback: RemoteMediaClient.Callback? = null
     private var observedCastSession: CastSession? = null
 
+    // --- Endless Radio (IMPROVE: never-ending queue) ---
+    // One in-flight recommendation fetch at a time (rapid skips must not
+    // spawn duplicate NewPipe page fetches), one scheduled backoff retry for
+    // transient failures, and a bounded memory of recently appended ids so
+    // trimmed / already-played songs don't come straight back.
+    private var radioFetchJob: Job? = null
+    private var radioRetryJob: Job? = null
+    private var radioConsecutiveFailures = 0
+    private val radioRecentIds = LinkedHashSet<String>()
+
     companion object {
         private const val TAG = "MusicService_PixelTune"
         const val NOTIFICATION_ID = 101
@@ -176,6 +191,19 @@ class MusicService : MediaLibraryService() {
         private const val AUTO_CONTEXT_ALBUM = "album"
         private const val AUTO_CONTEXT_ARTIST = "artist"
         private const val AUTO_CONTEXT_PLAYLIST = "playlist"
+
+        // Endless-radio tuning: keep the queue topped up to ~5 upcoming songs
+        // and start refilling while 2 are still unplayed, so the network fetch
+        // (1-3 s) always completes before the queue can run dry. A failed
+        // fetch retries with exponential backoff (12s -> 96s max). The queue is
+        // bounded so a multi-hour radio session cannot grow it without limit.
+        private const val RADIO_TARGET_UPCOMING = 5
+        private const val RADIO_REFILL_RUNWAY = 2
+        private const val RADIO_RETRY_BASE_DELAY_MS = 12_000L
+        private const val RADIO_MAX_CONSECUTIVE_FAILURES = 4
+        private const val RADIO_MAX_QUEUE_ITEMS = 120
+        private const val RADIO_KEEP_PLAYED_BEHIND = 20
+        private const val RADIO_RECENT_IDS_MEMORY = 60
     }
 
     override fun onCreate() {
@@ -858,6 +886,13 @@ class MusicService : MediaLibraryService() {
             Timber.tag(TAG).d("Playback state changed: $playbackState")
             if (playbackState == Player.STATE_ENDED) {
                 endOfTrackTimerSongId = null
+                // IMPROVE(endless-radio): last-chance rescue — the queue ran
+                // completely dry (every refill attempt failed while the last
+                // song was finishing, repeat mode off). If what just ended
+                // was a cloud-streamed radio queue, fetch more related songs
+                // and continue playback seamlessly instead of leaving the
+                // player dead at STATE_ENDED.
+                maybeResumeEndedRadioQueue()
             }
             mediaSession?.let { refreshMediaSessionUi(it) }
         }
@@ -885,67 +920,13 @@ class MusicService : MediaLibraryService() {
                 }
             }
 
-            if (engine.masterPlayer.mediaItemCount > 0 && engine.masterPlayer.currentMediaItemIndex == engine.masterPlayer.mediaItemCount - 1) {
-                val oldQueueSize = engine.masterPlayer.mediaItemCount
-                val currentItem = engine.masterPlayer.currentMediaItem
-                val queueIds = (0 until engine.masterPlayer.mediaItemCount).mapNotNull { engine.masterPlayer.getMediaItemAt(it).mediaId }
-                // Capture the remaining-items count and current index on the main thread
-                // (where this callback runs). Accessing ExoPlayer from a background
-                // dispatcher throws IllegalStateException: "Player is accessed on the wrong
-                // thread." See https://developer.android.com/guide/topics/media/issues/player-accessed-on-wrong-thread
-                val currentMediaItemIndex = engine.masterPlayer.currentMediaItemIndex
-                val currentlyRemaining = (oldQueueSize - 1) - currentMediaItemIndex
-                if (currentItem != null) {
-                    serviceScope.launch(Dispatchers.IO) {
-                        val mediaId = currentItem.mediaId
-                        var currentSong: com.theveloper.pixeltune.data.model.Song? = null
-                        try {
-                            currentSong = musicRepository.getSong(mediaId).first()
-                        } catch (e: Exception) {
-                            Timber.tag(TAG).d(e, "Error fetching current song from database")
-                        }
-                        val safeSong = currentSong ?: com.theveloper.pixeltune.data.model.Song.emptySong().copy(title = currentItem.mediaMetadata.title?.toString() ?: "Unknown", artist = currentItem.mediaMetadata.artist?.toString() ?: "Unknown", id = mediaId, youtubeId = mediaId)
-                        // IMPROVE(more-up-next): fetch up to 5 autoplay recommendations
-                        // in a single NewPipe page fetch (instead of the previous 1-at-a-time
-                        // fetch that left the "Up Next" carousel showing only the immediately
-                        // next song). The user explicitly asked for "more next queued songs
-                        // related with exact same taste of the current songs".
-                        //
-                        // We compute the desired queue depth dynamically: aim for at least
-                        // 5 upcoming songs after the current one, but cap the actual fetch
-                        // count to the (cap - currentlyRemaining) delta so we don't
-                        // re-fetch songs we already have queued behind the current index.
-                        //
-                        // NOTE: currentlyRemaining is captured on the main thread above —
-                        // do NOT re-read engine.masterPlayer.mediaItemCount here, as this
-                        // coroutine runs on Dispatchers.IO and ExoPlayer throws
-                        // IllegalStateException if accessed off the main thread.
-                        val desiredUpcoming = 5
-                        val toFetch = (desiredUpcoming - currentlyRemaining).coerceAtLeast(1)
-                            .coerceAtMost(desiredUpcoming)
-                        val recommendations = youtubeRepository.getMultipleAutoplayRecommendations(
-                            currentSong = safeSong,
-                            currentQueueIds = queueIds,
-                            proxyUrlProvider = { youtubeStreamProxy.getProxyUrl(it) },
-                            limit = toFetch
-                        )
-                        if (recommendations.isNotEmpty()) {
-                            withContext(Dispatchers.Main) {
-                                // Only append if the queue hasn't changed underneath us
-                                // (e.g. the user manually added/removed songs while we
-                                // were fetching recommendations). If it has, the next
-                                // onMediaItemTransition will re-trigger this block anyway.
-                                if (engine.masterPlayer.mediaItemCount == oldQueueSize) {
-                                    val mediaItems = recommendations.map {
-                                        com.theveloper.pixeltune.utils.MediaItemBuilder.build(it)
-                                    }
-                                    engine.masterPlayer.addMediaItems(mediaItems)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // IMPROVE(endless-radio): keep the queue growing forever with
+            // related songs, instead of the old behavior that only fetched
+            // when the CURRENT item was exactly the LAST one, never retried
+            // a failed fetch and silently dropped results when the queue
+            // changed mid-fetch — leaving the queue stalled so playback just
+            // looped the first / a random already-played song.
+            maybeRefillRadioQueue(trigger = "transition")
             requestWidgetAndWearRefreshWithFollowUp()
             mediaSession?.let { refreshMediaSessionUi(it) }
         }
@@ -973,6 +954,263 @@ class MusicService : MediaLibraryService() {
 
         override fun onPlayerError(error: PlaybackException) {
             Timber.tag(TAG).e(error, "Error en el reproductor: ")
+        }
+    }
+
+    // =================================================================================
+    // IMPROVE(endless-radio): never-ending queue
+    //
+    // The previous implementation (see the old block in onMediaItemTransition)
+    // only fetched recommendations when the current item was exactly the LAST
+    // one in the queue, appended them only if the queue SIZE hadn't changed
+    // during the fetch, and never retried a failed fetch. Whenever a NewPipe
+    // fetch failed (rate limit, network hiccup, extractor error) or lost that
+    // size race, the queue stalled and playback wrapped around to the first /
+    // a random already-played song — exactly the "queue never grows, it just
+    // loops" behavior the user reported.
+    //
+    // Strategy (and why it stays cheap):
+    //  1. TRIGGER EARLY — refill while up to RADIO_REFILL_RUNWAY songs are
+    //     still unplayed, so the network fetch always completes before the
+    //     queue can run dry. One NewPipe page fetch tops the queue back up to
+    //     ~5 upcoming songs — no per-song requests.
+    //  2. ONE FETCH AT A TIME — an in-flight guard stops rapid skip-presses
+    //     from spawning duplicate fetches.
+    //  3. QUEUE-GENERATION GUARD — the append is anchored on the FIRST item's
+    //     media id instead of the queue size, so a manual "add to queue"
+    //     during the fetch no longer discards the fetched songs; only a full
+    //     queue replacement (a new playSongs call) cancels the append.
+    //  4. RETRY WITH BACKOFF — a failed/empty fetch schedules one delayed
+    //     retry (12s doubling up to 96s, reset on success), gated on
+    //     playWhenReady so a paused player never hammers the network.
+    //  5. PROVIDER-AWARE SEEDS — SoundCloud queues get SoundCloud's own
+    //     related-tracks list; YouTube ids and local-song radio keep using
+    //     YouTube recommendations (existing behavior, now with a saner
+    //     search fallback).
+    //  6. BOUNDED MEMORY — fetched ids are remembered (LRU, 60) so already
+    //     played songs don't immediately come back once the played head of
+    //     the queue is trimmed; the queue itself is capped at 120 items so a
+    //     multi-hour session can't grow it without limit.
+    //
+    // All ExoPlayer access below happens on the MAIN thread only (the fetch
+    // itself runs on Dispatchers.IO) — see the wrong-thread crash fixed
+    // earlier in onMediaItemTransition.
+    // =================================================================================
+
+    /** Must be called on the main thread. */
+    private fun maybeRefillRadioQueue(trigger: String, resumeIfEnded: Boolean = false) {
+        val player = engine.masterPlayer
+        val mediaItemCount = player.mediaItemCount
+        if (mediaItemCount <= 0) return
+        // Respect an active end-of-track (sleep) timer — the user asked for
+        // playback to stop; don't extend the queue behind their back.
+        if (endOfTrackTimerSongId != null) return
+        // One fetch at a time; the next transition re-evaluates anyway.
+        if (radioFetchJob?.isActive == true) return
+
+        val currentMediaItemIndex = player.currentMediaItemIndex
+        val upcoming = (mediaItemCount - 1) - currentMediaItemIndex
+        // Refill while up to RADIO_REFILL_RUNWAY songs are still unplayed, so
+        // the 1-3 s network fetch always completes before the queue runs dry.
+        if (upcoming > RADIO_REFILL_RUNWAY) return
+
+        val currentItem = player.currentMediaItem ?: return
+        val anchorMediaId = player.getMediaItemAt(0).mediaId
+        val excludeIds = ArrayList<String>(mediaItemCount + radioRecentIds.size)
+        for (i in 0 until mediaItemCount) {
+            excludeIds.add(player.getMediaItemAt(i).mediaId)
+        }
+        excludeIds.addAll(radioRecentIds)
+
+        val toFetch = (RADIO_TARGET_UPCOMING - upcoming)
+            .coerceIn(1, RADIO_TARGET_UPCOMING)
+
+        radioFetchJob = serviceScope.launch(Dispatchers.IO) {
+            val recommendations = fetchRadioRecommendations(currentItem, excludeIds, toFetch)
+            withContext(Dispatchers.Main) {
+                // Re-read the player — the engine may have swapped players
+                // (crossfade) while the fetch was running.
+                val currentPlayer = engine.masterPlayer
+                // Skip only if the queue was fully REPLACED while we were
+                // fetching (a new playSongs call). If it merely grew (user
+                // added a song / another append landed) appending at the very
+                // end is still correct.
+                if (currentPlayer.mediaItemCount > 0 &&
+                    currentPlayer.getMediaItemAt(0).mediaId == anchorMediaId
+                ) {
+                    if (recommendations.isNotEmpty()) {
+                        currentPlayer.addMediaItems(
+                            recommendations.map { MediaItemBuilder.build(it) }
+                        )
+                        rememberRadioIds(recommendations.map { it.id })
+                        radioRetryJob?.cancel()
+                        radioConsecutiveFailures = 0
+                        maybeTrimRadioQueue()
+                        Timber.tag(TAG).d(
+                            "Endless radio: +%d via %s, queue=%d, upcoming=%d",
+                            recommendations.size, trigger,
+                            currentPlayer.mediaItemCount,
+                            currentPlayer.mediaItemCount - 1 - currentPlayer.currentMediaItemIndex
+                        )
+                        if (resumeIfEnded && currentPlayer.playbackState == Player.STATE_ENDED) {
+                            // The queue ran dry before the fetch landed (repeat
+                            // off). Continue seamlessly on the first freshly
+                            // appended song instead of staying dead at ENDED.
+                            currentPlayer.seekToNextMediaItem()
+                            currentPlayer.prepare()
+                            currentPlayer.play()
+                        }
+                    } else {
+                        Timber.tag(TAG).d(
+                            "Endless radio: no recommendations via %s (queue=%d)",
+                            trigger, currentPlayer.mediaItemCount
+                        )
+                        scheduleRadioRetry(resumeIfEnded)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Last-chance rescue for a radio queue that ran completely dry (STATE_ENDED,
+     * repeat off, all refills failed). Cloud queues resume seamlessly; a local
+     * library/album queue still ends naturally, as before.
+     */
+    private fun maybeResumeEndedRadioQueue() {
+        val player = engine.masterPlayer
+        if (endOfTrackTimerSongId != null) return
+        if (player.mediaItemCount <= 0) return
+        val endedItem = player.currentMediaItem ?: return
+        if (!isCloudMediaItem(endedItem)) return
+        Timber.tag(TAG).d("Endless radio: queue ran dry (STATE_ENDED) — rescuing cloud radio")
+        maybeRefillRadioQueue(trigger = "ended-rescue", resumeIfEnded = true)
+    }
+
+    /** Whether the given media item plays a cloud-streamed (online) source. */
+    private fun isCloudMediaItem(item: MediaItem): Boolean {
+        val extras = item.mediaMetadata.extras ?: return false
+        val contentUri = extras.getString(MediaItemBuilder.EXTERNAL_EXTRA_CONTENT_URI)
+        return !contentUri.isNullOrBlank() && CloudUriUtils.isCloudContentUri(contentUri)
+    }
+
+    /**
+     * Resolves the radio seed song (from Room when possible, otherwise from
+     * the MediaItem metadata) and fetches [toFetch] related songs from the
+     * matching provider. Runs on Dispatchers.IO; never touches the player.
+     */
+    private suspend fun fetchRadioRecommendations(
+        currentItem: MediaItem,
+        excludeIds: List<String>,
+        toFetch: Int
+    ): List<com.theveloper.pixeltune.data.model.Song> {
+        val mediaId = currentItem.mediaId
+        var dbSong: com.theveloper.pixeltune.data.model.Song? = null
+        try {
+            dbSong = musicRepository.getSong(mediaId).first()
+        } catch (e: Exception) {
+            Timber.tag(TAG).d(e, "Error fetching current song from database")
+        }
+
+        val extras = currentItem.mediaMetadata.extras
+        val contentUri = extras?.getString(MediaItemBuilder.EXTERNAL_EXTRA_CONTENT_URI).orEmpty()
+        val filePath = extras?.getString(MediaItemBuilder.EXTERNAL_EXTRA_FILE_PATH).orEmpty()
+
+        // Provider detection — a SoundCloud queue must grow with SoundCloud's
+        // own related tracks; everything else (YouTube ids, local-song radio)
+        // keeps using the YouTube recommendation pipeline.
+        val isSoundCloudSeed = contentUri.contains("/soundcloud/", ignoreCase = true) ||
+            contentUri.startsWith("soundcloud://", ignoreCase = true) ||
+            filePath.contains("soundcloud.com", ignoreCase = true)
+        val isYouTubeSeed = !isSoundCloudSeed &&
+            (contentUri.contains("/youtube/", ignoreCase = true) ||
+                contentUri.startsWith("youtube://", ignoreCase = true) ||
+                filePath.contains("youtube.com", ignoreCase = true))
+
+        val seedSong = dbSong ?: com.theveloper.pixeltune.data.model.Song.emptySong().copy(
+            id = mediaId,
+            title = currentItem.mediaMetadata.title?.toString() ?: "Unknown",
+            artist = currentItem.mediaMetadata.artist?.toString() ?: "Unknown",
+            path = filePath,
+            contentUriString = contentUri,
+            albumArtUriString = currentItem.mediaMetadata.artworkUri?.toString(),
+            // Only treat the media id as a YouTube video id when the item
+            // really is a YouTube song — SoundCloud/Telegram ids must never
+            // leak into a YouTube watch URL.
+            youtubeId = if (isYouTubeSeed) mediaId else null
+        )
+
+        return if (isSoundCloudSeed) {
+            soundCloudRepository.getRelatedSongs(
+                currentSong = seedSong,
+                excludeIds = excludeIds.toHashSet(),
+                proxyUrlProvider = { soundCloudStreamProxy.getProxyUrl(it) },
+                limit = toFetch
+            )
+        } else {
+            youtubeRepository.getMultipleAutoplayRecommendations(
+                currentSong = seedSong,
+                currentQueueIds = excludeIds,
+                proxyUrlProvider = { youtubeStreamProxy.getProxyUrl(it) },
+                limit = toFetch
+            )
+        }
+    }
+
+    /**
+     * Schedules a single delayed retry after a failed/empty radio refill, with
+     * exponential backoff (12s → 96s) and only while the user actually wants
+     * playback to continue. A paused player never spawns background fetches.
+     */
+    private fun scheduleRadioRetry(resumeIfEnded: Boolean) {
+        if (!engine.masterPlayer.playWhenReady) return
+        if (radioConsecutiveFailures >= RADIO_MAX_CONSECUTIVE_FAILURES) {
+            // Gave up on time-based retries — offline or the provider is down.
+            // Playback itself keeps going; every transition into the queue tail
+            // still gets ONE fresh attempt, so this self-heals as soon as
+            // connectivity returns (and the counter resets on any success).
+            return
+        }
+        radioConsecutiveFailures = (radioConsecutiveFailures + 1)
+            .coerceAtMost(RADIO_MAX_CONSECUTIVE_FAILURES)
+        val backoffMs = RADIO_RETRY_BASE_DELAY_MS *
+            (1L shl (radioConsecutiveFailures - 1))
+        radioRetryJob?.cancel()
+        radioRetryJob = serviceScope.launch {
+            delay(backoffMs)
+            maybeRefillRadioQueue(trigger = "retry", resumeIfEnded = resumeIfEnded)
+        }
+    }
+
+    /** LRU-remembers recently appended radio ids (main thread only). */
+    private fun rememberRadioIds(ids: List<String>) {
+        for (id in ids) {
+            radioRecentIds.remove(id)
+            radioRecentIds.add(id)
+        }
+        while (radioRecentIds.size > RADIO_RECENT_IDS_MEMORY) {
+            radioRecentIds.remove(radioRecentIds.first())
+        }
+    }
+
+    /**
+     * Bounds the queue during multi-hour radio sessions: once it grows past
+     * [RADIO_MAX_QUEUE_ITEMS], drop the oldest PLAYED items (keeping a small
+     * history window behind the current index). The radio itself never ends —
+     * the tail keeps growing. Removing items before the current index never
+     * interrupts playback; ExoPlayer shifts the current index transparently.
+     */
+    private fun maybeTrimRadioQueue() {
+        val player = engine.masterPlayer
+        val count = player.mediaItemCount
+        if (count <= RADIO_MAX_QUEUE_ITEMS) return
+        val removable = player.currentMediaItemIndex - RADIO_KEEP_PLAYED_BEHIND
+        if (removable > 0) {
+            player.removeMediaItems(0, removable)
+            Timber.tag(TAG).d(
+                "Endless radio: trimmed %d played items (queue %d -> %d)",
+                removable, count, player.mediaItemCount
+            )
         }
     }
 
@@ -1176,6 +1414,8 @@ class MusicService : MediaLibraryService() {
         stopCastWearSync()
         wearStatePublisher.clearState()
         replayGainJob?.cancel()
+        radioFetchJob?.cancel()
+        radioRetryJob?.cancel()
 
         mediaSession?.run {
             release()

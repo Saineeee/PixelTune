@@ -1,10 +1,12 @@
 package com.theveloper.pixeltune.presentation.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
@@ -13,22 +15,28 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.LargeExtendedFloatingActionButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,19 +48,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import coil.size.Size
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
+import com.theveloper.pixeltune.presentation.components.PlaylistBottomSheet
+import com.theveloper.pixeltune.presentation.components.SmartImage
 import com.theveloper.pixeltune.presentation.components.subcomps.EnhancedSongListItem
 import com.theveloper.pixeltune.presentation.components.subcomps.SineWaveLine
 import com.theveloper.pixeltune.presentation.model.RecentlyPlayedSongUiModel
 import com.theveloper.pixeltune.presentation.model.mapRecentlyPlayedSongs
 import com.theveloper.pixeltune.presentation.viewmodel.PlayerViewModel
+import com.theveloper.pixeltune.presentation.viewmodel.PlaylistViewModel
 import com.theveloper.pixeltune.ui.theme.ExpTitleTypography
 import com.theveloper.pixeltune.ui.theme.GoogleSansRounded
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
@@ -75,19 +90,30 @@ import java.time.format.FormatStyle
  * playback URI), so entries render and play correctly even across app
  * restarts, when the in-memory cloud songs registry is empty.
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun ListeningHistoryScreen(
     playerViewModel: PlayerViewModel,
+    playlistViewModel: PlaylistViewModel = hiltViewModel(),
     navController: NavController
 ) {
     val playbackHistory by playerViewModel.playbackHistory.collectAsStateWithLifecycle()
     val allSongs by playerViewModel.allSongsFlow.collectAsStateWithLifecycle()
     val cloudSongsById by playerViewModel.cloudSongsRegistry.collectAsStateWithLifecycle()
     val stablePlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
+    val favoriteSongIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle()
+    val playlistUiState by playlistViewModel.uiState.collectAsStateWithLifecycle()
 
     val lazyListState = rememberLazyListState()
     var showClearConfirmDialog by rememberSaveable { mutableStateOf(false) }
+
+    // IMPROVE(history-three-dot): the three-dot button on each row now opens
+    // a Material 3 bottom sheet with per-song actions (Add to Liked / Remove
+    // from history / Add to playlist) instead of silently replaying the queue.
+    var optionsSong by remember { mutableStateOf<Song?>(null) }
+    var showPlaylistBottomSheet by remember { mutableStateOf(false) }
+
+    val bottomBarHeightDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
     // Merge local library + session cloud registry. Entries that still can't be
     // resolved through this merge (e.g. cloud songs after an app restart) fall
@@ -163,7 +189,7 @@ fun ListeningHistoryScreen(
                 .fillMaxSize()
                 .statusBarsPadding()
         ) {
-            // ---- Header (back button + centered title + sine divider) ----
+            // ---- Header (back button + centered title + sine divider + clear action) ----
             Box(modifier = Modifier.fillMaxWidth()) {
                 FilledIconButton(
                     onClick = { navController.popBackStack() },
@@ -179,6 +205,32 @@ fun ListeningHistoryScreen(
                         imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                         contentDescription = "Back"
                     )
+                }
+
+                // IMPROVE(clear-history-placement): "Clear History" used to be a
+                // large FAB overlaid at the bottom of the screen, where it sat
+                // underneath the Home/Search/Library bottom navigation bar and was
+                // impossible to tap. It now lives in the header as an icon button
+                // (error-container styling marks it as destructive, per Material 3),
+                // always reachable while the list scrolls under it. The destructive
+                // action itself is still guarded by the confirmation dialog below.
+                if (historySongs.isNotEmpty()) {
+                    FilledIconButton(
+                        onClick = { showClearConfirmDialog = true },
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer
+                        ),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(end = 10.dp, top = 8.dp)
+                            .clip(CircleShape)
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.rounded_delete_24),
+                            contentDescription = "Clear History"
+                        )
+                    }
                 }
 
                 Column(
@@ -245,9 +297,12 @@ fun ListeningHistoryScreen(
                         start = 16.dp,
                         end = 16.dp,
                         top = 8.dp,
+                        // IMPROVE(clear-history-placement): the bottom padding no
+                        // longer reserves room for the removed Clear-History FAB;
+                        // just clear the mini player + gesture navigation bar.
                         bottom = MiniPlayerHeight +
                             WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
-                            140.dp
+                            32.dp
                     )
                 ) {
                     groupedSongs.forEach { (header, groupItems) ->
@@ -272,13 +327,10 @@ fun ListeningHistoryScreen(
                                 isPlaying = stablePlayerState.isPlaying && isCurrentSong,
                                 isCurrentSong = isCurrentSong,
                                 onMoreOptionsClick = { song ->
-                                    if (historyQueue.isNotEmpty()) {
-                                        playerViewModel.playSongs(
-                                            songsToPlay = historyQueue,
-                                            startSong = song,
-                                            queueName = "Listening History"
-                                        )
-                                    }
+                                    // IMPROVE(history-three-dot): open the per-song
+                                    // options sheet (Add to Liked / Remove from
+                                    // history / Add to playlist).
+                                    optionsSong = song
                                 },
                                 onClick = {
                                     if (historyQueue.isNotEmpty()) {
@@ -296,36 +348,7 @@ fun ListeningHistoryScreen(
             }
         }
 
-        // ---- Clear history action, overlaid at the bottom center ----
-        if (historySongs.isNotEmpty()) {
-            LargeExtendedFloatingActionButton(
-                onClick = { showClearConfirmDialog = true },
-                shape = AbsoluteSmoothCornerShape(
-                    cornerRadiusBR = 24.dp,
-                    smoothnessAsPercentBR = 60,
-                    cornerRadiusBL = 24.dp,
-                    smoothnessAsPercentBL = 60,
-                    cornerRadiusTR = 24.dp,
-                    smoothnessAsPercentTR = 60,
-                    cornerRadiusTL = 24.dp,
-                    smoothnessAsPercentTL = 60
-                ),
-                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                icon = {
-                    Icon(
-                        painter = painterResource(id = R.drawable.rounded_delete_24),
-                        contentDescription = "Clear History"
-                    )
-                },
-                text = { Text(text = "Clear History") },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 24.dp)
-            )
-        }
-
-        // Bottom fade so content scrolls out gracefully under the FAB.
+        // Bottom fade so content scrolls out gracefully at the screen edge.
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -370,5 +393,245 @@ fun ListeningHistoryScreen(
                 }
             }
         )
+    }
+
+    // IMPROVE(history-three-dot): per-song options sheet.
+    val songForOptions = optionsSong
+    if (songForOptions != null && !showPlaylistBottomSheet) {
+        HistorySongOptionsSheet(
+            song = songForOptions,
+            isLiked = favoriteSongIds.contains(songForOptions.id),
+            onDismiss = { optionsSong = null },
+            onToggleLike = {
+                val wasLiked = favoriteSongIds.contains(songForOptions.id)
+                playerViewModel.toggleFavoriteSpecificSong(songForOptions)
+                playerViewModel.sendToast(
+                    if (wasLiked) "Removed from Liked" else "Added to Liked"
+                )
+                optionsSong = null
+            },
+            onAddToPlaylist = {
+                showPlaylistBottomSheet = true
+            },
+            onRemoveFromHistory = {
+                playerViewModel.removeFromPlaybackHistory(songForOptions.id)
+                playerViewModel.sendToast("Removed from listening history")
+                optionsSong = null
+            }
+        )
+    }
+
+    if (songForOptions != null && showPlaylistBottomSheet) {
+        PlaylistBottomSheet(
+            playlistUiState = playlistUiState,
+            songs = listOf(songForOptions),
+            onDismiss = {
+                showPlaylistBottomSheet = false
+                optionsSong = null
+            },
+            bottomBarHeight = bottomBarHeightDp,
+            playerViewModel = playerViewModel
+        )
+    }
+}
+
+/**
+ * IMPROVE(history-three-dot): Material 3 bottom sheet with the per-song
+ * actions for a Listening History row — "Add to Liked", "Add to playlist"
+ * and "Remove" (delete this entry from the listening history).
+ *
+ * Follows the app's expressive M3 styling: rounded option rows with tonal
+ * leading icon containers, a song header with artwork, and the standard
+ * ModalBottomSheet enter/exit motion.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun HistorySongOptionsSheet(
+    song: Song,
+    isLiked: Boolean,
+    onDismiss: () -> Unit,
+    onToggleLike: () -> Unit,
+    onAddToPlaylist: () -> Unit,
+    onRemoveFromHistory: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { true }
+    )
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp)
+        ) {
+            // ---- Song header (artwork + title + artist) ----
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .background(
+                            MaterialTheme.colorScheme.surfaceVariant,
+                            RoundedCornerShape(14.dp)
+                        )
+                ) {
+                    SmartImage(
+                        model = song.albumArtUriString,
+                        contentDescription = song.title,
+                        shape = RoundedCornerShape(14.dp),
+                        targetSize = Size(168, 168),
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                Spacer(modifier = Modifier.width(14.dp))
+                Column {
+                    Text(
+                        text = song.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = GoogleSansRounded,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = song.displayArtist,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            HistoryOptionRow(
+                icon = painterResource(
+                    if (isLiked) R.drawable.rounded_favorite_24
+                    else R.drawable.round_favorite_border_24
+                ),
+                label = if (isLiked) "Remove from Liked" else "Add to Liked",
+                supportingText = if (isLiked) {
+                    "Take this song out of your Liked tab"
+                } else {
+                    "Show this song in your Library's Liked tab"
+                },
+                iconContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                iconContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                onClick = onToggleLike
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            HistoryOptionRow(
+                icon = painterResource(id = R.drawable.rounded_playlist_add_24),
+                label = "Add to playlist",
+                supportingText = "Add this song to one of your playlists",
+                iconContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                iconContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                onClick = onAddToPlaylist
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            HistoryOptionRow(
+                icon = painterResource(id = R.drawable.rounded_delete_24),
+                label = "Remove",
+                supportingText = "Delete this entry from your listening history",
+                iconContainerColor = MaterialTheme.colorScheme.errorContainer,
+                iconContentColor = MaterialTheme.colorScheme.onErrorContainer,
+                onClick = onRemoveFromHistory
+            )
+        }
+    }
+}
+
+/**
+ * A single rounded option row inside [HistorySongOptionsSheet]: tonal leading
+ * icon container + label / supporting text, with ripple feedback.
+ */
+@Composable
+private fun HistoryOptionRow(
+    icon: Painter,
+    label: String,
+    supportingText: String,
+    iconContainerColor: Color,
+    iconContentColor: Color,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = AbsoluteSmoothCornerShape(
+            cornerRadiusBR = 22.dp,
+            smoothnessAsPercentBR = 60,
+            cornerRadiusBL = 22.dp,
+            smoothnessAsPercentBL = 60,
+            cornerRadiusTR = 22.dp,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusTL = 22.dp,
+            smoothnessAsPercentTL = 60
+        ),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(
+                AbsoluteSmoothCornerShape(
+                    cornerRadiusBR = 22.dp,
+                    smoothnessAsPercentBR = 60,
+                    cornerRadiusBL = 22.dp,
+                    smoothnessAsPercentBL = 60,
+                    cornerRadiusTR = 22.dp,
+                    smoothnessAsPercentTR = 60,
+                    cornerRadiusTL = 22.dp,
+                    smoothnessAsPercentTL = 60
+                )
+            )
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(iconContainerColor),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = icon,
+                    contentDescription = label,
+                    tint = iconContentColor,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(14.dp))
+            Column {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = GoogleSansRounded,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = supportingText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }

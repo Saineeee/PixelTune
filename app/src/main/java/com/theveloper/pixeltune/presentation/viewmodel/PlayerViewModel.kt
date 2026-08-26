@@ -208,6 +208,15 @@ class PlayerViewModel @Inject constructor(
     }
 
     /**
+     * IMPROVE(history-remove): removes ONE song from the Listening History
+     * page (in-memory + persisted). Used by the three-dot "Remove" option on
+     * each history row.
+     */
+    fun removeFromPlaybackHistory(songId: String) {
+        listeningStatsTracker.removeFromHistory(songId)
+    }
+
+    /**
      * Accumulates cloud-streamed songs (YouTube / SoundCloud / Netease / etc.)
      * encountered during the current app session — sourced from the playback
      * queue, the current playing song, and any cloud songs that were favorited.

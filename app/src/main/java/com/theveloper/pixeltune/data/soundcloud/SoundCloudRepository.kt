@@ -97,6 +97,94 @@ class SoundCloudRepository @Inject constructor() {
         }
     }
 
+    /**
+     * IMPROVE(endless-radio): fetches up to [limit] tracks related to
+     * [currentSong] from SoundCloud itself (the "Related tracks" list on the
+     * track page), so a SoundCloud queue can keep growing forever like a
+     * radio instead of stalling when the last queued song plays.
+     *
+     * Mirrors [com.theveloper.pixeltune.data.youtube.YouTubeRepository
+     * .getMultipleAutoplayRecommendations]:
+     *  - the upstream track URL is taken from [Song.path] (fresh search
+     *    results) or reconstructed from the restart-safe `soundcloud://`
+     *    content URI (favorited songs / restored queue items);
+     *  - items whose derived id is in [excludeIds] (already queued or
+     *    recently played) are skipped;
+     *  - returns [Song]s built exactly like search results, so they are
+     *    immediately playable and persist correctly when liked.
+     */
+    suspend fun getRelatedSongs(
+        currentSong: Song,
+        excludeIds: Set<String>,
+        proxyUrlProvider: (String) -> String,
+        limit: Int = 5
+    ): List<Song> = withContext(Dispatchers.IO) {
+        if (limit <= 0) return@withContext emptyList()
+        val safeLimit = limit.coerceAtMost(20)
+        try {
+            val trackUrl = currentSong.path.takeIf {
+                it.startsWith("http", ignoreCase = true) &&
+                    it.contains("soundcloud.com", ignoreCase = true)
+            } ?: currentSong.contentUriString
+                .takeIf { it.startsWith("soundcloud://", ignoreCase = true) }
+                ?.substringAfter("soundcloud://")
+                ?.let { encoded ->
+                    runCatching { java.net.URLDecoder.decode(encoded, "UTF-8") }.getOrNull()
+                }
+                ?: return@withContext emptyList()
+
+            val extractor = ServiceList.SoundCloud.getStreamExtractor(trackUrl)
+            extractor.fetchPage()
+            val relatedItems = extractor.relatedItems?.items
+                ?.filterIsInstance<StreamInfoItem>()
+                ?: emptyList()
+
+            val picked = ArrayList<Song>(safeLimit)
+            for (item in relatedItems) {
+                if (picked.size >= safeLimit) break
+                val itemUrl = item.url ?: continue
+                val encodedUrl = URLEncoder.encode(itemUrl, "UTF-8")
+                val songId = encodedUrl.hashCode().toString()
+                if (songId in excludeIds) continue
+
+                val durationMs = if (item.duration > 0) item.duration * 1000L else 0L
+                picked += Song(
+                    id = songId,
+                    title = item.name ?: "Unknown",
+                    artist = item.uploaderName ?: "Unknown",
+                    artistId = -1L,
+                    artists = emptyList(),
+                    album = "",
+                    albumId = -1L,
+                    albumArtist = null,
+                    path = itemUrl,
+                    contentUriString = proxyUrlProvider(encodedUrl),
+                    albumArtUriString = item.thumbnails.firstOrNull()?.url,
+                    duration = durationMs,
+                    genre = null,
+                    lyrics = null,
+                    isFavorite = false,
+                    trackNumber = 0,
+                    year = 0,
+                    dateAdded = 0,
+                    dateModified = 0,
+                    mimeType = "audio/mpeg",
+                    bitrate = 0,
+                    sampleRate = 0,
+                    telegramFileId = null,
+                    telegramChatId = null,
+                    neteaseId = null,
+                    gdriveFileId = null,
+                    youtubeId = null
+                )
+            }
+            picked
+        } catch (e: Exception) {
+            Timber.e(e, "Error getting SoundCloud related songs")
+            emptyList()
+        }
+    }
+
     suspend fun searchSoundCloud(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): List<SearchResultItem> = withContext(Dispatchers.IO) {
         try {
             val searchFilter = when (filter) {

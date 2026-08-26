@@ -341,7 +341,19 @@ class YouTubeRepository @Inject constructor() {
                 extractor.fetchPage()
                 extractor.relatedItems?.items?.filterIsInstance<StreamInfoItem>() ?: emptyList()
             } else {
-                val query = "${currentSong.artist} ${currentSong.title} mix"
+                // IMPROVE(endless-radio): guard the search-fallback query — when
+                // the artist is blank or a placeholder ("Unknown", "-"), searching
+                // for "Unknown <title> mix" returns garbage that poisons the radio
+                // queue. Search the title alone in that case.
+                val artist = currentSong.artist.trim()
+                val usableArtist = artist.takeIf {
+                    it.isNotEmpty() && !it.equals("unknown", ignoreCase = true) && it != "-"
+                }
+                val query = if (usableArtist != null) {
+                    "$usableArtist ${currentSong.title} mix"
+                } else {
+                    "${currentSong.title} mix"
+                }
                 val searchExtractor = ServiceList.YouTube.getSearchExtractor(query)
                 searchExtractor.fetchPage()
                 searchExtractor.initialPage.items.filterIsInstance<StreamInfoItem>()

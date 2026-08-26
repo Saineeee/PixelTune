@@ -519,6 +519,26 @@ class PlaybackStatsRepository @Inject constructor(
         }
     }
 
+    /**
+     * IMPROVE(history-remove): removes every persisted playback event for the
+     * given [songId] so the song disappears from the Listening History page
+     * (and Recently Played) until it is played again.
+     *
+     * This is the single-song counterpart of [clearHistory]: it filters the
+     * events file instead of wiping it, leaving every other song's history
+     * and stats intact. Mirrors how [clearHistory] operates on the same file.
+     */
+    fun removeHistoryEntriesForSong(songId: String) {
+        if (songId.isEmpty()) return
+        synchronized(fileLock) {
+            val events = readEventsLocked()
+            val filtered = events.filterNot { it.songId == songId }
+            if (filtered.size != events.size) {
+                writeEventsLocked(filtered.toMutableList())
+            }
+        }
+    }
+
     private fun readEvents(): List<PlaybackEvent> = synchronized(fileLock) { readEventsLocked() }
 
     private fun readEventsLocked(): MutableList<PlaybackEvent> {

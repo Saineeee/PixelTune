@@ -321,6 +321,31 @@ class ListeningStatsTracker @Inject constructor(
         }
     }
 
+    /**
+     * IMPROVE(history-remove): removes a single song from the Listening
+     * History (both the in-memory StateFlow that drives the UI and the
+     * persisted events file), leaving all other songs untouched.
+     *
+     * If the song happens to be the one in the active listening session, the
+     * session is detached first so a later finalize can't re-add the entry
+     * the user just removed.
+     */
+    fun removeFromHistory(songId: String) {
+        if (songId.isEmpty()) return
+        if (currentSession?.songId == songId) {
+            // Detach the active session without finalizing it (finalizing
+            // would upsert a fresh history entry for this very song).
+            currentSession = null
+            if (pendingVoluntarySongId == songId) {
+                pendingVoluntarySongId = null
+            }
+        }
+        removePlaybackHistory(songId)
+        scope?.launch(Dispatchers.IO) {
+            playbackStatsRepository.removeHistoryEntriesForSong(songId)
+        }
+    }
+
     fun onCleared() {
         finalizeCurrentSession()
         scope = null
