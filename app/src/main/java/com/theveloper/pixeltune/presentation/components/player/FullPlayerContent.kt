@@ -99,8 +99,13 @@ import androidx.compose.ui.unit.coerceAtLeast
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.res.stringResource
 import androidx.media3.common.Player
@@ -202,6 +207,17 @@ fun FullPlayerContent(
     val isBluetoothEnabled by playerViewModel.isBluetoothEnabled.collectAsStateWithLifecycle()
     val bluetoothName by playerViewModel.bluetoothName.collectAsStateWithLifecycle()
 
+    // IMPROVE(volume-slider): live player volume for the top-bar volume control.
+    val trackVolume by playerViewModel.trackVolume.collectAsStateWithLifecycle()
+
+    // IMPROVE(offline-downloads): download state for the current (cloud) song.
+    val downloadedSongs by playerViewModel.downloadedSongs.collectAsStateWithLifecycle()
+    val downloadStates by playerViewModel.downloadStates.collectAsStateWithLifecycle()
+    val currentSongIsCloud = playerViewModel.isSongCloudStreamed(song)
+    val currentSongDownloaded = downloadedSongs.containsKey(song.id)
+    val currentSongDownloadState = downloadStates[song.id]
+    var confirmRemoveDownload by remember { mutableStateOf(false) }
+
     var showFetchLyricsDialog by remember { mutableStateOf(false) }
     var totalDrag by remember { mutableStateOf(0f) }
 
@@ -294,6 +310,44 @@ fun FullPlayerContent(
                 }
             )
         }
+    }
+
+    // IMPROVE(offline-downloads): confirmation before deleting the offline
+    // copy of the current song (Netflix-style delete guard).
+    if (confirmRemoveDownload) {
+        AlertDialog(
+            onDismissRequest = { confirmRemoveDownload = false },
+            title = {
+                Text(
+                    text = "Remove download?",
+                    style = MaterialTheme.typography.titleMediumEmphasized
+                )
+            },
+            text = {
+                Text(
+                    text = "\"${song.title}\" will no longer be available offline.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmRemoveDownload = false
+                        playerViewModel.toggleDownloadForSong(song)
+                    }
+                ) {
+                    Text("Remove")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRemoveDownload = false }) {
+                    Text("Cancel")
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 
     // Observador para reaccionar al resultado de la búsqueda de letras
@@ -700,6 +754,96 @@ fun FullPlayerContent(
                                 }
                             }
 
+                            // IMPROVE(offline-downloads): download button for
+                            // online-streamed songs — taps download / cancel /
+                            // confirm-remove the app-private offline copy.
+                            // Local (device) songs never show it.
+                            if (currentSongIsCloud) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(height = 42.dp, width = 50.dp)
+                                        .clip(
+                                            RoundedCornerShape(
+                                                topStart = 6.dp,
+                                                topEnd = 50.dp,
+                                                bottomStart = 6.dp,
+                                                bottomEnd = 50.dp
+                                            )
+                                        )
+                                        .background(playerOnAccentColor.copy(alpha = 0.7f))
+                                        .clickable {
+                                            when {
+                                                currentSongDownloadState is com.theveloper.pixeltune.data.downloads.DownloadState.Downloading -> {
+                                                    playerViewModel.toggleDownloadForSong(song)
+                                                }
+                                                currentSongDownloaded -> {
+                                                    confirmRemoveDownload = true
+                                                }
+                                                else -> {
+                                                    playerViewModel.toggleDownloadForSong(song)
+                                                }
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    when (val ds = currentSongDownloadState) {
+                                        is com.theveloper.pixeltune.data.downloads.DownloadState.Downloading -> {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(22.dp),
+                                                strokeWidth = 2.5.dp,
+                                                color = playerAccentColor,
+                                                progress = {
+                                                    if (ds.progressFraction >= 0f) {
+                                                        ds.progressFraction.coerceIn(0f, 1f)
+                                                    } else {
+                                                        0f
+                                                    }
+                                                }
+                                            )
+                                        }
+                                        is com.theveloper.pixeltune.data.downloads.DownloadState.Failed -> {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Close,
+                                                contentDescription = "Download failed",
+                                                tint = playerAccentColor
+                                            )
+                                        }
+                                        else -> {
+                                            AnimatedContent(
+                                                targetState = currentSongDownloaded,
+                                                transitionSpec = {
+                                                    (fadeIn(animationSpec = tween(180)) +
+                                                        scaleIn(
+                                                            initialScale = 0.6f,
+                                                            animationSpec = spring(
+                                                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                                stiffness = Spring.StiffnessMedium
+                                                            )
+                                                        )) togetherWith
+                                                        (fadeOut(animationSpec = tween(120)) +
+                                                            scaleOut(targetScale = 0.6f, animationSpec = tween(120)))
+                                                },
+                                                label = "downloadIcon"
+                                            ) { downloaded ->
+                                                if (downloaded) {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.Check,
+                                                        contentDescription = "Downloaded for offline playback",
+                                                        tint = playerAccentColor
+                                                    )
+                                                } else {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.Download,
+                                                        contentDescription = "Download for offline playback",
+                                                        tint = playerAccentColor
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             // Queue Button
                             Box(
                                 modifier = Modifier
@@ -725,6 +869,19 @@ fun FullPlayerContent(
                                     tint = playerAccentColor
                                 )
                             }
+
+                            // IMPROVE(volume-slider): morphing M3 volume control —
+                            // tap the volume icon and a smooth slider expands out
+                            // of the pill (same animation language as the cast
+                            // button next to it).
+                            PlayerVolumeControl(
+                                volumeProvider = { trackVolume },
+                                onVolumeChange = { playerViewModel.setTrackVolume(it) },
+                                containerColor = playerOnAccentColor.copy(alpha = 0.7f),
+                                contentColor = playerAccentColor,
+                                trackActiveColor = playerAccentColor,
+                                trackInactiveColor = playerAccentColor.copy(alpha = 0.3f)
+                            )
                         }
                     }
                 )

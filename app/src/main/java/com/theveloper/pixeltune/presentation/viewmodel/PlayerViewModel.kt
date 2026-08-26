@@ -139,10 +139,11 @@ private const val MAX_ALBUM_BATCH_SELECTION = 6
 private const val PROVIDER_HANDOFF_SEARCH_TIMEOUT_MS = 20_000L
 
 // IMPROVE(playback-restore): how many songs of the current queue are persisted
-// in the last-playback snapshot (the current song + the next 15). Bounded so
+// in the last-playback snapshot (the current song + the next 31). Bounded so
 // the DataStore payload stays small even for 5000-song queues while still
-// giving the restored session a real "up next" section.
-private const val LAST_PLAYBACK_QUEUE_WINDOW = 16
+// giving the restored session a real "up next" section. Widened from 16 to
+// 32 so the restored queue closely mirrors what the user saw before closing.
+private const val LAST_PLAYBACK_QUEUE_WINDOW = 32
 
 // IMPROVE(playback-restore): minimum interval between two throttled snapshot
 // saves while playing. Pause / song transitions always save immediately.
@@ -204,7 +205,10 @@ class PlayerViewModel @Inject constructor(
     val multiSelectionStateHolder: MultiSelectionStateHolder,
     val playlistSelectionStateHolder: PlaylistSelectionStateHolder,
     private val sessionToken: SessionToken,
-    private val mediaControllerFactory: com.theveloper.pixeltune.data.media.MediaControllerFactory
+    private val mediaControllerFactory: com.theveloper.pixeltune.data.media.MediaControllerFactory,
+    // IMPROVE(offline-downloads): owns the lifecycle of downloaded cloud
+    // songs (app-private offline copies playable without network).
+    private val downloadedSongsRepository: com.theveloper.pixeltune.data.downloads.DownloadedSongsRepository
 ) : ViewModel() {
 
     private val _playerUiState = MutableStateFlow(PlayerUiState())
@@ -304,6 +308,53 @@ class PlayerViewModel @Inject constructor(
     /** Public read-only access to the cloud songs registry (id -> Song). */
     val cloudSongsRegistry: StateFlow<Map<String, Song>> =
         _cloudSongsRegistry.asStateFlow()
+
+    /* ------------------------------------------------------------------ */
+    /* IMPROVE(offline-downloads): surface for the download UI (player     */
+    /* screen download button, SongInfoBottomSheet "Download" option,     */
+    /* queue rows, history rows, search results).                         */
+    /* ------------------------------------------------------------------ */
+
+    /** All completed offline downloads, keyed by song id. */
+    val downloadedSongs: StateFlow<Map<String, com.theveloper.pixeltune.data.downloads.DownloadedSong>> =
+        downloadedSongsRepository.downloadedSongs
+
+    /** In-flight / just-failed downloads, keyed by song id. */
+    val downloadStates: StateFlow<Map<String, com.theveloper.pixeltune.data.downloads.DownloadState>> =
+        downloadedSongsRepository.downloadStates
+
+    /** Public wrapper so UI layers can check whether a song is online-streamed. */
+    fun isSongCloudStreamed(song: Song?): Boolean = song?.isCloudStreamed() == true
+
+    /**
+     * Toggle-style download action for [song] (cloud songs only):
+     *  - not downloaded  -> starts the offline download;
+     *  - downloading     -> cancels it;
+     *  - downloaded      -> removes the offline copy.
+     *
+     * Feedback is surfaced through [toastEvents]; progress through
+     * [downloadStates].
+     */
+    fun toggleDownloadForSong(song: Song?) {
+        if (song == null) return
+        if (!song.isCloudStreamed()) {
+            viewModelScope.launch { _toastEvents.emit("Only online songs can be downloaded.") }
+            return
+        }
+        when {
+            downloadedSongsRepository.isDownloading(song.id) -> {
+                downloadedSongsRepository.cancelDownload(song.id)
+            }
+            downloadedSongsRepository.isDownloaded(song.id) -> {
+                downloadedSongsRepository.deleteDownload(song.id)
+                viewModelScope.launch { _toastEvents.emit("Download removed: ${song.title}") }
+            }
+            else -> {
+                viewModelScope.launch { _toastEvents.emit("Downloading: ${song.title}") }
+                downloadedSongsRepository.downloadSong(song)
+            }
+        }
+    }
 
     // Removed: _masterAllSongs was a duplicate of libraryStateHolder.allSongs
     // All reads now delegate to libraryStateHolder.allSongs
@@ -1102,27 +1153,39 @@ class PlayerViewModel @Inject constructor(
                 if (_playerUiState.value.currentPlaybackQueue.isNotEmpty()) return@launch
                 if (mediaController?.currentMediaItem != null) return@launch
 
-                _playerUiState.update {
-                    it.copy(
-                        currentPlaybackQueue = restoredQueue.toImmutableList(),
-                        currentQueueSourceName = snapshot.queueName,
-                        currentPosition = restoredPosition
-                    )
+                // Local applier so the delayed anti-wipe re-check below can
+                // re-assert the restored session if a late "empty player"
+                // event (controller state sync to a freshly restarted service)
+                // cleared it right after the first apply.
+                fun applyRestoredSession() {
+                    _playerUiState.update {
+                        it.copy(
+                            currentPlaybackQueue = restoredQueue.toImmutableList(),
+                            currentQueueSourceName = snapshot.queueName,
+                            currentPosition = restoredPosition
+                        )
+                    }
+                    playbackStateHolder.updateStablePlayerState {
+                        it.copy(
+                            currentSong = restoredSong,
+                            isPlaying = false,
+                            playWhenReady = false,
+                            totalDuration = restoredSong.duration.coerceAtLeast(0L),
+                            lyrics = null,
+                            isLoadingLyrics = false
+                        )
+                    }
+                    playbackStateHolder.setCurrentPosition(restoredPosition)
+                    // Seek target for the moment the user taps play.
+                    pendingResumePositionMs = restoredPosition
+                    // Mark the restored session as pending so the empty-player
+                    // event handlers (STATE_IDLE wipe, empty-timeline queue
+                    // wipe, null-transition wipe) don't clear it while the
+                    // player holds no live items of its own.
+                    restoredSessionActive = true
                 }
-                playbackStateHolder.updateStablePlayerState {
-                    it.copy(
-                        currentSong = restoredSong,
-                        isPlaying = false,
-                        playWhenReady = false,
-                        totalDuration = restoredSong.duration.coerceAtLeast(0L),
-                        lyrics = null,
-                        isLoadingLyrics = false
-                    )
-                }
-                playbackStateHolder.setCurrentPosition(restoredPosition)
 
-                // Seek target for the moment the user taps play.
-                pendingResumePositionMs = restoredPosition
+                applyRestoredSession()
 
                 // Register cloud songs so Recently Played / Listening History
                 // can resolve them during this session.
@@ -1132,6 +1195,26 @@ class PlayerViewModel @Inject constructor(
                 launch {
                     val uri = restoredSong.albumArtUriString?.toUri()
                     themeStateHolder.extractAndGenerateColorScheme(uri, restoredSong.albumArtUriString)
+                }
+
+                // FIX(playback-restore-race): a MediaController that just bound
+                // to a freshly (re)started service receives the session's empty
+                // state as onPlaybackStateChanged(STATE_IDLE) /
+                // onTimelineChanged(empty) events. Depending on binder timing
+                // those can arrive AFTER this apply and used to wipe the
+                // restored song + queue (the "song disappears after reopening
+                // the app" bug). Re-assert the restored session once more after
+                // the controller's initial state sync settles.
+                launch {
+                    delay(1_200L)
+                    if (restoredSessionActive &&
+                        pendingResumePositionMs != null &&
+                        playbackStateHolder.stablePlayerState.value.currentSong?.id != restoredSong.id &&
+                        mediaController?.currentMediaItem == null
+                    ) {
+                        Timber.i("Re-applying restored playback session (late empty-state event wiped it)")
+                        applyRestoredSession()
+                    }
                 }
 
                 Timber.i(
@@ -1211,6 +1294,17 @@ class PlayerViewModel @Inject constructor(
     // starts its own playback from zero.
     @Volatile
     private var pendingResumePositionMs: Long? = null
+
+    // FIX(playback-restore-race): true between restoring the last playback
+    // session into the UI and the moment the user actually starts playback.
+    // While true (and the player holds no live items), the empty-player event
+    // handlers must NOT clear currentSong / the restored queue — the freshly
+    // bound MediaController re-delivers the restarted service's empty state
+    // (STATE_IDLE / empty timeline) asynchronously, and those events used to
+    // wipe the restored session right after it appeared.
+    @Volatile
+    private var restoredSessionActive = false
+
     private var lastPlaybackRestoreAttempted = false
     private var lastPlaybackSaveJob: Job? = null
     private var lastPlaybackSaveTimestampMs = 0L
@@ -2338,6 +2432,13 @@ class PlayerViewModel @Inject constructor(
         val count = currentMediaController.mediaItemCount
 
         if (count == 0) {
+            // FIX(playback-restore-race): don't wipe a restored (not-yet-playing)
+            // queue just because the freshly bound controller reports an empty
+            // timeline. A real playback start will replace the queue with the
+            // engine's actual items.
+            if (restoredSessionActive && currentMediaController.currentMediaItem == null) {
+                return
+            }
             _playerUiState.update { it.copy(currentPlaybackQueue = persistentListOf()) }
             return
         }
@@ -2538,6 +2639,13 @@ class PlayerViewModel @Inject constructor(
 
         updateCurrentPlaybackQueueFromPlayer(playerCtrl)
 
+        // FIX(playback-restore-race): a live item in the player means the
+        // service survived (e.g. background playback) — no restore should be
+        // pending, and the empty-player wipe handlers may act normally.
+        if (playerCtrl.currentMediaItem != null) {
+            restoredSessionActive = false
+        }
+
         playerCtrl.currentMediaItem?.let { mediaItem ->
             val song = resolveSongFromMediaItem(mediaItem)
 
@@ -2718,6 +2826,13 @@ class PlayerViewModel @Inject constructor(
                             loadLyricsForCurrentSong()
                         }
                     } ?: run {
+                        // FIX(playback-restore-race): a null transition on an
+                        // empty player is a queue clear from a dead/restarted
+                        // session, not a real playback transition — keep the
+                        // restored session alive in that case.
+                        if (restoredSessionActive && playerCtrl.mediaItemCount == 0) {
+                            return@launch
+                        }
                         if (!isCastConnecting.value && !isRemotePlaybackActive.value) {
                             lyricsStateHolder.cancelLoading()
                             playbackStateHolder.updateStablePlayerState {
@@ -2755,6 +2870,15 @@ class PlayerViewModel @Inject constructor(
                     listeningStatsTracker.finalizeCurrentSession()
                 }
                 if (playbackState == Player.STATE_IDLE && playerCtrl.mediaItemCount == 0) {
+                    // FIX(playback-restore-race): skip the wipe while a restored
+                    // (not-yet-playing) session is showing — the freshly bound
+                    // controller re-delivers STATE_IDLE from the restarted
+                    // service asynchronously, which used to clear the restored
+                    // song right after the app was reopened.
+                    if (restoredSessionActive && playerCtrl.currentMediaItem == null) {
+                        clearPreparingSongIfMatching()
+                        return
+                    }
                     clearPreparingSongIfMatching()
                     if (!isCastConnecting.value && !isRemotePlaybackActive.value) {
                         listeningStatsTracker.onPlaybackStopped()
@@ -3000,6 +3124,10 @@ class PlayerViewModel @Inject constructor(
         // restored session's pending resume position — only the explicit
         // startPositionMs (the restore path itself) may seek on startup.
         pendingResumePositionMs = null
+        // FIX(playback-restore-race): a real playback start ends the restored
+        // session's "pending" status — from here on the empty-player event
+        // handlers may clear state normally again.
+        restoredSessionActive = false
         if (songsToPlay.isEmpty()) {
             clearPreparingSongIfMatching()
             return
@@ -3153,6 +3281,7 @@ class PlayerViewModel @Inject constructor(
         // IMPROVE(playback-restore): new direct playback consumes the pending
         // restored-session resume position (the explicit param wins).
         pendingResumePositionMs = null
+        restoredSessionActive = false
         beginPreparingSong(song)
         playbackStateHolder.updateStablePlayerState {
             it.copy(

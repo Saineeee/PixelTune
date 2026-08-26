@@ -62,6 +62,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -82,6 +83,8 @@ import com.theveloper.pixeltune.presentation.viewmodel.ColorSchemePair
 import com.theveloper.pixeltune.shared.WearIntents
 import com.theveloper.pixeltune.utils.CloudUriUtils
 import com.theveloper.pixeltune.utils.MediaItemBuilder
+import com.theveloper.pixeltune.data.preferences.LastPlaybackSnapshot
+import com.theveloper.pixeltune.data.preferences.LastPlaybackSongSnapshot
 import kotlin.math.abs
 
 import javax.inject.Inject
@@ -161,9 +164,149 @@ class MusicService : MediaLibraryService() {
     private var radioConsecutiveFailures = 0
     private val radioRecentIds = LinkedHashSet<String>()
 
+    // IMPROVE(playback-restore): service-side persistence of the playback
+    // session. The ViewModel-side saves cover the app-open lifecycle; these
+    // service-side saves cover the SERVICE lifecycle — most importantly the
+    // moment the user swipes the app away from recents (onTaskRemoved stops
+    // and clears the player) and the periodic tick that keeps the position
+    // fresh while background playback outlives the UI (and its ViewModel).
+    private var engineSnapshotJob: Job? = null
+    private var lastEngineSnapshotSaveMs = 0L
+    private val engineSnapshotScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Maps a queue [MediaItem] to its persistable snapshot form using only
+     * the metadata MediaItemBuilder baked in (title/artist/album/artwork +
+     * EXTERNAL_EXTRA_CONTENT_URI / DURATION extras).
+     */
+    private fun MediaItem.toPlaybackSnapshot(): LastPlaybackSongSnapshot? {
+        val extras = mediaMetadata.extras
+        val rawContentUri = extras?.getString(MediaItemBuilder.EXTERNAL_EXTRA_CONTENT_URI)
+            ?: localConfiguration?.uri?.toString()
+            ?: ""
+        val normalizedContentUri = CloudUriUtils.normalizeCloudUriForStorage(rawContentUri)
+        if (normalizedContentUri.isBlank()) return null
+        val durationMs = extras?.getLong(MediaItemBuilder.EXTERNAL_EXTRA_DURATION, 0L) ?: 0L
+        return LastPlaybackSongSnapshot(
+            id = mediaId,
+            title = mediaMetadata.title?.toString() ?: "",
+            artist = mediaMetadata.artist?.toString() ?: "",
+            album = mediaMetadata.albumTitle?.toString(),
+            albumArtUri = mediaMetadata.artworkUri?.toString()
+                ?: extras?.getString(MediaItemBuilder.EXTERNAL_EXTRA_ALBUM_ART),
+            contentUri = normalizedContentUri,
+            durationMs = durationMs,
+            youtubeId = if (normalizedContentUri.startsWith("youtube://")) {
+                normalizedContentUri.removePrefix("youtube://")
+            } else {
+                null
+            }
+        )
+    }
+
+    /**
+     * Builds a [LastPlaybackSnapshot] from the engine's live player. MUST be
+     * called on the main thread (ExoPlayer access rule). Returns null when the
+     * player holds nothing worth persisting.
+     */
+    private fun buildSnapshotFromEngine(): LastPlaybackSnapshot? {
+        val player = engine.masterPlayer
+        val currentItem = player.currentMediaItem ?: return null
+        val currentIndex = player.currentMediaItemIndex
+        if (currentIndex == C.INDEX_UNSET) return null
+        val windowEnd = minOf(currentIndex + ENGINE_SNAPSHOT_WINDOW, player.mediaItemCount)
+        val queueSnapshots = (currentIndex until windowEnd).mapNotNull { index ->
+            player.getMediaItemAt(index).toPlaybackSnapshot()
+        }
+        val currentSnapshot = currentItem.toPlaybackSnapshot() ?: return null
+        return LastPlaybackSnapshot(
+            current = currentSnapshot,
+            positionMs = player.currentPosition.coerceAtLeast(0L),
+            queueName = "", // resolved by the caller (persisted name is preserved)
+            queue = if (queueSnapshots.isNotEmpty()) queueSnapshots else listOf(currentSnapshot),
+            queueIndex = 0
+        )
+    }
+
+    /**
+     * Persists the engine's current playback session. The queue display name
+     * is preserved from the previously persisted snapshot whenever the current
+     * song matches (the ViewModel writes it whenever a queue starts).
+     */
+    private suspend fun saveEnginePlaybackSnapshot(force: Boolean) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastEngineSnapshotSaveMs < ENGINE_SNAPSHOT_TICK_MS) return
+        lastEngineSnapshotSaveMs = now
+        val snapshot = buildSnapshotFromEngine() ?: return
+        writeSnapshotWithPreservedQueueName(snapshot)
+    }
+
+    private suspend fun writeSnapshotWithPreservedQueueName(snapshot: LastPlaybackSnapshot) {
+        val queueName = try {
+            val existing = userPreferencesRepository.lastPlaybackSnapshotFlow.first()
+            when {
+                existing == null -> "None"
+                existing.current.id == snapshot.current.id -> existing.queueName
+                existing.queue.any { it.id == snapshot.current.id } -> existing.queueName
+                else -> "None"
+            }
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "Failed to read previous snapshot for queue name")
+            "None"
+        }
+        try {
+            userPreferencesRepository.saveLastPlaybackSnapshot(
+                snapshot.copy(queueName = queueName)
+            )
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "Failed to persist engine playback snapshot")
+        }
+    }
+
+    /**
+     * Fire-and-forget final save for teardown paths (onTaskRemoved /
+     * onDestroy): the snapshot is captured synchronously on the main thread
+     * BEFORE the player is stopped/cleared/released, then written on a scope
+     * that is NOT cancelled by service teardown (the process normally
+     * outlives the destroy call long enough for the DataStore flush).
+     */
+    private fun persistEngineSnapshotBeforeTeardown() {
+        val snapshot = try {
+            buildSnapshotFromEngine()
+        } catch (e: Exception) {
+            Timber.tag(TAG).d(e, "Teardown snapshot build skipped")
+            null
+        } ?: return
+        engineSnapshotScope.launch {
+            writeSnapshotWithPreservedQueueName(snapshot)
+        }
+    }
+
+    private fun startEngineSnapshotTicker() {
+        if (engineSnapshotJob?.isActive == true) return
+        engineSnapshotJob = serviceScope.launch {
+            while (isActive) {
+                delay(ENGINE_SNAPSHOT_TICK_MS)
+                try {
+                    val player = engine.masterPlayer
+                    if (player.playWhenReady && player.isPlaying) {
+                        saveEnginePlaybackSnapshot(force = false)
+                    }
+                } catch (e: Exception) {
+                    Timber.tag(TAG).d(e, "Engine snapshot tick skipped")
+                }
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "MusicService_PixelTune"
         const val NOTIFICATION_ID = 101
+
+        // IMPROVE(playback-restore): engine-side snapshot tuning (see
+        // [saveEnginePlaybackSnapshot]).
+        private const val ENGINE_SNAPSHOT_WINDOW = 32
+        private const val ENGINE_SNAPSHOT_TICK_MS = 4_000L
         const val ACTION_SLEEP_TIMER_EXPIRED = "com.theveloper.pixeltune.ACTION_SLEEP_TIMER_EXPIRED"
         const val EXTRA_FORCE_FOREGROUND_ON_START =
             "com.theveloper.pixeltune.extra.FORCE_FOREGROUND_ON_START"
@@ -289,6 +432,13 @@ class MusicService : MediaLibraryService() {
                 keepPlayingInBackground = enabled
             }
         }
+
+        // IMPROVE(playback-restore): keep the persisted playback session fresh
+        // while the service plays in the background (possibly long after the UI
+        // — and its ViewModel-side snapshot savers — are gone). If the system
+        // then kills the process, the on-disk snapshot still points at the
+        // song/position the user actually hears.
+        startEngineSnapshotTicker()
 
         serviceScope.launch {
             userPreferencesRepository.persistentShuffleEnabledFlow.collect { enabled ->
@@ -1390,6 +1540,12 @@ class MusicService : MediaLibraryService() {
         val player = mediaSession?.player
         val allowBackground = keepPlayingInBackground
 
+        // IMPROVE(playback-restore): capture the session BEFORE any teardown —
+        // the swiped-away app may take the ViewModel (and its snapshot savers)
+        // with it, so the service is the last one that can still see the live
+        // player state here.
+        persistEngineSnapshotBeforeTeardown()
+
         if (!allowBackground) {
             player?.apply {
                 playWhenReady = false
@@ -1411,11 +1567,17 @@ class MusicService : MediaLibraryService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = mediaSession
 
     override fun onDestroy() {
+        // IMPROVE(playback-restore): last-chance session snapshot while the
+        // engine still holds the queue (fire-and-forget on a scope that is not
+        // cancelled below).
+        persistEngineSnapshotBeforeTeardown()
+
         stopCastWearSync()
         wearStatePublisher.clearState()
         replayGainJob?.cancel()
         radioFetchJob?.cancel()
         radioRetryJob?.cancel()
+        engineSnapshotJob?.cancel()
 
         mediaSession?.run {
             release()

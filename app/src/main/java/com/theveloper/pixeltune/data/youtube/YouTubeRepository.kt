@@ -10,9 +10,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.search.SearchExtractor
+import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
+import org.schabi.newpipe.extractor.stream.StreamType
 import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.channel.ChannelInfoItem
 import timber.log.Timber
@@ -183,9 +185,15 @@ class YouTubeRepository @Inject constructor() {
 
     suspend fun searchYouTube(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): List<SearchResultItem> = withContext(Dispatchers.IO) {
         try {
+            // IMPROVE(music-only): search YouTube MUSIC (the music.youtube.com
+            // index) instead of generic YouTube videos. Generic results regularly
+            // include vlogs, tutorials, podcasts and other non-music uploads the
+            // user explicitly does not want; the YT Music songs index guarantees
+            // real songs. The "All" tab maps to the same music-songs filter so
+            // ONLY music shows up everywhere (search, tap-to-play, queue refill).
             val searchFilter = when (filter) {
-                SearchFilterType.ALL -> ""
-                SearchFilterType.SONGS -> "videos" // For YouTube, we can just use default or "videos"
+                SearchFilterType.ALL -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
+                SearchFilterType.SONGS -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
                 SearchFilterType.ALBUMS -> "playlists" // YouTube doesn't map albums cleanly, but NewPipe handles it
                 SearchFilterType.ARTISTS -> "channels"
                 SearchFilterType.PLAYLISTS -> "playlists"
@@ -354,7 +362,11 @@ class YouTubeRepository @Inject constructor() {
                 } else {
                     "${currentSong.title} mix"
                 }
-                val searchExtractor = ServiceList.YouTube.getSearchExtractor(query)
+                val searchExtractor = ServiceList.YouTube.getSearchExtractor(
+                    query,
+                    listOf(YoutubeSearchQueryHandlerFactory.MUSIC_SONGS),
+                    ""
+                )
                 searchExtractor.fetchPage()
                 searchExtractor.initialPage.items.filterIsInstance<StreamInfoItem>()
             }
@@ -363,6 +375,11 @@ class YouTubeRepository @Inject constructor() {
             val picked = ArrayList<Song>(safeLimit)
             for (item in candidateItems) {
                 if (picked.size >= safeLimit) break
+                // IMPROVE(music-only): radio candidates must be actual music —
+                // drop live streams / unknown durations and hour-long
+                // "mix" compilations that are not songs, so the endless queue
+                // only ever surfaces real tracks.
+                if (!isMusicCandidate(item)) continue
                 val videoId = extractVideoId(item.url) ?: continue
                 if (videoId in excludeIds) continue
 
@@ -388,5 +405,28 @@ class YouTubeRepository @Inject constructor() {
             Timber.e(e, "Error getting multiple autoplay recommendations")
             emptyList()
         }
+    }
+
+    /**
+     * IMPROVE(music-only): heuristics that keep only actual music in the
+     * endless-radio queue:
+     *  - live / audio-live streams are excluded (radio shows, 24/7 streams);
+     *  - unknown durations (<= 0) are excluded — real songs always report one;
+     *  - very long uploads (> 20 min) are excluded — those are mixes,
+     *    compilations or full-album videos rather than songs.
+     */
+    private fun isMusicCandidate(item: StreamInfoItem): Boolean {
+        val streamType = runCatching { item.streamType }.getOrNull()
+        if (streamType == StreamType.LIVE_STREAM || streamType == StreamType.AUDIO_LIVE_STREAM) {
+            return false
+        }
+        val durationSeconds = item.duration
+        if (durationSeconds <= 0) return false
+        return durationSeconds <= MAX_RADIO_CANDIDATE_DURATION_SECONDS
+    }
+
+    companion object {
+        /** 20 minutes — upper bound for what still counts as a single song. */
+        private const val MAX_RADIO_CANDIDATE_DURATION_SECONDS = 20 * 60
     }
 }

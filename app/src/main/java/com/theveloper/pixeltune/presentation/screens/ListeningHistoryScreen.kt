@@ -25,6 +25,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -49,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -398,9 +401,21 @@ fun ListeningHistoryScreen(
     // IMPROVE(history-three-dot): per-song options sheet.
     val songForOptions = optionsSong
     if (songForOptions != null && !showPlaylistBottomSheet) {
+        // IMPROVE(offline-downloads): live download state for cloud songs in
+        // the listening history.
+        val downloadedSongs by playerViewModel.downloadedSongs.collectAsStateWithLifecycle()
+        val downloadStates by playerViewModel.downloadStates.collectAsStateWithLifecycle()
+        val historyDownloadStatus = com.theveloper.pixeltune.data.downloads.songDownloadStatus(
+            song = songForOptions,
+            isCloud = playerViewModel.isSongCloudStreamed(songForOptions),
+            downloaded = downloadedSongs,
+            states = downloadStates
+        )
         HistorySongOptionsSheet(
             song = songForOptions,
             isLiked = favoriteSongIds.contains(songForOptions.id),
+            downloadStatus = historyDownloadStatus,
+            onDownloadToggle = { playerViewModel.toggleDownloadForSong(songForOptions) },
             onDismiss = { optionsSong = null },
             onToggleLike = {
                 val wasLiked = favoriteSongIds.contains(songForOptions.id)
@@ -449,6 +464,9 @@ fun ListeningHistoryScreen(
 private fun HistorySongOptionsSheet(
     song: Song,
     isLiked: Boolean,
+    downloadStatus: com.theveloper.pixeltune.data.downloads.SongDownloadStatus =
+        com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Hidden,
+    onDownloadToggle: () -> Unit = {},
     onDismiss: () -> Unit,
     onToggleLike: () -> Unit,
     onAddToPlaylist: () -> Unit,
@@ -543,6 +561,47 @@ private fun HistorySongOptionsSheet(
                 onClick = onAddToPlaylist
             )
 
+            // IMPROVE(offline-downloads): download toggle for cloud songs.
+            if (downloadStatus != com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Hidden) {
+                Spacer(modifier = Modifier.height(10.dp))
+                when (downloadStatus) {
+                    is com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Downloading -> {
+                        HistoryOptionRow(
+                            imageVector = Icons.Rounded.Download,
+                            label = if (downloadStatus.indeterminate) {
+                                "Downloading…"
+                            } else {
+                                "Downloading… ${downloadStatus.progressPercent}%"
+                            },
+                            supportingText = "Tap to cancel the offline download",
+                            iconContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            iconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            onClick = onDownloadToggle
+                        )
+                    }
+                    com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Downloaded -> {
+                        HistoryOptionRow(
+                            imageVector = Icons.Rounded.DownloadDone,
+                            label = "Remove Download",
+                            supportingText = "Delete the offline copy of this song",
+                            iconContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            iconContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            onClick = onDownloadToggle
+                        )
+                    }
+                    else -> {
+                        HistoryOptionRow(
+                            imageVector = Icons.Rounded.Download,
+                            label = "Download",
+                            supportingText = "Save this song for offline playback",
+                            iconContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            iconContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            onClick = onDownloadToggle
+                        )
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(10.dp))
 
             HistoryOptionRow(
@@ -563,7 +622,8 @@ private fun HistorySongOptionsSheet(
  */
 @Composable
 private fun HistoryOptionRow(
-    icon: Painter,
+    icon: Painter? = null,
+    imageVector: ImageVector? = null,
     label: String,
     supportingText: String,
     iconContainerColor: Color,
@@ -609,12 +669,21 @@ private fun HistoryOptionRow(
                     .background(iconContainerColor),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    painter = icon,
-                    contentDescription = label,
-                    tint = iconContentColor,
-                    modifier = Modifier.size(22.dp)
-                )
+                if (imageVector != null) {
+                    Icon(
+                        imageVector = imageVector,
+                        contentDescription = label,
+                        tint = iconContentColor,
+                        modifier = Modifier.size(22.dp)
+                    )
+                } else {
+                    Icon(
+                        painter = icon,
+                        contentDescription = label,
+                        tint = iconContentColor,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
             Spacer(modifier = Modifier.width(14.dp))
             Column {

@@ -225,6 +225,11 @@ constructor(
         // song + position + a bounded queue window) so the player can be
         // restored after the app is closed and re-opened.
         val LAST_PLAYBACK_SNAPSHOT = stringPreferencesKey("last_playback_snapshot_json_v1")
+
+        // IMPROVE(offline-downloads): index of downloaded cloud songs. Only
+        // metadata lives here — the audio files themselves are stored in the
+        // app's private filesDir/downloads directory.
+        val DOWNLOADED_SONGS = stringPreferencesKey("downloaded_songs_json_v1")
     }
 
     val appRebrandDialogShownFlow: Flow<Boolean> =
@@ -713,6 +718,23 @@ constructor(
     suspend fun saveLastPlaybackSnapshot(snapshot: LastPlaybackSnapshot) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.LAST_PLAYBACK_SNAPSHOT] = json.encodeToString(snapshot)
+        }
+    }
+
+    /**
+     * IMPROVE(offline-downloads): JSON index of downloaded cloud songs.
+     * Null when nothing has been persisted yet or the stored JSON is
+     * unreadable (e.g. schema change).
+     */
+    val downloadedSongsJsonFlow: Flow<String?> =
+        dataStore.data.map { preferences ->
+            preferences[PreferencesKeys.DOWNLOADED_SONGS]
+        }
+
+    /** Persists the downloads index (metadata only, files live in filesDir). */
+    suspend fun saveDownloadedSongs(downloads: List<com.theveloper.pixeltune.data.downloads.DownloadedSong>) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.DOWNLOADED_SONGS] = json.encodeToString(downloads)
         }
     }
 

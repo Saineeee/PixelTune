@@ -78,6 +78,7 @@ class PlayerViewModelTest {
     private val mockLibraryStateHolder: LibraryStateHolder = mockk(relaxed = true)
     private val mockCastTransferStateHolder: CastTransferStateHolder = mockk(relaxed = true)
     private val mockMetadataEditStateHolder: MetadataEditStateHolder = mockk(relaxed = true)
+    private val mockDownloadedSongsRepository: com.theveloper.pixeltune.data.downloads.DownloadedSongsRepository = mockk(relaxed = true)
     private val mockExternalMediaStateHolder: ExternalMediaStateHolder = mockk(relaxed = true)
     private val mockThemeStateHolder: ThemeStateHolder = mockk(relaxed = true)
     private val mockMultiSelectionStateHolder: MultiSelectionStateHolder = mockk(relaxed = true)
@@ -221,7 +222,8 @@ class PlayerViewModelTest {
             mockMultiSelectionStateHolder,
             mockPlaylistSelectionStateHolder,
             sessionToken,
-            mockMediaControllerFactory
+            mockMediaControllerFactory,
+            mockDownloadedSongsRepository
         )
     }
 

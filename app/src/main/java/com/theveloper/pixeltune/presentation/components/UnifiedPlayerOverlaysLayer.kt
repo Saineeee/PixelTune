@@ -164,6 +164,17 @@ internal fun UnifiedPlayerSongInfoLayer(
 
         val liveSong = liveSongState
 
+        // IMPROVE(offline-downloads): live download state for the song shown
+        // in this sheet (queue rows + player path).
+        val downloadedSongs by playerViewModel.downloadedSongs.collectAsStateWithLifecycle()
+        val downloadStates by playerViewModel.downloadStates.collectAsStateWithLifecycle()
+        val downloadStatus = com.theveloper.pixeltune.data.downloads.songDownloadStatus(
+            song = liveSong,
+            isCloud = playerViewModel.isSongCloudStreamed(liveSong),
+            downloaded = downloadedSongs,
+            states = downloadStates
+        )
+
         MaterialTheme(
             colorScheme = albumColorScheme,
             typography = MaterialTheme.typography,
@@ -221,7 +232,9 @@ internal fun UnifiedPlayerSongInfoLayer(
                 removeFromListTrigger = {
                     playerViewModel.removeSongFromQueue(liveSong.id)
                     onDismissSongInfo()
-                }
+                },
+                downloadStatus = downloadStatus,
+                onDownloadToggle = { playerViewModel.toggleDownloadForSong(liveSong) }
             )
         }
     }

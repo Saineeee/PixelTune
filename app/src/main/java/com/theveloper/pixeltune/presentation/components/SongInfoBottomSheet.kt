@@ -39,6 +39,10 @@ import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -95,7 +99,13 @@ fun SongInfoBottomSheet(
     onNavigateToArtist: () -> Unit,
     onEditSong: (title: String, artist: String, album: String, genre: String, lyrics: String, trackNumber: Int, coverArtUpdate: CoverArtUpdate?) -> Unit,
     generateAiMetadata: suspend (List<String>) -> Result<SongMetadata>,
-    removeFromListTrigger: () -> Unit
+    removeFromListTrigger: () -> Unit,
+    // IMPROVE(offline-downloads): status of this song's offline download.
+    // Defaults keep every existing call site compiling unchanged; wired
+    // only where online cloud songs can appear (player/queue, search, history).
+    downloadStatus: com.theveloper.pixeltune.data.downloads.SongDownloadStatus =
+        com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Hidden,
+    onDownloadToggle: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var showEditSheet by remember { mutableStateOf(false) }
@@ -361,6 +371,71 @@ fun SongInfoBottomSheet(
                                             )
                                             Spacer(Modifier.width(8.dp))
                                             Text("Next")
+                                        }
+                                    }
+                                }
+
+                                // IMPROVE(offline-downloads): download toggle for
+                                // online cloud songs — full-width row with live
+                                // progress. Hidden for local songs by default.
+                                if (downloadStatus != com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Hidden) {
+                                    item {
+                                        FilledTonalButton(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(min = 66.dp),
+                                            colors = ButtonDefaults.filledTonalButtonColors(
+                                                containerColor = when (downloadStatus) {
+                                                    is com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Downloading ->
+                                                        MaterialTheme.colorScheme.surfaceContainerHighest
+                                                    com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Downloaded ->
+                                                        MaterialTheme.colorScheme.primaryContainer
+                                                    else -> MaterialTheme.colorScheme.secondaryContainer
+                                                },
+                                                contentColor = when (downloadStatus) {
+                                                    is com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Downloading ->
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                                    com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Downloaded ->
+                                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                                    else -> MaterialTheme.colorScheme.onSecondaryContainer
+                                                }
+                                            ),
+                                            shape = CircleShape,
+                                            onClick = onDownloadToggle
+                                        ) {
+                                            when (val status = downloadStatus) {
+                                                is com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Downloading -> {
+                                                    CircularProgressIndicator(
+                                                        modifier = Modifier.size(20.dp),
+                                                        strokeWidth = 2.5.dp,
+                                                        progress = {
+                                                            if (status.indeterminate) 0f
+                                                            else status.progressPercent / 100f
+                                                        }
+                                                    )
+                                                    Spacer(Modifier.width(12.dp))
+                                                    Text(
+                                                        if (status.indeterminate) "Downloading…"
+                                                        else "Downloading… ${status.progressPercent}%"
+                                                    )
+                                                }
+                                                com.theveloper.pixeltune.data.downloads.SongDownloadStatus.Downloaded -> {
+                                                    Icon(
+                                                        Icons.Rounded.DownloadDone,
+                                                        contentDescription = "Downloaded for offline playback"
+                                                    )
+                                                    Spacer(Modifier.width(12.dp))
+                                                    Text("Remove Download")
+                                                }
+                                                else -> {
+                                                    Icon(
+                                                        Icons.Rounded.Download,
+                                                        contentDescription = "Download for offline playback"
+                                                    )
+                                                    Spacer(Modifier.width(12.dp))
+                                                    Text("Download")
+                                                }
+                                            }
                                         }
                                     }
                                 }

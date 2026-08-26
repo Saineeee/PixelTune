@@ -43,6 +43,7 @@ import com.theveloper.pixeltune.data.netease.NeteaseStreamProxy
 import com.theveloper.pixeltune.data.soundcloud.SoundCloudStreamProxy
 import com.theveloper.pixeltune.data.telegram.TelegramRepository
 import com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy
+import com.theveloper.pixeltune.data.downloads.DownloadedSongsRepository
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -74,7 +75,11 @@ class DualPlayerEngine @Inject constructor(
     // a favorited YouTube song becomes unplayable after an app restart because
     // the stored HTTP proxy URL had an ephemeral port.
     private val youTubeStreamProxy: YouTubeStreamProxy,
-    private val soundCloudStreamProxy: SoundCloudStreamProxy
+    private val soundCloudStreamProxy: SoundCloudStreamProxy,
+    // IMPROVE(offline-downloads): when a cloud song has been downloaded to
+    // app-private storage, playback must use the local file instead of the
+    // localhost proxy — this is what makes downloaded songs work offline.
+    private val downloadedSongsRepository: DownloadedSongsRepository
 ) {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var transitionJob: Job? = null
@@ -342,6 +347,22 @@ class DualPlayerEngine @Inject constructor(
                     // (e.g., via external intent or legacy code path).
                     Timber.tag("DualPlayerEngine").w("resolveDataSpec: cache MISS for $originalUri — playback may fail")
                 }
+                // IMPROVE(offline-downloads): downloaded cloud songs must play
+                // from their app-private local file even when the queue item
+                // still carries the live localhost proxy URL (the normal form
+                // for YouTube/SoundCloud search results). The lookup is an
+                // in-memory map read + a File.exists() stat — cheap enough for
+                // the loader thread — and is a no-op for anything that isn't
+                // a downloaded youtube:// / soundcloud:// / proxy URI.
+                val downloadedFile = downloadedSongsRepository
+                    .downloadedFileForUri(dataSpec.uri.toString())
+                if (downloadedFile != null) {
+                    val fileUri = Uri.fromFile(downloadedFile)
+                    resolvedUriCache[dataSpec.uri.toString()] = fileUri
+                    Timber.tag("DualPlayerEngine")
+                        .d("resolveDataSpec: using downloaded file ${downloadedFile.name}")
+                    return dataSpec.buildUpon().setUri(fileUri).build()
+                }
                 return dataSpec
             }
         }
@@ -426,6 +447,16 @@ class DualPlayerEngine @Inject constructor(
      */
     suspend fun resolveCloudUri(uri: Uri): Uri {
         val uriString = uri.toString()
+
+        // IMPROVE(offline-downloads): a downloaded cloud song always plays
+        // from its app-private local file — no proxy, no network, fully
+        // offline-capable. Checked before the cache so a download that
+        // completed after a previous resolve still wins.
+        downloadedSongsRepository.downloadedFileForUri(uriString)?.let { file ->
+            val fileUri = Uri.fromFile(file)
+            resolvedUriCache[uriString] = fileUri
+            return fileUri
+        }
 
         // Fast path: already resolved
         resolvedUriCache[uriString]?.let { return it }

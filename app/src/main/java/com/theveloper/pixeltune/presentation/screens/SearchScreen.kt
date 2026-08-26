@@ -456,10 +456,22 @@ fun SearchScreen(
         }
 
         if (currentSong != null) {
+            // IMPROVE(offline-downloads): live download state for cloud search
+            // results opened through this sheet.
+            val downloadedSongs by playerViewModel.downloadedSongs.collectAsStateWithLifecycle()
+            val downloadStates by playerViewModel.downloadStates.collectAsStateWithLifecycle()
+            val downloadStatus = com.theveloper.pixeltune.data.downloads.songDownloadStatus(
+                song = currentSong,
+                isCloud = playerViewModel.isSongCloudStreamed(currentSong),
+                downloaded = downloadedSongs,
+                states = downloadStates
+            )
             SongInfoBottomSheet(
                 song = currentSong,
                 isFavorite = isFavorite,
                 removeFromListTrigger = removeFromListTrigger,
+                downloadStatus = downloadStatus,
+                onDownloadToggle = { playerViewModel.toggleDownloadForSong(currentSong) },
                 onToggleFavorite = {
                     playerViewModel.toggleFavoriteSpecificSong(currentSong)
                 },
