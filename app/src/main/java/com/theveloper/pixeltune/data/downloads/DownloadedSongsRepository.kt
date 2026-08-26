@@ -19,8 +19,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
@@ -235,8 +238,7 @@ class DownloadedSongsRepository @Inject constructor(
         extraBufferCapacity = 16,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
     )
-    val downloadEvents: kotlinx.coroutines.flow.SharedFlow<DownloadEvent> =
-        _downloadEvents.asSharedFlow()
+    val downloadEvents: SharedFlow<DownloadEvent> = _downloadEvents.asSharedFlow()
 
     private val downloadJobs = ConcurrentHashMap<String, Job>()
     private val indexLoaded = CompletableDeferred<Unit>()
