@@ -220,6 +220,11 @@ constructor(
         
         // Streaming Quality
         val STREAMING_QUALITY = stringPreferencesKey("streaming_quality")
+
+        // IMPROVE(playback-restore): last playback session snapshot (current
+        // song + position + a bounded queue window) so the player can be
+        // restored after the app is closed and re-opened.
+        val LAST_PLAYBACK_SNAPSHOT = stringPreferencesKey("last_playback_snapshot_json_v1")
     }
 
     val appRebrandDialogShownFlow: Flow<Boolean> =
@@ -682,6 +687,32 @@ constructor(
     suspend fun saveYourMixSongIds(songIds: List<String>) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.YOUR_MIX_SONG_IDS] = json.encodeToString(songIds)
+        }
+    }
+
+    /**
+     * IMPROVE(playback-restore): last playback session snapshot (current song
+     * + playback position + bounded queue window). Null when nothing has been
+     * persisted yet or the stored JSON is unreadable (e.g. schema change).
+     */
+    val lastPlaybackSnapshotFlow: Flow<LastPlaybackSnapshot?> =
+        dataStore.data.map { preferences ->
+            val jsonString = preferences[PreferencesKeys.LAST_PLAYBACK_SNAPSHOT]
+            if (jsonString != null) {
+                try {
+                    json.decodeFromString<LastPlaybackSnapshot>(jsonString)
+                } catch (e: Exception) {
+                    null
+                }
+            } else {
+                null
+            }
+        }
+
+    /** Persists [snapshot] so the session survives an app close / re-open. */
+    suspend fun saveLastPlaybackSnapshot(snapshot: LastPlaybackSnapshot) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.LAST_PLAYBACK_SNAPSHOT] = json.encodeToString(snapshot)
         }
     }
 

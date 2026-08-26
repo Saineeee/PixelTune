@@ -4,6 +4,7 @@ import android.util.Log
 import com.theveloper.pixeltune.data.model.SearchFilterType
 import com.theveloper.pixeltune.data.model.SearchHistoryItem
 import com.theveloper.pixeltune.data.model.SearchResultItem
+import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.repository.MusicRepository
 import com.theveloper.pixeltune.data.youtube.YouTubeRepository
 import com.theveloper.pixeltune.data.youtube.YouTubeStreamProxy
@@ -65,6 +66,43 @@ class SearchStateHolder @Inject constructor(
 
     fun setOnlineProvider(provider: OnlineProvider) {
         _currentProvider.value = provider
+    }
+
+    /**
+     * IMPROVE(provider-switch): searches the given provider for playable songs
+     * matching [query] and returns them as a list of [Song]s (best match first).
+     *
+     * Used by [com.theveloper.pixeltune.presentation.viewmodel.PlayerViewModel.setOnlineProvider]
+     * to re-fetch the currently playing song on the newly selected streaming
+     * provider (YouTube -> SoundCloud handoff and vice versa) without touching
+     * the regular search flow / search results UI state.
+     *
+     * The songs are built with the exact same repository calls the normal
+     * search uses — their `contentUriString` therefore points at the CURRENT
+     * session's stream proxy and they are immediately playable.
+     */
+    suspend fun searchSongsOnProvider(query: String, provider: OnlineProvider): List<Song> {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isEmpty()) return emptyList()
+        return withContext(Dispatchers.IO) {
+            try {
+                val results = if (provider == OnlineProvider.YOUTUBE) {
+                    youTubeRepository.searchYouTube(normalizedQuery, SearchFilterType.SONGS) { youtubeId ->
+                        youTubeStreamProxy.getProxyUrl(youtubeId)
+                    }
+                } else {
+                    soundCloudRepository.searchSoundCloud(normalizedQuery, SearchFilterType.SONGS) { encodedUrl ->
+                        soundCloudStreamProxy.getProxyUrl(encodedUrl)
+                    }
+                }
+                results.mapNotNull { (it as? SearchResultItem.SongItem)?.song }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("SearchStateHolder", "Error searching provider $provider for query: $normalizedQuery", e)
+                emptyList()
+            }
+        }
     }
 
     // Search State

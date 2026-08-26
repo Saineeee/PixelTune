@@ -1,6 +1,5 @@
 package com.theveloper.pixeltune.data.soundcloud
 
-import android.net.Uri
 import com.theveloper.pixeltune.data.stream.CloudStreamForwarder
 import com.theveloper.pixeltune.data.stream.CloudStreamSecurity
 import io.ktor.http.HttpStatusCode
@@ -80,12 +79,28 @@ class SoundCloudStreamProxy @Inject constructor(
     }
 
     fun resolveSoundCloudUri(uriString: String): String? {
-        val uri = Uri.parse(uriString)
-        if (uri.scheme != "soundcloud") return null
-        // The host would be the encoded soundcloud url, but we might just need to verify
-        // that it looks like soundcloud. For our proxy, the `contentUriString` will actually
-        // be `http://127.0.0.1...`, so this resolver is mostly for custom scheme handling if any.
-        return null
+        if (!uriString.startsWith("soundcloud://", ignoreCase = true)) return null
+        // IMPROVE(playback-restore): resolve the persisted scheme form
+        // `soundcloud://<encodedTrackUrl>` back to the CURRENT session's proxy
+        // URL. The proxy rebinds to a new port on every app launch, so any
+        // persisted HTTP proxy URL (favorites, last-playback snapshot,
+        // listening-history entries) is stale on the next run — the
+        // restart-safe scheme form is what gets stored, and this resolver is
+        // what makes it playable again.
+        //
+        // The payload is the URL-encoded track URL (URLEncoder escapes '/' as
+        // %2F and ':' as %3A), so the whole track URL survives as a single
+        // opaque token after "soundcloud://". Work on the RAW string — never
+        // on Uri.getHost(), which may return a decoded/normalized form and
+        // would double-decode on the proxy side.
+        val encodedUrl = uriString.substringAfter("soundcloud://", "")
+            .trim()
+            .takeIf { it.isNotEmpty() } ?: return null
+        if (actualPort == 0) {
+            Timber.w("SoundCloudStreamProxy: resolveSoundCloudUri called but proxy not started yet")
+            return null
+        }
+        return getProxyUrl(encodedUrl)
     }
 
     fun start() {

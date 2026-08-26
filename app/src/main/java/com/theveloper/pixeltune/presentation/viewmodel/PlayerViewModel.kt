@@ -64,6 +64,8 @@ import com.theveloper.pixeltune.data.preferences.NavBarStyle
 import com.theveloper.pixeltune.data.preferences.FullPlayerLoadingTweaks
 import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
 import com.theveloper.pixeltune.data.preferences.AlbumArtQuality
+import com.theveloper.pixeltune.data.preferences.LastPlaybackSnapshot
+import com.theveloper.pixeltune.data.preferences.LastPlaybackSongSnapshot
 import com.theveloper.pixeltune.data.preferences.ThemePreference
 import com.theveloper.pixeltune.data.repository.LyricsSearchResult
 import com.theveloper.pixeltune.data.repository.MusicRepository
@@ -74,6 +76,7 @@ import com.theveloper.pixeltune.data.service.http.MediaFileHttpServerService
 import com.theveloper.pixeltune.data.service.player.DualPlayerEngine
 import com.theveloper.pixeltune.data.worker.SyncManager
 import com.theveloper.pixeltune.utils.AppShortcutManager
+import com.theveloper.pixeltune.utils.CloudUriUtils
 import com.theveloper.pixeltune.utils.QueueUtils
 import com.theveloper.pixeltune.utils.MediaItemBuilder
 import com.theveloper.pixeltune.utils.StorageType
@@ -86,9 +89,11 @@ import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -126,6 +131,22 @@ import coil.memory.MemoryCache
 private const val CAST_LOG_TAG = "PlayerCastTransfer"
 private const val ENABLE_FOLDERS_SOURCE_SWITCHING = false
 private const val MAX_ALBUM_BATCH_SELECTION = 6
+
+// IMPROVE(provider-switch): upper bound for re-fetching the currently playing
+// song on the newly selected streaming provider. 20s comfortably covers
+// NewPipe's worst-case extraction latency while still failing fast enough to
+// feel responsive when the network is down.
+private const val PROVIDER_HANDOFF_SEARCH_TIMEOUT_MS = 20_000L
+
+// IMPROVE(playback-restore): how many songs of the current queue are persisted
+// in the last-playback snapshot (the current song + the next 15). Bounded so
+// the DataStore payload stays small even for 5000-song queues while still
+// giving the restored session a real "up next" section.
+private const val LAST_PLAYBACK_QUEUE_WINDOW = 16
+
+// IMPROVE(playback-restore): minimum interval between two throttled snapshot
+// saves while playing. Pause / song transitions always save immediately.
+private const val LAST_PLAYBACK_SAVE_THROTTLE_MS = 4_000L
 
 data class PlaybackAudioMetadata(
     val mediaId: String? = null,
@@ -809,7 +830,321 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun setOnlineProvider(provider: SearchStateHolder.OnlineProvider) {
+        // IMPROVE(provider-switch): if a song is currently playing (or paused)
+        // via cloud streaming, switching the provider must NOT leave the user
+        // listening on the old provider. Capture the current song's metadata
+        // BEFORE the switch, then re-fetch that exact song on the NEW provider
+        // and seamlessly continue playback there.
+        val currentSong = playbackStateHolder.stablePlayerState.value.currentSong
+        val isCloudSong = currentSong?.isCloudStreamed() == true
+
         searchStateHolder.setOnlineProvider(provider)
+
+        if (currentSong != null && isCloudSong) {
+            handoffCurrentSongToProvider(currentSong, provider)
+        }
+    }
+
+    /**
+     * IMPROVE(provider-switch): re-fetches [currentSong] on the newly selected
+     * [provider] and swaps playback over to it.
+     *
+     * Flow:
+     *  1. Build a search query from the current song's title + artist.
+     *  2. Search the NEW provider for it (same repository call the regular
+     *     search screen uses, so the result's contentUriString points at the
+     *     current session's proxy and is immediately playable).
+     *  3. On success: stop the old provider's stream by replacing the queue
+     *     with the new provider's version of the song and play it. The old
+     *     queue is intentionally dropped — every entry in it belongs to the
+     *     OLD provider and would be stale. The endless-radio refill in
+     *     MusicService tops the queue back up with related songs from the
+     *     NEW provider automatically.
+     *  4. On failure (no results / network error): stop the old provider's
+     *     playback (its stream is no longer wanted) and tell the user.
+     *
+     * Local (device-storage) songs never reach this function — switching the
+     * streaming provider doesn't affect local playback at all.
+     */
+    private fun handoffCurrentSongToProvider(
+        currentSong: Song,
+        provider: SearchStateHolder.OnlineProvider
+    ) {
+        val providerName = when (provider) {
+            SearchStateHolder.OnlineProvider.YOUTUBE -> "YouTube"
+            SearchStateHolder.OnlineProvider.SOUNDCLOUD -> "SoundCloud"
+        }
+
+        // Strip common metadata noise from the artist field so the search
+        // query matches the actual track ("Official Audio" etc. in the TITLE
+        // is kept because YouTube search expects it).
+        val artistQuery = currentSong.artist
+            .replace(Regex("\\s*-\\s*(Topic|Official Artist Channel)\\s*$", RegexOption.IGNORE_CASE), "")
+            .trim()
+
+        val query = listOf(currentSong.title, artistQuery)
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+            .trim()
+
+        if (query.isBlank()) return
+
+        viewModelScope.launch {
+            try {
+                val candidates = withTimeoutOrNull(PROVIDER_HANDOFF_SEARCH_TIMEOUT_MS) {
+                    searchStateHolder.searchSongsOnProvider(query, provider)
+                } ?: emptyList()
+
+                if (candidates.isEmpty()) {
+                    // Close the old provider's song — it can't be continued on
+                    // the new provider, and leaving it streaming would keep the
+                    // user on a provider they explicitly switched away from.
+                    stopCurrentPlaybackForProviderHandoff()
+                    sendToast("Couldn't find \"${currentSong.title}\" on $providerName")
+                    return@launch
+                }
+
+                val replacement = candidates.first()
+
+                // Register the song so Recently Played / Listening History can
+                // resolve its (string) cloud id during this session.
+                registerCloudSongs(listOf(replacement))
+
+                sendToast("Continuing \"${replacement.title}\" on $providerName")
+                internalPlaySongs(
+                    songsToPlay = listOf(replacement),
+                    startSong = replacement,
+                    queueName = "$providerName Radio"
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "Provider handoff failed for query: $query")
+                stopCurrentPlaybackForProviderHandoff()
+                sendToast("Couldn't switch \"${currentSong.title}\" to $providerName")
+            }
+        }
+    }
+
+    /** Stops (pauses + clears) the local player — used when a provider handoff fails. */
+    private fun stopCurrentPlaybackForProviderHandoff() {
+        mediaController?.let { controller ->
+            if (controller.isPlaying) controller.pause()
+        }
+        playbackStateHolder.updateStablePlayerState {
+            it.copy(isPlaying = false, playWhenReady = false)
+        }
+    }
+
+    /* ---------------------------------------------------------------------- */
+    /* IMPROVE(playback-restore): persist + restore the last playback session  */
+    /* so the currently playing song survives closing and re-opening the app. */
+    /* ---------------------------------------------------------------------- */
+
+    /**
+     * Maps a [Song] to its persistable snapshot form. Cloud proxy URLs
+     * (`http://127.0.0.1:<port>/youtube/<id>`) are normalized to their
+     * restart-safe scheme form (`youtube://<id>` etc.) because the proxy
+     * rebinds to a new port on every launch.
+     */
+    private fun Song.toLastPlaybackSongSnapshot(): LastPlaybackSongSnapshot =
+        LastPlaybackSongSnapshot(
+            id = id,
+            title = title,
+            artist = artist,
+            album = album.takeIf { it.isNotBlank() },
+            albumArtUri = albumArtUriString?.takeIf { it.isNotBlank() },
+            contentUri = CloudUriUtils.normalizeCloudUriForStorage(contentUriString),
+            durationMs = duration.coerceAtLeast(0L),
+            youtubeId = youtubeId
+        )
+
+    /** Rebuilds a playable [Song] from a persisted snapshot (cloud-song fallback path). */
+    private fun LastPlaybackSongSnapshot.toSong(): Song = Song(
+        id = id,
+        title = title.ifBlank { "Unknown" },
+        artist = artist.ifBlank { "Unknown Artist" },
+        artistId = -1L,
+        artists = emptyList(),
+        album = album.orEmpty(),
+        albumId = -1L,
+        albumArtist = null,
+        path = "",
+        contentUriString = contentUri,
+        albumArtUriString = albumArtUri,
+        duration = durationMs.coerceAtLeast(0L),
+        genre = null,
+        lyrics = null,
+        isFavorite = false,
+        trackNumber = 0,
+        year = 0,
+        dateAdded = 0,
+        dateModified = 0,
+        mimeType = null,
+        bitrate = null,
+        sampleRate = null,
+        youtubeId = youtubeId
+    )
+
+    /**
+     * Builds the snapshot of the current playback session, or null when
+     * nothing is playing. The queue window starts at the current song so the
+     * restored "up next" list matches what the user saw.
+     */
+    private fun buildLastPlaybackSnapshot(positionOverrideMs: Long? = null): LastPlaybackSnapshot? {
+        val song = playbackStateHolder.stablePlayerState.value.currentSong ?: return null
+        val queue = _playerUiState.value.currentPlaybackQueue
+        val positionMs = (positionOverrideMs ?: playbackStateHolder.currentPosition.value)
+            .coerceAtLeast(0L)
+
+        val indexInQueue = queue.indexOfFirst { it.id == song.id }
+        val windowSongs: List<Song> = if (indexInQueue >= 0) {
+            queue.subList(
+                indexInQueue,
+                minOf(indexInQueue + LAST_PLAYBACK_QUEUE_WINDOW, queue.size)
+            )
+        } else {
+            // Current song isn't in the tracked queue (e.g. single-item load) —
+            // persist it as a one-song window.
+            listOf(song)
+        }
+
+        return LastPlaybackSnapshot(
+            current = song.toLastPlaybackSongSnapshot(),
+            positionMs = positionMs,
+            queueName = _playerUiState.value.currentQueueSourceName,
+            queue = windowSongs.map { it.toLastPlaybackSongSnapshot() },
+            // The window always starts at the current song.
+            queueIndex = 0
+        )
+    }
+
+    /**
+     * Persists the last playback session. Immediate (unthrottled) when
+     * [positionOverrideMs] is provided (pause / song transition); throttled
+     * otherwise (the periodic while-playing collector).
+     */
+    private fun saveLastPlaybackSnapshot(positionOverrideMs: Long? = null) {
+        if (positionOverrideMs == null) {
+            val now = System.currentTimeMillis()
+            if (now - lastPlaybackSaveTimestampMs < LAST_PLAYBACK_SAVE_THROTTLE_MS) return
+            lastPlaybackSaveTimestampMs = now
+        }
+        val snapshot = buildLastPlaybackSnapshot(positionOverrideMs) ?: return
+        lastPlaybackSaveJob?.cancel()
+        lastPlaybackSaveJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                userPreferencesRepository.saveLastPlaybackSnapshot(snapshot)
+            } catch (e: Exception) {
+                Timber.w(e, "Failed to persist last playback snapshot")
+            }
+        }
+    }
+
+    /**
+     * Restores the last playback session into the UI when the app starts with
+     * an empty player (fresh launch after the service was killed). The song
+     * appears in the mini player in a paused state at the saved position;
+     * tapping play resumes from exactly there via [pendingResumePositionMs].
+     *
+     * Skipped entirely when playback is already alive (service survived in
+     * the background, Android Auto started us, a pending action just started
+     * a queue…) — the live player is always the source of truth.
+     */
+    private fun maybeRestoreLastPlaybackSession() {
+        if (lastPlaybackRestoreAttempted) return
+        lastPlaybackRestoreAttempted = true
+
+        if (playbackStateHolder.stablePlayerState.value.currentSong != null) return
+        if (_playerUiState.value.currentPlaybackQueue.isNotEmpty()) return
+        if (mediaController?.currentMediaItem != null) return
+
+        viewModelScope.launch {
+            try {
+                val snapshot = userPreferencesRepository.lastPlaybackSnapshotFlow.first()
+                    ?: return@launch
+
+                // Re-resolve queue songs from the library where possible so
+                // local songs come back with fresh metadata / favorite state;
+                // fall back to the persisted snapshot (cloud songs are never
+                // in the MediaStore-backed library).
+                val librarySongsById: Map<String, Song> = if (snapshot.queue.isEmpty()) {
+                    emptyMap()
+                } else {
+                    withContext(Dispatchers.IO) {
+                        musicRepository.getSongsByIds(snapshot.queue.map { it.id }).first()
+                    }.associateBy { it.id }
+                }
+
+                val restoredQueue = snapshot.queue.mapNotNull { entry ->
+                    librarySongsById[entry.id] ?: entry.toSong()
+                }
+                if (restoredQueue.isEmpty()) return@launch
+
+                val restoredIndex = snapshot.queueIndex.coerceIn(0, restoredQueue.size - 1)
+                val restoredSong = restoredQueue[restoredIndex]
+                // If the song had fully finished when the app closed (position
+                // at/after its end), resume from the top instead of an instant
+                // end-of-file replay.
+                val songDuration = restoredSong.duration.coerceAtLeast(0L)
+                val restoredPosition = if (songDuration > 0L) {
+                    snapshot.positionMs.coerceIn(0L, (songDuration - 1L).coerceAtLeast(0L))
+                } else {
+                    snapshot.positionMs.coerceAtLeast(0L)
+                }
+
+                // Re-check the guards right before applying: this coroutine
+                // suspended on DataStore / library reads, and playback may
+                // legitimately have started in that window (fast user tap,
+                // Android Auto, a pending action). The live player always
+                // wins over the restore.
+                if (playbackStateHolder.stablePlayerState.value.currentSong != null) return@launch
+                if (_playerUiState.value.currentPlaybackQueue.isNotEmpty()) return@launch
+                if (mediaController?.currentMediaItem != null) return@launch
+
+                _playerUiState.update {
+                    it.copy(
+                        currentPlaybackQueue = restoredQueue.toImmutableList(),
+                        currentQueueSourceName = snapshot.queueName,
+                        currentPosition = restoredPosition
+                    )
+                }
+                playbackStateHolder.updateStablePlayerState {
+                    it.copy(
+                        currentSong = restoredSong,
+                        isPlaying = false,
+                        playWhenReady = false,
+                        totalDuration = restoredSong.duration.coerceAtLeast(0L),
+                        lyrics = null,
+                        isLoadingLyrics = false
+                    )
+                }
+                playbackStateHolder.setCurrentPosition(restoredPosition)
+
+                // Seek target for the moment the user taps play.
+                pendingResumePositionMs = restoredPosition
+
+                // Register cloud songs so Recently Played / Listening History
+                // can resolve them during this session.
+                registerCloudSongs(restoredQueue)
+
+                // Theme the mini player from the album art before playback.
+                launch {
+                    val uri = restoredSong.albumArtUriString?.toUri()
+                    themeStateHolder.extractAndGenerateColorScheme(uri, restoredSong.albumArtUriString)
+                }
+
+                Timber.i(
+                    "Restored last playback session: '%s' @ %dms (queue=%d, '%s')",
+                    restoredSong.title,
+                    restoredPosition,
+                    restoredQueue.size,
+                    snapshot.queueName
+                )
+            } catch (e: Exception) {
+                Timber.w(e, "Failed to restore last playback session")
+            }
+        }
     }
 
     private var mediaController: MediaController? = null
@@ -863,6 +1198,22 @@ class PlayerViewModel @Inject constructor(
     private var pendingRepeatMode: Int? = null
 
     private var pendingPlaybackAction: (() -> Unit)? = null
+
+    // IMPROVE(playback-restore): state supporting "keep the song that was
+    // playing after closing and re-opening the app".
+    //
+    // When the app starts with an empty player, the last playback session
+    // snapshot is restored into the UI (mini player, paused, at the saved
+    // position). The moment the user taps play, the song is loaded back into
+    // ExoPlayer and seeks to [pendingResumePositionMs] — the exact point the
+    // user left off. Any *new* playback (playing a different song, shuffling,
+    // a provider handoff…) consumes/clears the pending position because it
+    // starts its own playback from zero.
+    @Volatile
+    private var pendingResumePositionMs: Long? = null
+    private var lastPlaybackRestoreAttempted = false
+    private var lastPlaybackSaveJob: Job? = null
+    private var lastPlaybackSaveTimestampMs = 0L
     private var metadataProbeJob: Job? = null
     private var metadataProbeMediaId: String? = null
 
@@ -1336,11 +1687,34 @@ class PlayerViewModel @Inject constructor(
                 // Execute any pending action that was queued while the controller was connecting
                 pendingPlaybackAction?.invoke()
                 pendingPlaybackAction = null
+                // IMPROVE(playback-restore): with the controller live and no
+                // pending playback, bring back the last playback session (if
+                // any) so the mini player shows the song that was playing
+                // before the app was closed. Runs after pendingPlaybackAction
+                // so a just-started queue always wins over the restore.
+                maybeRestoreLastPlaybackSession()
             } catch (e: Exception) {
                 _playerUiState.update { it.copy(isLoadingInitialSongs = false, isLoadingLibraryCategories = false) }
                 Log.e("PlayerViewModel", "Error setting up MediaController", e)
             }
         }, ContextCompat.getMainExecutor(context))
+
+        // IMPROVE(playback-restore): while a song is playing, periodically
+        // persist the session (throttled to LAST_PLAYBACK_SAVE_THROTTLE_MS) so
+        // a force-close / process death mid-song still restores close to the
+        // position the user left off. The position flow only ticks while
+        // playback is active, so this is effectively idle when paused.
+        //
+        // NOTE: the no-arg (throttled) overload is used on purpose — it reads
+        // the live position itself; passing the tick position explicitly would
+        // make every 250ms tick an unthrottled DataStore write.
+        viewModelScope.launch {
+            playbackStateHolder.currentPosition.collect { position ->
+                if (position > 0L) {
+                    saveLastPlaybackSnapshot()
+                }
+            }
+        }
 
 
         // Start Cast discovery
@@ -1687,7 +2061,12 @@ class PlayerViewModel @Inject constructor(
             val songIndexInQueue = currentQueue.indexOfFirst { it.id == song.id }
             val queueMatchesContext = currentQueue.matchesSongOrder(playbackContext)
 
-            if (songIndexInQueue != -1 && queueMatchesContext) {
+            // IMPROVE(playback-restore): the in-queue jump branch requires the
+            // player to actually hold items. After a session restore the UI
+            // queue/current song exist while ExoPlayer is still empty — jumping
+            // or play() would silently no-op, so route to playSongs instead
+            // which loads the queue properly.
+            if (songIndexInQueue != -1 && queueMatchesContext && controller.currentMediaItem != null) {
                 if (controller.currentMediaItemIndex == songIndexInQueue) {
                     if (!controller.isPlaying) controller.play()
                 } else {
@@ -2230,6 +2609,13 @@ class PlayerViewModel @Inject constructor(
                 } else {
                     stopProgressUpdates()
                     val pausedPosition = playerCtrl.currentPosition.coerceAtLeast(0L)
+                    // IMPROVE(playback-restore): persist the paused position
+                    // immediately — closing the app from this paused state must
+                    // restore exactly here. Only saved when the player still
+                    // holds an item (a bare idle state has nothing to persist).
+                    if (playerCtrl.currentMediaItem != null) {
+                        saveLastPlaybackSnapshot(pausedPosition)
+                    }
                     playbackStateHolder.setCurrentPosition(pausedPosition)
                     if (pausedPosition != _playerUiState.value.currentPosition) {
                         _playerUiState.update { it.copy(currentPosition = pausedPosition) }
@@ -2313,6 +2699,11 @@ class PlayerViewModel @Inject constructor(
                             // queue hasn't been updated yet / it was loaded directly via
                             // loadAndPlaySong rather than playSongs).
                             registerCloudSongs(listOf(currentSongValue))
+                            // IMPROVE(playback-restore): song changed -> persist the
+                            // new session state (position resets to 0 for the new
+                            // song). Saving on every transition keeps the snapshot's
+                            // current song in sync with what the user actually hears.
+                            saveLastPlaybackSnapshot(0L)
                             listeningStatsTracker.onSongChanged(
                                 song = currentSongValue,
                                 positionMs = 0L,
@@ -2595,7 +2986,20 @@ class PlayerViewModel @Inject constructor(
 
 
 
-    private suspend fun internalPlaySongs(songsToPlay: List<Song>, startSong: Song, queueName: String = "None", playlistId: String? = null) {
+    private suspend fun internalPlaySongs(
+        songsToPlay: List<Song>,
+        startSong: Song,
+        queueName: String = "None",
+        playlistId: String? = null,
+        // IMPROVE(playback-restore): explicit start position (used by the
+        // restored-session resume path). Defaults to 0 for every normal
+        // playback start.
+        startPositionMs: Long = 0L
+    ) {
+        // IMPROVE(playback-restore): any brand-new playback consumes the
+        // restored session's pending resume position — only the explicit
+        // startPositionMs (the restore path itself) may seek on startup.
+        pendingResumePositionMs = null
         if (songsToPlay.isEmpty()) {
             clearPreparingSongIfMatching()
             return
@@ -2719,7 +3123,7 @@ class PlayerViewModel @Inject constructor(
 
                 if (mediaItems.isNotEmpty()) {
                     // Direct access: No IPC limit involved
-                    enginePlayer.setMediaItems(mediaItems, startIndex, 0L)
+                    enginePlayer.setMediaItems(mediaItems, startIndex, startPositionMs)
                     enginePlayer.prepare()
                     enginePlayer.play()
                 } else {
@@ -2740,7 +3144,15 @@ class PlayerViewModel @Inject constructor(
     }
 
 
-    private fun loadAndPlaySong(song: Song) {
+    private fun loadAndPlaySong(
+        song: Song,
+        // IMPROVE(playback-restore): position to start at — used when resuming
+        // a restored playback session that has no queue.
+        startPositionMs: Long = 0L
+    ) {
+        // IMPROVE(playback-restore): new direct playback consumes the pending
+        // restored-session resume position (the explicit param wins).
+        pendingResumePositionMs = null
         beginPreparingSong(song)
         playbackStateHolder.updateStablePlayerState {
             it.copy(
@@ -2754,7 +3166,7 @@ class PlayerViewModel @Inject constructor(
         val controller = mediaController
         if (controller == null) {
             pendingPlaybackAction = {
-                loadAndPlaySong(song)
+                loadAndPlaySong(song, startPositionMs)
             }
             return
         }
@@ -2767,7 +3179,11 @@ class PlayerViewModel @Inject constructor(
         if (controller.currentMediaItem?.mediaId == song.id) {
             if (!controller.isPlaying) controller.play()
         } else {
-            controller.setMediaItem(mediaItem)
+            if (startPositionMs > 0L) {
+                controller.setMediaItem(mediaItem, startPositionMs)
+            } else {
+                controller.setMediaItem(mediaItem)
+            }
             controller.prepare()
             controller.play()
         }
@@ -3374,15 +3790,24 @@ class PlayerViewModel @Inject constructor(
                             currentQueue.isNotEmpty() && currentSong != null -> {
                                 viewModelScope.launch {
                                     transitionSchedulerJob?.cancel()
+                                    // IMPROVE(playback-restore): if this queue was
+                                    // restored from the last playback session
+                                    // (player is empty, pending resume position
+                                    // set), resume from the exact position the
+                                    // user left off instead of restarting at 0.
+                                    val resumePositionMs = pendingResumePositionMs ?: 0L
                                     internalPlaySongs(
                                         currentQueue.toList(),
                                         currentSong,
-                                        _playerUiState.value.currentQueueSourceName
+                                        _playerUiState.value.currentQueueSourceName,
+                                        startPositionMs = resumePositionMs
                                     )
                                 }
                             }
                             currentSong != null -> {
-                                loadAndPlaySong(currentSong)
+                                // IMPROVE(playback-restore): single restored song
+                                // with no queue — resume at the saved position.
+                                loadAndPlaySong(currentSong, pendingResumePositionMs ?: 0L)
                             }
                             libraryStateHolder.allSongs.value.isNotEmpty() -> {
                                 loadAndPlaySong(libraryStateHolder.allSongs.value.first())
@@ -3400,6 +3825,13 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun seekTo(position: Long) {
+        // IMPROVE(playback-restore): while a restored session is waiting for
+        // the user to hit play (player still has no items), a manual seek
+        // must update the pending resume position so play starts where the
+        // user just dragged to, not the originally saved spot.
+        if (pendingResumePositionMs != null && mediaController?.currentMediaItem == null) {
+            pendingResumePositionMs = position.coerceAtLeast(0L)
+        }
         playbackStateHolder.seekTo(position)
     }
 
@@ -3724,6 +4156,21 @@ class PlayerViewModel @Inject constructor(
         remoteQueueLoadJob?.cancel()
         castSongUiSyncJob?.cancel()
         stopProgressUpdates()
+        // IMPROVE(playback-restore): best-effort final snapshot persist. The
+        // viewModelScope is already cancelled by the time onCleared runs, so
+        // a dedicated short-lived IO scope is used instead. The periodic +
+        // pause hooks already cover the common exit paths; this is a safety
+        // net for "ViewModel torn down while still playing".
+        runCatching {
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                val snapshot = buildLastPlaybackSnapshot() ?: return@launch
+                try {
+                    userPreferencesRepository.saveLastPlaybackSnapshot(snapshot)
+                } catch (e: Exception) {
+                    Timber.w(e, "Final playback snapshot persist failed")
+                }
+            }
+        }
         listeningStatsTracker.onCleared()
         castTransferStateHolder.onCleared()
         castStateHolder.onCleared()

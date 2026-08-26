@@ -160,6 +160,33 @@ fun HomeScreen(
         recentlyPlayedSongs.map { it.song }.toImmutableList()
     }
 
+    // IMPROVE(collage-history): the AlbumArtCollage on the Home screen now
+    // draws up to 6 RANDOM songs from the listening history instead of the
+    // device-storage mix. The random selection is seeded by the CALENDAR DAY
+    // so it stays identical across app restarts / open-close cycles within a
+    // day, then naturally reshuffles the next day. When the history is empty
+    // (nothing listened yet, or the user cleared it), it falls back to the
+    // device-storage mix exactly like the original behavior.
+    val collageDaySeed = remember { java.time.LocalDate.now().toEpochDay() }
+    val collageSongs = remember(recentlyPlayedSongs, yourMixSongs, collageDaySeed) {
+        val historyPool = recentlyPlayedSongs.map { it.song }
+        if (historyPool.isEmpty()) {
+            yourMixSongs
+        } else {
+            // Sort the pool by song id first so it is deterministic regardless
+            // of play order / timestamps — replaying an existing song must not
+            // reshuffle the collage; only genuinely new songs entering the
+            // history (or removals) legitimately change the pool. Combined
+            // with the day seed, opening & closing the app therefore always
+            // shows the same six covers until midnight.
+            historyPool
+                .sortedBy { it.id }
+                .shuffled(kotlin.random.Random(collageDaySeed))
+                .take(6)
+                .toImmutableList()
+        }
+    }
+
     ReportDrawnWhen {
         yourMixSongs.isNotEmpty() || isBenchmarkMode
     }
@@ -254,7 +281,10 @@ fun HomeScreen(
                 }
 
                 // Collage
-                if (yourMixSongs.isNotEmpty()) {
+                // IMPROVE(collage-history): renders the daily history picks
+                // (see collageSongs above); falls back to the device-storage
+                // mix when the listening history is empty.
+                if (collageSongs.isNotEmpty()) {
                     item(
                         key = "album_art_collage",
                         contentType = "album_art_collage"
@@ -275,12 +305,12 @@ fun HomeScreen(
 
                         AlbumArtCollage(
                             modifier = Modifier.fillMaxWidth(),
-                            songs = yourMixSongs,
+                            songs = collageSongs,
                             padding = 14.dp,
                             height = 400.dp,
                             pattern = activePattern,
                             onSongClick = { song ->
-                                playerViewModel.showAndPlaySong(song, yourMixSongs, "Your Mix")
+                                playerViewModel.showAndPlaySong(song, collageSongs, "Your Mix")
                             }
                         )
                     }
