@@ -42,13 +42,39 @@ class PlaybackStatsRepository @Inject constructor(
         val timestamp: Long,
         val durationMs: Long,
         val startTimestamp: Long? = null,
-        val endTimestamp: Long? = null
+        val endTimestamp: Long? = null,
+        // FIX(listening-history-cloud): metadata snapshot taken at record time.
+        // Cloud-streamed songs (YouTube / SoundCloud) are NOT part of the local
+        // MediaStore-backed library, so their title / artist / artwork can only
+        // be resolved from an in-memory registry that is empty after an app
+        // restart. Persisting the snapshot alongside the event lets the
+        // Listening History / Recently Played UIs render cloud songs forever,
+        // across restarts, without any registry. Nullable + defaulted so old
+        // JSON files (without these fields) still deserialize cleanly.
+        val title: String? = null,
+        val artist: String? = null,
+        val album: String? = null,
+        val albumArtUri: String? = null,
+        val contentUri: String? = null,
+        val songDurationMs: Long? = null
     )
 
     data class PlaybackHistoryEntry(
         val songId: String,
-        val timestamp: Long
-    )
+        val timestamp: Long,
+        // See PlaybackEvent — metadata snapshot for songs that can't be resolved
+        // from the local library (cloud-streamed).
+        val title: String? = null,
+        val artist: String? = null,
+        val album: String? = null,
+        val albumArtUri: String? = null,
+        val contentUri: String? = null,
+        val songDurationMs: Long? = null
+    ) {
+        /** Whether this entry carries a usable metadata snapshot. */
+        val hasMetadataSnapshot: Boolean
+            get() = !title.isNullOrBlank()
+    }
 
     data class SongPlaybackSummary(
         val songId: String,
@@ -152,7 +178,13 @@ class PlaybackStatsRepository @Inject constructor(
     fun recordPlayback(
         songId: String,
         durationMs: Long,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        title: String? = null,
+        artist: String? = null,
+        album: String? = null,
+        albumArtUri: String? = null,
+        contentUri: String? = null,
+        songDurationMs: Long? = null
     ) {
         if (songId.isBlank()) return
         val coercedTimestamp = timestamp.coerceAtLeast(0L)
@@ -163,7 +195,13 @@ class PlaybackStatsRepository @Inject constructor(
             timestamp = coercedTimestamp,
             durationMs = coercedDuration,
             startTimestamp = start,
-            endTimestamp = coercedTimestamp
+            endTimestamp = coercedTimestamp,
+            title = title?.takeIf { it.isNotBlank() },
+            artist = artist?.takeIf { it.isNotBlank() },
+            album = album?.takeIf { it.isNotBlank() },
+            albumArtUri = albumArtUri?.takeIf { it.isNotBlank() },
+            contentUri = contentUri?.takeIf { it.isNotBlank() },
+            songDurationMs = songDurationMs?.takeIf { it > 0L }
         )
         synchronized(fileLock) {
             val events = readEventsLocked()
@@ -428,17 +466,30 @@ class PlaybackStatsRepository @Inject constructor(
     fun loadPlaybackHistory(limit: Int = DEFAULT_PLAYBACK_HISTORY_LIMIT): List<PlaybackHistoryEntry> {
         if (limit <= 0) return emptyList()
         val safeLimit = limit.coerceAtMost(MAX_PLAYBACK_HISTORY_LIMIT)
-        return readEvents()
+        // Deduplicate by songId (keeping the NEWEST entry per song) before applying
+        // the limit, so the limit counts distinct songs rather than raw events —
+        // a song played 5 times must not consume 5 of the history slots.
+        val seenSongIds = HashSet<String>(safeLimit)
+        val result = ArrayList<PlaybackHistoryEntry>(safeLimit)
+        readEvents()
             .asSequence()
             .sortedByDescending { event -> event.timestamp }
-            .take(safeLimit)
-            .map { event ->
-                PlaybackHistoryEntry(
-                    songId = event.songId,
-                    timestamp = event.timestamp.coerceAtLeast(0L)
-                )
+            .forEach { event ->
+                if (result.size >= safeLimit) return@forEach
+                if (seenSongIds.add(event.songId)) {
+                    result += PlaybackHistoryEntry(
+                        songId = event.songId,
+                        timestamp = event.timestamp.coerceAtLeast(0L),
+                        title = event.title?.takeIf { it.isNotBlank() },
+                        artist = event.artist?.takeIf { it.isNotBlank() },
+                        album = event.album?.takeIf { it.isNotBlank() },
+                        albumArtUri = event.albumArtUri?.takeIf { it.isNotBlank() },
+                        contentUri = event.contentUri?.takeIf { it.isNotBlank() },
+                        songDurationMs = event.songDurationMs?.takeIf { it > 0L }
+                    )
+                }
             }
-            .toList()
+        return result
     }
 
     fun importEventsFromBackup(

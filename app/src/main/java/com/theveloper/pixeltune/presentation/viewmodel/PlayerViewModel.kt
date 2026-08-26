@@ -223,14 +223,22 @@ class PlayerViewModel @Inject constructor(
 
     /** Whether the given song is a cloud-streamed song (not in the local MediaStore). */
     private fun Song.isCloudStreamed(): Boolean {
-        val id = this.id
-        // Local MediaStore song IDs are always numeric strings; cloud IDs are not.
-        if (id.toLongOrNull() != null) return false
-        // Defensive: also check the URI scheme for known cloud prefixes.
-        val scheme = runCatching { Uri.parse(contentUriString).scheme }.getOrNull()
-        return scheme == "http" || scheme == "https" ||
+        // FIX(recently-played-cloud): check the CONTENT URI scheme FIRST. The old
+        // logic returned early with `false` for any numeric id ("local MediaStore
+        // song IDs are always numeric"), but SoundCloud search results use
+        // id = encodedUrl.hashCode().toString() — a NUMERIC string — so every
+        // SoundCloud song was misclassified as local and never registered in the
+        // cloud songs registry (and thus never resolved in Recently Played /
+        // Listening History).
+        val scheme = runCatching { Uri.parse(contentUriString).scheme?.lowercase() }.getOrNull()
+        if (scheme == "http" || scheme == "https" ||
             scheme == "youtube" || scheme == "soundcloud" ||
             scheme == "telegram" || scheme == "netease" || scheme == "gdrive"
+        ) {
+            return true
+        }
+        // Fallback heuristic: a non-numeric id can never be a MediaStore id.
+        return id.toLongOrNull() == null
     }
 
     private fun registerCloudSongs(songs: List<Song>) {
@@ -2796,15 +2804,55 @@ class PlayerViewModel @Inject constructor(
     }
 
     private suspend fun syncFavoritesStores(preferenceFavoriteIds: Set<String>) {
+        // FIX(cloud-favorites-v2): this reconciliation used to diff the DataStore
+        // preference IDs (which store the ORIGINAL song id strings — e.g. the
+        // YouTube video id "dQw4w9WgXcQ") directly against the Room favorites IDs
+        // (Longs rendered as strings — e.g. the stable hash "1872514854").
+        // For cloud songs those never match, so right after tapping the heart the
+        // sync classified the just-written Room row as "liked in Room but not in
+        // preferences" and DELETED it — silently undoing the like.
+        //
+        // The diff now happens in the Long domain (mapping every preference id
+        // through the same toLongOrNull()/stableLongIdFromString() rule the write
+        // path uses), and orphaned Room favorites rows (favorites whose songs row
+        // is missing — produced by older builds that skipped the songs-table
+        // insert for cloud songs) are purged up-front together with their
+        // DataStore preference entries so they can't ping-pong back and forth.
+
+        // Step 1: purge orphaned favorites rows (no matching songs row) and drop
+        // their preference counterparts. A favorites row without a songs row can
+        // never show up in the Liked tab (INNER JOIN), and re-favoriting the song
+        // properly re-creates both rows with full metadata.
+        val orphanRoomIds = musicRepository.removeOrphanedFavorites().toSet()
+        if (orphanRoomIds.isNotEmpty()) {
+            preferenceFavoriteIds.forEach { prefId ->
+                val longForm = prefId.toLongOrNull()
+                    ?: com.theveloper.pixeltune.utils.CloudUriUtils.stableLongIdFromString(prefId)
+                if (longForm in orphanRoomIds) {
+                    userPreferencesRepository.setFavoriteSong(prefId, false)
+                }
+            }
+        }
+
+        // Step 2: reconcile the two stores in the Long domain.
         val roomFavoriteIds = musicRepository.getFavoriteSongIdsOnce()
-        val idsToFavorite = preferenceFavoriteIds - roomFavoriteIds
-        val idsToUnfavorite = roomFavoriteIds - preferenceFavoriteIds
+            .mapNotNull { it.toLongOrNull() }
+            .toSet()
+        val preferenceIdsAsLong = preferenceFavoriteIds
+            .map { prefId ->
+                prefId.toLongOrNull()
+                    ?: com.theveloper.pixeltune.utils.CloudUriUtils.stableLongIdFromString(prefId)
+            }
+            .toSet()
+
+        val idsToFavorite = preferenceIdsAsLong - roomFavoriteIds
+        val idsToUnfavorite = roomFavoriteIds - preferenceIdsAsLong
 
         idsToFavorite.forEach { songId ->
-            musicRepository.setFavoriteStatus(songId, true)
+            musicRepository.setFavoriteStatus(songId.toString(), true)
         }
         idsToUnfavorite.forEach { songId ->
-            musicRepository.setFavoriteStatus(songId, false)
+            musicRepository.setFavoriteStatus(songId.toString(), false)
         }
     }
 

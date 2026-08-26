@@ -190,6 +190,14 @@ interface MusicRepository {
     suspend fun getFavoriteSongIdsOnce(): Set<String>
 
     /**
+     * Removes favorites rows whose songs row no longer exists (orphans) and
+     * returns the removed song IDs. See the implementation for why these
+     * must be purged for the Liked tab and the favorites reconciliation
+     * to stay consistent.
+     */
+    suspend fun removeOrphanedFavorites(): List<Long>
+
+    /**
      * Obtiene una canción específica por su ID.
      * @param songId El ID de la canción.
      * @return Flow que emite el objeto Song o null si no se encuentra.

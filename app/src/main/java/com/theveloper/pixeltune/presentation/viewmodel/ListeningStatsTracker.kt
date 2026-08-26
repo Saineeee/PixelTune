@@ -5,6 +5,7 @@ import androidx.media3.common.C
 import com.theveloper.pixeltune.data.DailyMixManager
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.stats.PlaybackStatsRepository
+import com.theveloper.pixeltune.utils.CloudUriUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +26,17 @@ import com.theveloper.pixeltune.data.database.EngagementDao
  * - Track active listening sessions
  * - Record play statistics when session ends
  * - Handle voluntary vs automatic plays
+ * - Maintain the in-memory playback history shown by the Listening History
+ *   page and the "Recently Played" surfaces.
+ *
+ * FIX(listening-history-cloud): every history entry now carries a metadata
+ * snapshot (title / artist / album / artwork / normalized content URI) taken
+ * from the Song when playback starts. Previously entries stored only songId,
+ * and cloud-streamed songs (YouTube / SoundCloud) could not be resolved from
+ * the local MediaStore-backed library — they were looked up in a session-only
+ * in-memory registry that is empty after an app restart, so cloud songs
+ * silently vanished from the history. With the snapshot, cloud songs render
+ * correctly in history even after restarts.
  */
 class ListeningStatsTracker @Inject constructor(
     private val dailyMixManager: DailyMixManager,
@@ -72,6 +84,14 @@ class ListeningStatsTracker @Inject constructor(
             else -> 0L
         }
 
+        // Capture the previous history timestamp for this song (if any) so a
+        // rollback below can RESTORE it instead of wiping it — e.g. the user
+        // replays a song for a fraction of a second and skips: the song's
+        // earlier history entry must survive.
+        val previousTimestamp = _playbackHistory.value
+            .firstOrNull { it.songId == song.id }?.timestamp
+
+        val metadataSnapshot = SongMetadataSnapshot.from(song)
         currentSession = ActiveSession(
             songId = song.id,
             totalDurationMs = normalizedDuration,
@@ -81,11 +101,27 @@ class ListeningStatsTracker @Inject constructor(
             lastRealtimeMs = nowRealtime,
             lastUpdateEpochMs = nowEpoch,
             isPlaying = isPlaying,
-            isVoluntary = pendingVoluntarySongId == song.id
+            isVoluntary = pendingVoluntarySongId == song.id,
+            metadata = metadataSnapshot,
+            previousHistoryTimestamp = previousTimestamp
         )
         if (pendingVoluntarySongId == song.id) {
             pendingVoluntarySongId = null
         }
+
+        // FIX(listening-history-liveness): record a live history entry for the
+        // song THE MOMENT it starts, not after MIN_SESSION_LISTEN_MS of
+        // listening. The user expectation is explicit: right after tapping a
+        // song (online streaming OR local), it must already appear in the
+        // Listening History. If the session ends below the minimum threshold,
+        // finalizeCurrentSession() rolls the entry back (restoring any earlier
+        // timestamp for the same song, or removing it entirely).
+        upsertPlaybackHistory(
+            songId = song.id,
+            timestamp = nowEpoch,
+            metadata = metadataSnapshot
+        )
+        currentSession?.liveEntryRecorded = true
     }
 
     fun onPlayStateChanged(isPlaying: Boolean, positionMs: Long) {
@@ -114,23 +150,10 @@ class ListeningStatsTracker @Inject constructor(
         session.lastKnownPositionMs = positionMs.coerceAtLeast(0L)
         session.lastUpdateEpochMs = System.currentTimeMillis()
 
-        // FIX(recently-played-liveness): surface the currently-playing song
-        // in `playbackHistory` AS SOON AS the user has listened past the
-        // minimum threshold, without waiting for the session to be finalized
-        // (which only happens when the song changes or playback stops).
-        //
-        // The previous behavior was: user plays ONE song for 30 seconds and
-        // opens Recently Played — the list showed "no history yet" because the
-        // session was still active and `finalizeCurrentSession` had not been
-        // called. This update mutates `_playbackHistory` on every progress
-        // tick once the threshold is crossed, so the entry is visible
-        // immediately.
-        //
-        // The upsert (remove existing entries with the same songId before
-        // prepending the new one) keeps the list from growing with duplicate
-        // entries over time. `mapRecentlyPlayedSongs` already dedupes by
-        // songId, but capping duplicates here also keeps the 500-item cap
-        // from being consumed by repeat entries for the same song.
+        // Keep the live entry's timestamp fresh while the song keeps playing so
+        // the history stays ordered by "most recently listened". The entry
+        // itself was already created in onSongChanged (see
+        // FIX(listening-history-liveness) there).
         val totalCap = if (session.totalDurationMs > 0) session.totalDurationMs else Long.MAX_VALUE
         val listened = session.accumulatedListeningMs
             .coerceAtMost(totalCap).coerceAtLeast(0L)
@@ -139,7 +162,8 @@ class ListeningStatsTracker @Inject constructor(
                 songId = session.songId,
                 timestamp = session.lastUpdateEpochMs
                     .coerceAtLeast(session.startedAtEpochMs.coerceAtLeast(0L))
-                    .coerceAtMost(System.currentTimeMillis())
+                    .coerceAtMost(System.currentTimeMillis()),
+                metadata = session.metadata
             )
             session.liveEntryRecorded = true
         }
@@ -193,12 +217,15 @@ class ListeningStatsTracker @Inject constructor(
                 .coerceAtLeast(session.startedAtEpochMs.coerceAtLeast(0L))
                 .coerceAtMost(System.currentTimeMillis())
             val songId = session.songId
-            // FIX(recently-played-liveness): upsert (not prepend) so we don't
-            // end up with both a live entry from `onProgress` AND a finalized
-            // entry for the same song. The upsert removes any existing entry
-            // with the same songId before prepending the finalized one — the
-            // finalized entry has the more accurate end-of-session timestamp.
-            upsertPlaybackHistory(songId = songId, timestamp = timestamp)
+            // Upsert (not prepend) so we don't end up with both a live entry
+            // from onSongChanged/onProgress AND a finalized entry for the same
+            // song. The finalized entry carries the more accurate end-of-session
+            // timestamp.
+            upsertPlaybackHistory(
+                songId = songId,
+                timestamp = timestamp,
+                metadata = session.metadata
+            )
             scope?.launch(Dispatchers.IO) {
                 dailyMixManager.recordPlay(
                     songId = songId,
@@ -208,15 +235,30 @@ class ListeningStatsTracker @Inject constructor(
                 playbackStatsRepository.recordPlayback(
                     songId = songId,
                     durationMs = listened,
-                    timestamp = timestamp
+                    timestamp = timestamp,
+                    title = session.metadata.title,
+                    artist = session.metadata.artist,
+                    album = session.metadata.album,
+                    albumArtUri = session.metadata.albumArtUri,
+                    contentUri = session.metadata.contentUri,
+                    songDurationMs = session.metadata.songDurationMs
                 )
             }
         } else if (session.liveEntryRecorded) {
-            // The session crossed MIN_SESSION_LISTEN_MS at some point (a live
-            // entry was recorded), but the final listened total is below the
-            // threshold (e.g. user scrubbed backward). Remove the stale live
-            // entry so the history reflects the actual listening pattern.
-            removePlaybackHistory(session.songId)
+            // The session was shorter than the minimum listening threshold (e.g.
+            // the user skipped almost immediately). Undo the live entry written
+            // in onSongChanged — but RESTORE any earlier history entry the song
+            // had before this session instead of dropping it entirely.
+            val previousTimestamp = session.previousHistoryTimestamp
+            if (previousTimestamp != null && previousTimestamp > 0L) {
+                upsertPlaybackHistory(
+                    songId = session.songId,
+                    timestamp = previousTimestamp,
+                    metadata = session.metadata
+                )
+            } else {
+                removePlaybackHistory(session.songId)
+            }
         }
         currentSession = null
         if (pendingVoluntarySongId == session.songId) {
@@ -228,15 +270,26 @@ class ListeningStatsTracker @Inject constructor(
      * Upserts a [PlaybackStatsRepository.PlaybackHistoryEntry] into the
      * in-memory `_playbackHistory` StateFlow: removes any existing entry with
      * the same [songId], then prepends the new entry. Capped at
-     * [MAX_INTERNAL_PLAYBACK_HISTORY_ITEMS].
+     * [MAX_INTERNAL_PLAYBACK_HISTORY_ITEMS] (30 songs, per the Listening
+     * History requirement).
      *
-     * Used by both [onProgress] (live in-progress recording) and
-     * [finalizeCurrentSession] (final timestamp). Visible for testing.
+     * Used by [onSongChanged] (immediate live recording), [onProgress] (live
+     * timestamp refresh) and [finalizeCurrentSession] (final timestamp).
      */
-    private fun upsertPlaybackHistory(songId: String, timestamp: Long) {
+    private fun upsertPlaybackHistory(
+        songId: String,
+        timestamp: Long,
+        metadata: SongMetadataSnapshot? = null
+    ) {
         val historyEntry = PlaybackStatsRepository.PlaybackHistoryEntry(
             songId = songId,
-            timestamp = timestamp
+            timestamp = timestamp,
+            title = metadata?.title?.takeIf { it.isNotBlank() },
+            artist = metadata?.artist?.takeIf { it.isNotBlank() },
+            album = metadata?.album?.takeIf { it.isNotBlank() },
+            albumArtUri = metadata?.albumArtUri?.takeIf { it.isNotBlank() },
+            contentUri = metadata?.contentUri?.takeIf { it.isNotBlank() },
+            songDurationMs = metadata?.songDurationMs?.takeIf { it > 0L }
         )
         _playbackHistory.update { current ->
             val withoutExisting = current.filterNot { it.songId == songId }
@@ -247,9 +300,8 @@ class ListeningStatsTracker @Inject constructor(
     /**
      * Removes all entries with the given [songId] from the in-memory
      * `_playbackHistory`. Used by [finalizeCurrentSession] when a session that
-     * had a live entry ends up below [MIN_SESSION_LISTEN_MS] (e.g. user scrubbed
-     * backward) — the live entry must be rolled back so the history reflects
-     * the actual listening pattern.
+     * had a live entry ends up below [MIN_SESSION_LISTEN_MS] and the song had
+     * no earlier history entry (e.g. user skipped almost immediately).
      */
     private fun removePlaybackHistory(songId: String) {
         _playbackHistory.update { current ->
@@ -275,13 +327,44 @@ class ListeningStatsTracker @Inject constructor(
     }
 
     companion object {
-        // FIX(recently-played-liveness): lowered from 5s → 1s so brief plays
-        // (skipping through a song, listening to a 3-second sample, etc.) also
-        // surface in Recently Played. Combined with the live in-progress
-        // recording in `onProgress`, this means a song appears in the history
-        // after just 1 second of actual playback, not 5s + a transition.
+        // Minimum listening time before a session counts as "really listened"
+        // (shorter sessions get their live history entry rolled back).
         private val MIN_SESSION_LISTEN_MS = TimeUnit.SECONDS.toMillis(1)
-        private const val MAX_INTERNAL_PLAYBACK_HISTORY_ITEMS = 500
+
+        // FIX(listening-history-cap): the Listening History records a total of
+        // 30 songs. Older entries fall off the end as new songs are played.
+        private const val MAX_INTERNAL_PLAYBACK_HISTORY_ITEMS = 30
+    }
+}
+
+/**
+ * Metadata snapshot of a [Song], captured when playback starts and stored
+ * alongside playback-history entries so cloud-streamed songs (YouTube /
+ * SoundCloud — which are NOT in the local MediaStore-backed library) can be
+ * rendered by the history UIs even across app restarts.
+ */
+data class SongMetadataSnapshot(
+    val title: String? = null,
+    val artist: String? = null,
+    val album: String? = null,
+    val albumArtUri: String? = null,
+    val contentUri: String? = null,
+    val songDurationMs: Long? = null
+) {
+    companion object {
+        fun from(song: Song): SongMetadataSnapshot = SongMetadataSnapshot(
+            title = song.title.takeIf { it.isNotBlank() },
+            artist = song.artist.takeIf { it.isNotBlank() },
+            album = song.album.takeIf { it.isNotBlank() },
+            albumArtUri = song.albumArtUriString?.takeIf { it.isNotBlank() },
+            // Normalize cloud proxy URLs (http://127.0.0.1:<port>/youtube/<id>)
+            // to their restart-safe scheme form (youtube://<id>) — the proxy
+            // port changes on every app launch, so the raw URL would be stale
+            // the next time the entry is used to play the song.
+            contentUri = song.contentUriString.takeIf { it.isNotBlank() }
+                ?.let { CloudUriUtils.normalizeCloudUriForStorage(it) },
+            songDurationMs = song.duration.takeIf { it > 0L }
+        )
     }
 }
 
@@ -298,10 +381,16 @@ data class ActiveSession(
     var lastUpdateEpochMs: Long,
     var isPlaying: Boolean,
     val isVoluntary: Boolean,
-    // FIX(recently-played-liveness): tracks whether `onProgress` has already
-    // recorded a live in-progress entry in `_playbackHistory` for this
-    // session. Used by `finalizeCurrentSession` to know whether to upsert
-    // (replace the live entry) or rollback (remove the live entry) when the
-    // session ends below the MIN_SESSION_LISTEN_MS threshold.
+    // Metadata snapshot captured when the session started; written into every
+    // history entry produced by this session (see ListeningStatsTracker docs).
+    val metadata: SongMetadataSnapshot = SongMetadataSnapshot(),
+    // Timestamp of the song's history entry BEFORE this session started (null
+    // if it had none). Used by finalizeCurrentSession to restore the earlier
+    // entry when this session ends below MIN_SESSION_LISTEN_MS.
+    val previousHistoryTimestamp: Long? = null,
+    // Tracks whether a live entry has been recorded in `_playbackHistory` for
+    // this session. Used by [finalizeCurrentSession] to know whether to
+    // upsert (replace the live entry) or rollback (remove/restore the live
+    // entry) when the session ends below the MIN_SESSION_LISTEN_MS threshold.
     var liveEntryRecorded: Boolean = false
 )

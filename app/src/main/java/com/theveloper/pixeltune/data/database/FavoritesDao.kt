@@ -26,6 +26,18 @@ interface FavoritesDao {
     @Query("SELECT songId FROM favorites WHERE isFavorite = 1")
     suspend fun getFavoriteSongIdsOnce(): List<Long>
 
+    /**
+     * Favorite song IDs whose songs row no longer exists. These entries can
+     * never surface in the Liked tab (INNER JOIN with songs) and are removed
+     * by the favorites reconciliation as self-healing.
+     */
+    @Query("""
+        SELECT songId FROM favorites
+        WHERE isFavorite = 1
+        AND songId NOT IN (SELECT id FROM songs)
+    """)
+    suspend fun getOrphanedFavoriteSongIds(): List<Long>
+
     @Query("SELECT * FROM favorites")
     suspend fun getAllFavoritesOnce(): List<FavoritesEntity>
 

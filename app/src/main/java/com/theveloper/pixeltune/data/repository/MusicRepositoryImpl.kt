@@ -103,23 +103,13 @@ class MusicRepositoryImpl @Inject constructor(
          * to be non-negative so it fits into the same positive-Long primary-key
          * domain as MediaStore song IDs.
          *
-         * Used for cloud-streamed songs (YouTube video IDs, SoundCloud encoded
-         * URLs, etc.) that don't have a natural Long form. The mapping is
-         * deterministic across app restarts, so the same cloud song always maps
-         * to the same Room row id — making re-liking / unliking after restart
-         * correctly find the existing row.
-         *
-         * Note: hashCode collisions are theoretically possible, but for typical
-         * 11-char YouTube IDs and short SoundCloud encoded URLs the collision
-         * space is well below the Long domain, and the practical impact of a
-         * collision is at most a single song being replaced in the favorites
-         * tab (which the user can re-like to fix).
+         * Kept as a thin delegate to [com.theveloper.pixeltune.utils.CloudUriUtils]
+         * so that every call site (write path, read path, preference/Room
+         * reconciliation in PlayerViewModel.syncFavoritesStores) shares the
+         * exact same derivation rule.
          */
-        internal fun stableLongIdFromString(id: String): Long {
-            if (id.isEmpty()) return 0L
-            val hash = id.hashCode().toLong()
-            return if (hash >= 0) hash else -hash
-        }
+        internal fun stableLongIdFromString(id: String): Long =
+            com.theveloper.pixeltune.utils.CloudUriUtils.stableLongIdFromString(id)
     }
 
     private val directoryScanMutex = Mutex()
@@ -135,46 +125,11 @@ class MusicRepositoryImpl @Inject constructor(
      * URI so it can be persisted to the Room DB without breaking when the local
      * HTTP proxy rebinds to a different port on the next app launch.
      *
-     * Examples:
-     *   "http://127.0.0.1:53719/youtube/dQw4w9WgXcQ"
-     *     → "youtube://dQw4w9WgXcQ"
-     *   "http://127.0.0.1:53719/soundcloud/encodedPayload"
-     *     → "soundcloud://encodedPayload"
-     *
-     * URIs that are already in scheme form (telegram://, netease://, gdrive://,
-     * youtube://, soundcloud://) and local file/content URIs are returned
-     * unchanged. Plain absolute paths are also returned unchanged.
+     * Delegates to [com.theveloper.pixeltune.utils.CloudUriUtils] — see that
+     * object for the exact conversion rules and examples.
      */
-    internal fun normalizeCloudUriForStorage(contentUriString: String): String {
-        if (contentUriString.isEmpty()) return contentUriString
-        // Already in scheme form — leave alone.
-        val knownSchemes = setOf(
-            "youtube", "soundcloud", "telegram", "netease", "gdrive",
-            "content", "file"
-        )
-        val parsed = runCatching { Uri.parse(contentUriString) }.getOrNull() ?: return contentUriString
-        val scheme = parsed.scheme?.lowercase()
-        if (scheme != null && scheme in knownSchemes) return contentUriString
-        // Convert localhost HTTP proxy URLs back to their scheme form.
-        if (scheme == "http" || scheme == "https") {
-            val host = parsed.host?.lowercase()
-            if (host == "127.0.0.1" || host == "localhost") {
-                val pathSegments = parsed.pathSegments
-                // Path shape: ["youtube", "<id>"] or ["soundcloud", "<encoded>"]
-                if (pathSegments.size >= 2) {
-                    val provider = pathSegments[0].lowercase()
-                    val payload = pathSegments.subList(1, pathSegments.size)
-                        .joinToString("/") { it }
-                    return when (provider) {
-                        "youtube" -> "youtube://$payload"
-                        "soundcloud" -> "soundcloud://$payload"
-                        else -> contentUriString
-                    }
-                }
-            }
-        }
-        return contentUriString
-    }
+    internal fun normalizeCloudUriForStorage(contentUriString: String): String =
+        com.theveloper.pixeltune.utils.CloudUriUtils.normalizeCloudUriForStorage(contentUriString)
 
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun getAudioFiles(): Flow<List<Song>> {
@@ -549,62 +504,175 @@ class MusicRepositoryImpl @Inject constructor(
     }
 
     override suspend fun setFavoriteStatus(song: Song, isFavorite: Boolean) = withContext(Dispatchers.IO) {
-        // FIX(cloud-favorites): Cloud-streamed songs (YouTube / SoundCloud / etc.) have
-        // string IDs that aren't parseable as Long (e.g. "dQw4w9WgXcQ"). The previous
-        // implementation called `song.id.toLongOrNull() ?: return@withContext`, which
-        // silently bailed out for ALL cloud songs — so the like button did nothing.
+        // FIX(cloud-favorites-v2): Cloud-streamed songs (YouTube / SoundCloud / etc.)
+        // have string IDs that aren't parseable as Long (e.g. "dQw4w9WgXcQ"). The
+        // very first implementation called `song.id.toLongOrNull() ?: return@withContext`
+        // (silently bailing out for ALL cloud songs), and the follow-up added a
+        // songs-row insert guarded by an `isOffline` check that was computed as:
         //
-        // We now generate a stable Long ID from the string ID via hashCode (forced
-        // positive to fit the non-negative primary key domain of MediaStore IDs).
-        // The hashCode is deterministic across app restarts, so the same cloud song
-        // always maps to the same Long row id — meaning re-liking after restart still
-        // finds the existing row, and the Liked tab paginated query (which joins
-        // `songs.id` with `favorites.songId`) returns the cloud song correctly.
-        val id = song.id.toLongOrNull() ?: stableLongIdFromString(song.id)
+        //     val isOffline = song.path.isNotEmpty() || contentUri.startsWith("content://") ...
+        //
+        // That check is WRONG for cloud songs: YouTube/SoundCloud search results
+        // carry the upstream service URL in `song.path`
+        // (e.g. "https://www.youtube.com/watch?v=..."), so `path.isNotEmpty()` is
+        // ALWAYS true for them and the songs-row insert was silently skipped.
+        // The favorites row was written, but the Liked tab query INNER JOINs
+        // `songs.id = favorites.songId` — with no songs row, the liked cloud song
+        // NEVER appeared in the Liked tab (the "heart button does nothing" bug).
+        //
+        // Cloud-ness is now determined from the CONTENT URI scheme (see
+        // [com.theveloper.pixeltune.utils.CloudUriUtils.isCloudContentUri]), which
+        // is correct for both freshly-searched cloud songs (live proxy URL,
+        // http://127.0.0.1:<port>/youtube/<id>) and replayed ones
+        // (persisted scheme URI, youtube://<id>).
+        val id = song.id.toLongOrNull()
+            ?: com.theveloper.pixeltune.utils.CloudUriUtils.stableLongIdFromString(song.id)
 
-        val isOffline = song.path.isNotEmpty() ||
-            song.contentUriString.startsWith("content://") ||
-            song.contentUriString.startsWith("file://")
-
-        if (isFavorite && !isOffline) {
-            // Normalize cloud URIs to their scheme form so the stored row survives
-            // app restarts. The current session's HTTP proxy URL contains an
-            // ephemeral port (e.g. "http://127.0.0.1:53719/youtube/<id>"), so we
-            // can't store that as-is. Instead we persist the scheme URI
-            // ("youtube://<id>" / "soundcloud://<encoded>") and let
-            // DualPlayerEngine.resolveCloudUri translate it to the live proxy URL
-            // at play time. (Telegram/netease already work this way.)
-            val normalizedContentUri = normalizeCloudUriForStorage(song.contentUriString)
-            val entity = com.theveloper.pixeltune.data.database.SongEntity(
-                id = id,
-                title = song.title,
-                artistName = song.artist,
-                artistId = song.artistId,
-                albumName = song.album,
-                albumId = song.albumId,
-                contentUriString = normalizedContentUri,
-                albumArtUriString = song.albumArtUriString,
-                duration = song.duration,
-                genre = song.genre,
-                filePath = normalizedContentUri,
-                parentDirectoryPath = "online_favorites",
-                isFavorite = true,
-                dateAdded = System.currentTimeMillis()
-            )
-            musicDao.insertSongsIgnoreConflicts(listOf(entity))
-        }
+        val isCloudSong = com.theveloper.pixeltune.utils.CloudUriUtils.isCloudContentUri(
+            song.contentUriString
+        )
 
         if (isFavorite) {
+            if (isCloudSong) {
+                ensureCloudSongRow(song, id)
+            }
             favoritesDao.setFavorite(
                 com.theveloper.pixeltune.data.database.FavoritesEntity(
                     songId = id,
                     isFavorite = true
                 )
             )
+            musicDao.setFavoriteStatus(id, true)
         } else {
             favoritesDao.removeFavorite(id)
+            if (isCloudSong) {
+                // The songs row for a cloud song only exists because it was liked
+                // (cloud songs are not part of the MediaStore-synced library).
+                // Remove it on unlike so it doesn't linger in the local
+                // Songs/Folders tabs as an unplayable "offline" entry. This is a
+                // TARGETED delete (row + its cross-ref) — deliberately NOT
+                // deleteSongsAndRelatedData(), whose orphaned-album/artist
+                // cleanup could cascade away cross-ref-only artists that local
+                // multi-artist songs still use. Any lingering placeholder
+                // album/artist rows are invisible (the Album/Artist tabs join
+                // through songs) and get reused by the next like.
+                musicDao.deleteCrossRefsForSong(id)
+                musicDao.deleteSongsByIds(listOf(id))
+            } else {
+                musicDao.setFavoriteStatus(id, false)
+            }
         }
-        musicDao.setFavoriteStatus(id, isFavorite)
+    }
+
+    /**
+     * Inserts the [com.theveloper.pixeltune.data.database.SongEntity] for a
+     * cloud-streamed song so the Liked tab's INNER JOIN with the favorites
+     * table can resolve it.
+     *
+     * Two non-obvious requirements handled here:
+     *
+     * 1. FOREIGN KEYS: `songs.album_id` references `albums.id` (CASCADE) and
+     *    `songs.artist_id` references `artists.id` (SET_NULL). YouTube/SoundCloud
+     *    search results carry albumId = -1 / artistId = -1, and inserting a row
+     *    with those IDs violates the FK constraints (Room enables
+     *    `PRAGMA foreign_keys = ON`), throwing SQLiteConstraintException.
+     *    We therefore resolve/insert placeholder album + artist rows first —
+     *    merging with an existing local artist/album by name when possible
+     *    (the same convention the Telegram unified sync uses), and otherwise
+     *    creating synthetic negative-ID rows that can never collide with
+     *    MediaStore IDs.
+     *
+     * 2. URI STABILITY: the live playback URI is an HTTP proxy URL with an
+     *    ephemeral port (http://127.0.0.1:<port>/youtube/<id>). We persist the
+     *    scheme form ("youtube://<id>") instead, which DualPlayerEngine
+     *    translates back to the live proxy URL at play time.
+     */
+    private suspend fun ensureCloudSongRow(song: Song, id: Long) {
+        // ---- Resolve artist (merge with existing by name, else synthetic) ----
+        val artistName = song.artist.trim().ifBlank { "Unknown Artist" }
+        val existingArtists = musicDao.getAllArtistsListRaw()
+        val existingArtist = existingArtists.firstOrNull {
+            it.name.trim().equals(artistName, ignoreCase = true)
+        }
+        val artistId = existingArtist?.id
+            ?: com.theveloper.pixeltune.utils.CloudUriUtils.stableSyntheticIdFromName(artistName)
+        if (existingArtist == null) {
+            musicDao.insertArtistsIgnoreConflicts(
+                listOf(
+                    com.theveloper.pixeltune.data.database.ArtistEntity(
+                        id = artistId,
+                        name = artistName,
+                        trackCount = 0
+                    )
+                )
+            )
+        }
+
+        // ---- Resolve album (merge with existing by title+artist, else synthetic) ----
+        // YouTube/SoundCloud search results have no album information; all such
+        // likes are grouped under a single shared "Online Favorites" album so the
+        // Albums tab stays tidy.
+        val albumName = song.album.trim().ifBlank { "Online Favorites" }
+        val existingAlbums = musicDao.getAllAlbumsList(emptyList(), false)
+        val existingAlbum = existingAlbums.firstOrNull {
+            it.title.trim().equals(albumName, ignoreCase = true) &&
+                (it.artistName?.trim()?.equals(artistName, ignoreCase = true) == true ||
+                    albumName.equals("Online Favorites", ignoreCase = true))
+        }
+        val albumId = existingAlbum?.id
+            ?: com.theveloper.pixeltune.utils.CloudUriUtils.stableSyntheticIdFromName(
+                "${albumName}_$artistName"
+            )
+        if (existingAlbum == null) {
+            musicDao.insertAlbumsIgnoreConflicts(
+                listOf(
+                    com.theveloper.pixeltune.data.database.AlbumEntity(
+                        id = albumId,
+                        title = albumName,
+                        artistName = artistName,
+                        artistId = artistId,
+                        albumArtUriString = song.albumArtUriString,
+                        songCount = 0,
+                        year = song.year
+                    )
+                )
+            )
+        }
+
+        // ---- Insert the song row (normalized, restart-safe URI) ----
+        val normalizedContentUri = com.theveloper.pixeltune.utils.CloudUriUtils
+            .normalizeCloudUriForStorage(song.contentUriString)
+        val entity = com.theveloper.pixeltune.data.database.SongEntity(
+            id = id,
+            title = song.title,
+            artistName = song.artist,
+            artistId = artistId,
+            albumName = albumName,
+            albumId = albumId,
+            contentUriString = normalizedContentUri,
+            albumArtUriString = song.albumArtUriString,
+            duration = song.duration,
+            genre = song.genre,
+            filePath = normalizedContentUri,
+            parentDirectoryPath = "/Online Favorites",
+            isFavorite = true,
+            dateAdded = System.currentTimeMillis(),
+            mimeType = song.mimeType
+        )
+        musicDao.insertSongsIgnoreConflicts(listOf(entity))
+        // If the row already existed (re-liking), make sure is_favorite is set.
+        musicDao.setFavoriteStatus(id, true)
+        // Cross-ref so the song counts toward the artist in the Artists tab
+        // (the artist-count queries join through song_artist_cross_ref).
+        musicDao.insertSongArtistCrossRefs(
+            listOf(
+                com.theveloper.pixeltune.data.database.SongArtistCrossRef(
+                    songId = id,
+                    artistId = artistId,
+                    isPrimary = true
+                )
+            )
+        )
     }
 
     override suspend fun setFavoriteStatus(songId: String, isFavorite: Boolean) = withContext(Dispatchers.IO) {
@@ -631,6 +699,27 @@ class MusicRepositoryImpl @Inject constructor(
         favoritesDao.getFavoriteSongIdsOnce()
             .map { it.toString() }
             .toSet()
+    }
+
+    /**
+     * Removes favorites rows whose songs row no longer exists (orphans) and
+     * returns the removed song IDs.
+     *
+     * Orphans can never surface in the Liked tab (its query INNER JOINs the
+     * songs table), and they poison the DataStore/Room reconciliation in
+     * [com.theveloper.pixeltune.presentation.viewmodel.PlayerViewModel.syncFavoritesStores]:
+     * a favorites row whose Long id doesn't correspond to any song looks like
+     * "liked in Room but not in preferences", so the sync would flap between
+     * re-inserting and removing it. They arise from older builds that wrote the
+     * favorites row but skipped the songs-table insert for cloud songs, and
+     * from local songs deleted from the device whose favorites row was never
+     * cleaned (the MediaStore sync's deletion phase removes the songs row but
+     * not the favorites row).
+     */
+    override suspend fun removeOrphanedFavorites(): List<Long> = withContext(Dispatchers.IO) {
+        val orphanIds = favoritesDao.getOrphanedFavoriteSongIds()
+        orphanIds.forEach { favoritesDao.removeFavorite(it) }
+        orphanIds
     }
 
     override suspend fun toggleFavoriteStatus(songId: String): Boolean = withContext(Dispatchers.IO) {

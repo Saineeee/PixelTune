@@ -18,7 +18,7 @@ fun mapRecentlyPlayedSongs(
     nowMillis: Long = System.currentTimeMillis(),
     maxItems: Int = Int.MAX_VALUE
 ): List<RecentlyPlayedSongUiModel> {
-    if (maxItems <= 0 || playbackHistory.isEmpty() || songs.isEmpty()) return emptyList()
+    if (maxItems <= 0 || playbackHistory.isEmpty()) return emptyList()
 
     val songById = songs.associateBy { it.id }
     val (startBound, endBound) = range.resolveBounds(
@@ -41,7 +41,15 @@ fun mapRecentlyPlayedSongs(
         if (startBound != null && safeTimestamp < startBound) continue
         if (!seenSongIds.add(entry.songId)) continue
 
-        val song = songById[entry.songId] ?: continue
+        // FIX(listening-history-cloud): resolve the song from the library first;
+        // if that fails (cloud-streamed songs such as YouTube / SoundCloud are
+        // NOT part of the local MediaStore-backed library, and the session-only
+        // in-memory cloud registry is empty after an app restart), fall back to
+        // the metadata snapshot persisted alongside the history entry. Before
+        // this fallback existed, unresolvable entries were silently skipped —
+        // cloud songs simply never showed up in Listening History / Recently
+        // Played.
+        val song = songById[entry.songId] ?: entry.toFallbackSong() ?: continue
         deduped += RecentlyPlayedSongUiModel(
             song = song,
             lastPlayedTimestamp = safeTimestamp
@@ -49,6 +57,41 @@ fun mapRecentlyPlayedSongs(
     }
 
     return deduped
+}
+
+/**
+ * Builds a playable [Song] from a history entry's metadata snapshot.
+ *
+ * Returns null when the entry carries no snapshot (entries recorded by older
+ * app versions only stored songId + timestamp) — such entries can only be
+ * resolved through the song library lookup.
+ */
+private fun PlaybackStatsRepository.PlaybackHistoryEntry.toFallbackSong(): Song? {
+    if (!hasMetadataSnapshot) return null
+    return Song(
+        id = songId,
+        title = title.orEmpty(),
+        artist = artist ?: "Unknown Artist",
+        artistId = -1L,
+        artists = emptyList(),
+        album = album ?: "",
+        albumId = -1L,
+        albumArtist = null,
+        path = "",
+        contentUriString = contentUri ?: "",
+        albumArtUriString = albumArtUri,
+        duration = songDurationMs ?: 0L,
+        genre = null,
+        lyrics = null,
+        isFavorite = false,
+        trackNumber = 0,
+        year = 0,
+        dateAdded = timestamp,
+        dateModified = 0,
+        mimeType = null,
+        bitrate = null,
+        sampleRate = null
+    )
 }
 
 private fun StatsTimeRange?.resolveBounds(

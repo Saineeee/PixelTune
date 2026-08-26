@@ -112,6 +112,9 @@ interface MusicDao {
         SELECT id FROM songs
         WHERE content_uri_string NOT LIKE 'telegram://%'
         AND content_uri_string NOT LIKE 'netease://%'
+        AND content_uri_string NOT LIKE 'youtube://%'
+        AND content_uri_string NOT LIKE 'soundcloud://%'
+        AND content_uri_string NOT LIKE 'gdrive://%'
     """)
     suspend fun getAllMediaStoreSongIds(): List<Long>
 
@@ -327,12 +330,16 @@ interface MusicDao {
                 :filterMode = 1
                 AND content_uri_string NOT LIKE 'telegram://%'
                 AND content_uri_string NOT LIKE 'netease://%'
+                AND content_uri_string NOT LIKE 'youtube://%'
+                AND content_uri_string NOT LIKE 'soundcloud://%'
             )
             OR (
                 :filterMode = 2
                 AND (
                     content_uri_string LIKE 'telegram://%'
                     OR content_uri_string LIKE 'netease://%'
+                    OR content_uri_string LIKE 'youtube://%'
+                    OR content_uri_string LIKE 'soundcloud://%'
                 )
             )
         )
@@ -353,12 +360,16 @@ interface MusicDao {
                 :filterMode = 1
                 AND content_uri_string NOT LIKE 'telegram://%'
                 AND content_uri_string NOT LIKE 'netease://%'
+                AND content_uri_string NOT LIKE 'youtube://%'
+                AND content_uri_string NOT LIKE 'soundcloud://%'
             )
             OR (
                 :filterMode = 2
                 AND (
                     content_uri_string LIKE 'telegram://%'
                     OR content_uri_string LIKE 'netease://%'
+                    OR content_uri_string LIKE 'youtube://%'
+                    OR content_uri_string LIKE 'soundcloud://%'
                 )
             )
         )
@@ -394,12 +405,16 @@ interface MusicDao {
                 :filterMode = 1
                 AND content_uri_string NOT LIKE 'telegram://%'
                 AND content_uri_string NOT LIKE 'netease://%'
+                AND content_uri_string NOT LIKE 'youtube://%'
+                AND content_uri_string NOT LIKE 'soundcloud://%'
             )
             OR (
                 :filterMode = 2
                 AND (
                     content_uri_string LIKE 'telegram://%'
                     OR content_uri_string LIKE 'netease://%'
+                    OR content_uri_string LIKE 'youtube://%'
+                    OR content_uri_string LIKE 'soundcloud://%'
                 )
             )
         )
@@ -437,12 +452,16 @@ interface MusicDao {
                 :filterMode = 1
                 AND songs.content_uri_string NOT LIKE 'telegram://%'
                 AND songs.content_uri_string NOT LIKE 'netease://%'
+                AND songs.content_uri_string NOT LIKE 'youtube://%'
+                AND songs.content_uri_string NOT LIKE 'soundcloud://%'
             )
             OR (
                 :filterMode = 2
                 AND (
                     songs.content_uri_string LIKE 'telegram://%'
                     OR songs.content_uri_string LIKE 'netease://%'
+                    OR songs.content_uri_string LIKE 'youtube://%'
+                    OR songs.content_uri_string LIKE 'soundcloud://%'
                 )
             )
         )
@@ -474,12 +493,16 @@ interface MusicDao {
                 :filterMode = 1
                 AND songs.content_uri_string NOT LIKE 'telegram://%'
                 AND songs.content_uri_string NOT LIKE 'netease://%'
+                AND songs.content_uri_string NOT LIKE 'youtube://%'
+                AND songs.content_uri_string NOT LIKE 'soundcloud://%'
             )
             OR (
                 :filterMode = 2
                 AND (
                     songs.content_uri_string LIKE 'telegram://%'
                     OR songs.content_uri_string LIKE 'netease://%'
+                    OR songs.content_uri_string LIKE 'youtube://%'
+                    OR songs.content_uri_string LIKE 'soundcloud://%'
                 )
             )
         )
@@ -504,12 +527,16 @@ interface MusicDao {
                 :filterMode = 1
                 AND songs.content_uri_string NOT LIKE 'telegram://%'
                 AND songs.content_uri_string NOT LIKE 'netease://%'
+                AND songs.content_uri_string NOT LIKE 'youtube://%'
+                AND songs.content_uri_string NOT LIKE 'soundcloud://%'
             )
             OR (
                 :filterMode = 2
                 AND (
                     songs.content_uri_string LIKE 'telegram://%'
                     OR songs.content_uri_string LIKE 'netease://%'
+                    OR songs.content_uri_string LIKE 'youtube://%'
+                    OR songs.content_uri_string LIKE 'soundcloud://%'
                 )
             )
         )
@@ -580,12 +607,16 @@ interface MusicDao {
                 :filterMode = 1
                 AND songs.content_uri_string NOT LIKE 'telegram://%'
                 AND songs.content_uri_string NOT LIKE 'netease://%'
+                AND songs.content_uri_string NOT LIKE 'youtube://%'
+                AND songs.content_uri_string NOT LIKE 'soundcloud://%'
             )
             OR (
                 :filterMode = 2
                 AND (
                     songs.content_uri_string LIKE 'telegram://%'
                     OR songs.content_uri_string LIKE 'netease://%'
+                    OR songs.content_uri_string LIKE 'youtube://%'
+                    OR songs.content_uri_string LIKE 'soundcloud://%'
                 )
             )
         )
@@ -958,12 +989,16 @@ interface MusicDao {
                 :filterMode = 1
                 AND songs.content_uri_string NOT LIKE 'telegram://%'
                 AND songs.content_uri_string NOT LIKE 'netease://%'
+                AND songs.content_uri_string NOT LIKE 'youtube://%'
+                AND songs.content_uri_string NOT LIKE 'soundcloud://%'
             )
             OR (
                 :filterMode = 2
                 AND (
                     songs.content_uri_string LIKE 'telegram://%'
                     OR songs.content_uri_string LIKE 'netease://%'
+                    OR songs.content_uri_string LIKE 'youtube://%'
+                    OR songs.content_uri_string LIKE 'soundcloud://%'
                 )
             )
         )

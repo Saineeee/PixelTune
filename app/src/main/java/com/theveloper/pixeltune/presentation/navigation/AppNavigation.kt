@@ -45,6 +45,7 @@ import com.theveloper.pixeltune.presentation.screens.NavBarCornerRadiusScreen
 import com.theveloper.pixeltune.presentation.screens.PaletteStyleSettingsScreen
 import com.theveloper.pixeltune.presentation.screens.PlaylistDetailScreen
 import com.theveloper.pixeltune.presentation.screens.RecentlyPlayedScreen
+import com.theveloper.pixeltune.presentation.screens.ListeningHistoryScreen
 
 import com.theveloper.pixeltune.presentation.screens.AboutScreen
 import com.theveloper.pixeltune.presentation.screens.SearchScreen
@@ -301,6 +302,20 @@ fun AppNavigation(
             ) {
                 ScreenWrapper(navController = navController, playerViewModel = playerViewModel) {
                     RecentlyPlayedScreen(
+                        playerViewModel = playerViewModel,
+                        navController = navController
+                    )
+                }
+            }
+            composable(
+                Screen.ListeningHistory.route,
+                enterTransition = { enterTransition() },
+                exitTransition = { exitTransition() },
+                popEnterTransition = { popEnterTransition() },
+                popExitTransition = { popExitTransition() },
+            ) {
+                ScreenWrapper(navController = navController, playerViewModel = playerViewModel) {
+                    ListeningHistoryScreen(
                         playerViewModel = playerViewModel,
                         navController = navController
                     )

@@ -503,19 +503,31 @@ internal fun com.theveloper.pixeltune.data.model.Song.withRestoredCloudId(): com
     return when (parsed.scheme?.lowercase()) {
         "youtube" -> {
             val videoId = parsed.host?.takeIf { it.isNotBlank() } ?: return this
-            // Only override if the current id is the hashed Long form (i.e. a row
-            // loaded from the favorites DB). If a caller already set the original
-            // video id, leave it alone.
-            if (this.id == videoId || this.id.toLongOrNull() == null) {
+            // FIX(cloud-favorites-v2): the previous logic here was INVERTED —
+            // when the id WAS the hashed Long form loaded from the DB (numeric
+            // string), it took the "else" branch and kept the opaque numeric id,
+            // so the restored song's id never matched the original video id.
+            // That broke the heart state (favorites are keyed by the original
+            // video id string) and recently-played lookups for favorited
+            // YouTube songs. Restore the video id whenever it differs.
+            if (this.id != videoId) {
                 this.copy(id = videoId, youtubeId = videoId)
             } else {
                 this.copy(youtubeId = videoId)
             }
         }
         "soundcloud" -> {
+            // SoundCloud search results use id = encodedUrl.hashCode().toString()
+            // (a NUMERIC string), which equals the persisted SongEntity id — so
+            // no id restoration is needed: the numeric id loaded from the DB
+            // already matches the live song's id scheme. Only rewrite the id if
+            // it is a non-numeric string that differs from the encoded payload.
             val encoded = parsed.host?.takeIf { it.isNotBlank() } ?: return this
-            if (this.id == encoded || this.id.toLongOrNull() == null) this
-            else this.copy(id = encoded)
+            if (this.id != encoded && this.id.toLongOrNull() == null) {
+                this.copy(id = encoded)
+            } else {
+                this
+            }
         }
         else -> this
     }
