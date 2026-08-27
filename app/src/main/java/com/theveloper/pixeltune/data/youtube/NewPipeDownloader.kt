@@ -7,6 +7,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.schabi.newpipe.extractor.downloader.Downloader
 import org.schabi.newpipe.extractor.downloader.Request as ExtractorRequest
 import org.schabi.newpipe.extractor.downloader.Response as ExtractorResponse
+import java.nio.charset.Charset
 import javax.inject.Inject
 
 class NewPipeDownloader @Inject constructor(
@@ -89,27 +90,35 @@ class NewPipeDownloader @Inject constructor(
         val okHttpRequest = requestBuilder.build()
         val response = client.newCall(okHttpRequest).execute()
 
-        // NewPipeExtractor v0.26.1's `Response` constructor only accepts a `String`
-        // body (the `byte[]` overload that existed in v0.24.x was removed). We read
-        // the raw decompressed bytes from OkHttp and round-trip them through
-        // ISO-8859-1 — a 1:1 byte<->char mapping that is lossless for ANY byte
-        // sequence (UTF-8 text, Latin-1 text, or binary YouTube Protobufs). When a
-        // NewPipe extractor needs the original bytes back it can call
-        // `responseBody().getBytes(StandardCharsets.ISO_8859_1)` and get the exact
-        // bytes OkHttp received after transparent gzip decompression.
+        // FIX(mojibake-metadata): decode the response body with the charset the
+        // server declared (defaulting to UTF-8), NOT ISO-8859-1.
         //
-        // We deliberately do NOT use OkHttp's `.string()` here: that method decodes
-        // using the Content-Type charset (defaulting to UTF-8) and would corrupt
-        // non-text responses such as YouTube's binary Protobufs.
+        // NewPipeExtractor v0.26.3's `Response` is a STRING-ONLY container —
+        // there is no byte[] accessor, and every single consumer parses the
+        // String directly: JsonUtils.toJsonObject(responseBody) → nanojson,
+        // Jsoup.parse(html), regex on the HTML, etc. Nothing ever converts the
+        // body back to bytes, so an ISO-8859-1 "lossless round-trip" decode is
+        // actually a one-way corruption for every non-ASCII character:
+        // UTF-8 "é" (C3 A9) became "Ã©", emojis became "ðŸŽµ", and entire
+        // Bengali/Hindi/Korean titles turned into symbol soup — the gibberish
+        // titles/artists users saw on YouTube/SoundCloud songs (any song whose
+        // title or artist contains non-ASCII characters).
+        //
+        // Decoding with the Content-Type charset (default UTF-8) matches
+        // OkHttp's own `.string()` and the official NewPipe app downloader.
+        // Genuinely binary bodies (if any) are unaffected functionally — the
+        // String-only Response API means no consumer can depend on their raw
+        // bytes, and invalid sequences are replaced with U+FFFD exactly as the
+        // official downloader would.
         val responseBytes = response.body?.bytes() ?: ByteArray(0)
-        val responseBody = String(responseBytes, Charsets.ISO_8859_1)
+        val responseBody = String(responseBytes, resolveCharset(response.header("Content-Type")))
 
         val responseHeaders = mutableMapOf<String, List<String>>()
         response.headers.names().forEach { name ->
             responseHeaders[name] = response.headers.values(name)
         }
 
-        // Pass the lossless String body to NewPipe.
+        // Pass the properly-decoded String body to NewPipe.
         return ExtractorResponse(
             response.code,
             response.message,
@@ -117,5 +126,26 @@ class NewPipeDownloader @Inject constructor(
             responseBody,
             response.request.url.toString()
         )
+    }
+
+    /**
+     * FIX(mojibake-metadata): resolves the body charset from the Content-Type
+     * header (e.g. "application/json; charset=UTF-8"), falling back to UTF-8 —
+     * the universal default for YouTube/SoundCloud responses and the same
+     * default OkHttp's `.string()` uses.
+     */
+    private fun resolveCharset(contentType: String?): Charset {
+        if (!contentType.isNullOrBlank()) {
+            val match = Regex("charset=([\\w\\-]+)", RegexOption.IGNORE_CASE).find(contentType)
+            val name = match?.groupValues?.get(1)
+            if (!name.isNullOrEmpty()) {
+                try {
+                    return Charset.forName(name)
+                } catch (_: Exception) {
+                    // Unknown/unsupported charset name — fall through to UTF-8.
+                }
+            }
+        }
+        return Charsets.UTF_8
     }
 }

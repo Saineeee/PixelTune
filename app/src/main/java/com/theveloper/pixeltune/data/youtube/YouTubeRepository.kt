@@ -314,25 +314,41 @@ class YouTubeRepository @Inject constructor() {
     /**
      * Fetches multiple autoplay recommendations related to [currentSong].
      *
-     * IMPROVE(more-up-next): the original [getAutoplayRecommendation] only
-     * returned a single next track. The Now Playing screen's "Up Next"
-     * carousel therefore only ever showed 1 upcoming song — the user
-     * explicitly asked for "more next queued songs related with exact same
-     * taste of the current songs".
+     * FIX(music-only-radio): the queue suggestions used to come from the watch
+     * page's `relatedItems` ("Up next"), which for YouTube is the GENERIC
+     * autoplay mix — reactions, vlogs, gaming videos and other non-music
+     * uploads regularly leaked into the queue because they passed the
+     * duration-only music filter. The user explicitly reported exactly that
+     * ("reactions, funny videos, a completely different language gaming
+     * video") and asked that ONLY music related to the current song ever
+     * appears.
      *
-     * This implementation:
-     *  - reuses NewPipe's `extractor.relatedItems` (the same source
-     *    [getAutoplayRecommendation] uses), which returns the "Up next" /
-     *    "Related" list YouTube itself surfaces on the watch page;
-     *  - filters out items already in [currentQueueIds] so we never
-     *    recommend a song that's already queued or has just played;
-     *  - takes up to [limit] items;
-     *  - returns them as a List<Song> so the caller can batch-append them
-     *    to the player queue in one shot (avoiding the per-song network
-     *    round-trip the original one-at-a-time loop incurred).
+     * The candidate source is therefore strictly music-only now, in tiers:
      *
-     * Falls back to a search query of `"${artist} ${title} mix"` if the
-     * current song has no youtubeId (so relatedItems can't be fetched).
+     *  1. **YouTube Music radio mix** — playlist id `RDAMVM<videoId>` is the
+     *     exact "Start radio" station YouTube Music itself builds for a track:
+     *     every entry is a real song chosen by YT Music's music-radio
+     *     algorithm. NewPipe v0.26.3 fully supports it
+     *     (`YoutubeParsingHelper.isYoutubeMusicMixId` recognises the RDAMVM
+     *     prefix; `YoutubePlaylistLinkHandlerFactory.fromUrl` accepts
+     *     `watch?v=<id>&list=RDAMVM<id>`; `YoutubeService.getPlaylistExtractor`
+     *     routes every RD* id to `YoutubeMixPlaylistExtractor`, which pages the
+     *     innertube `/next` endpoint).
+     *
+     *  2. **YouTube Music songs search** (`MUSIC_SONGS` — the music.youtube.com
+     *     index, never generic videos) for `"<artist> <title>"`, used when the
+     *     mix is unavailable (track not in YT Music's index / extractor error)
+     *     or yields too few fresh songs.
+     *
+     * The generic watch-page `relatedItems` list is deliberately NEVER used —
+     * it cannot be filtered reliably into music (a reaction video has a normal
+     * duration and an ordinary uploader), so an empty result + the radio
+     * retry/backoff logic in MusicService is strictly better than a queue
+     * polluted with unrelated videos.
+     *
+     * A near-duplicate title filter also keeps the same track (official audio
+     * / official video / lyric-video uploads of one song) from filling the
+     * whole queue when the search tier is used.
      */
     suspend fun getMultipleAutoplayRecommendations(
         currentSong: Song,
@@ -343,68 +359,160 @@ class YouTubeRepository @Inject constructor() {
         if (limit <= 0) return@withContext emptyList()
         val safeLimit = limit.coerceAtMost(20)  // safety cap to avoid hammering YouTube
         try {
-            val candidateItems: List<StreamInfoItem> = if (currentSong.youtubeId != null) {
-                val url = "https://www.youtube.com/watch?v=${currentSong.youtubeId}"
-                val extractor = ServiceList.YouTube.getStreamExtractor(url)
-                extractor.fetchPage()
-                extractor.relatedItems?.items?.filterIsInstance<StreamInfoItem>() ?: emptyList()
-            } else {
-                // IMPROVE(endless-radio): guard the search-fallback query — when
-                // the artist is blank or a placeholder ("Unknown", "-"), searching
-                // for "Unknown <title> mix" returns garbage that poisons the radio
-                // queue. Search the title alone in that case.
-                val artist = currentSong.artist.trim()
-                val usableArtist = artist.takeIf {
-                    it.isNotEmpty() && !it.equals("unknown", ignoreCase = true) && it != "-"
-                }
-                val query = if (usableArtist != null) {
-                    "$usableArtist ${currentSong.title} mix"
-                } else {
-                    "${currentSong.title} mix"
-                }
-                val searchExtractor = ServiceList.YouTube.getSearchExtractor(
-                    query,
-                    listOf(YoutubeSearchQueryHandlerFactory.MUSIC_SONGS),
-                    ""
-                )
-                searchExtractor.fetchPage()
-                searchExtractor.initialPage.items.filterIsInstance<StreamInfoItem>()
-            }
-
             val excludeIds = currentQueueIds.toHashSet()
+            val seedTitleKey = normalizeTitleForDedup(currentSong.title)
+            val pickedTitleKeys = HashSet<String>()
+            if (seedTitleKey.isNotEmpty()) pickedTitleKeys.add(seedTitleKey)
             val picked = ArrayList<Song>(safeLimit)
-            for (item in candidateItems) {
-                if (picked.size >= safeLimit) break
-                // IMPROVE(music-only): radio candidates must be actual music —
-                // drop live streams / unknown durations and hour-long
-                // "mix" compilations that are not songs, so the endless queue
-                // only ever surfaces real tracks.
-                if (!isMusicCandidate(item)) continue
-                val videoId = extractVideoId(item.url) ?: continue
-                if (videoId in excludeIds) continue
 
-                val durationMs = if (item.duration > 0) item.duration * 1000L else 0L
-                val song = Song.emptySong().copy(
-                    id = videoId,
-                    title = item.name ?: "Unknown",
-                    artist = item.uploaderName ?: "Unknown",
-                    artistId = -1L,
-                    album = "",
-                    albumId = -1L,
-                    path = item.url,
-                    contentUriString = proxyUrlProvider(videoId),
-                    albumArtUriString = item.thumbnails.firstOrNull()?.url,
-                    duration = durationMs,
-                    mimeType = "audio/mp4",
-                    youtubeId = videoId
+            val youtubeId = currentSong.youtubeId
+            if (youtubeId != null) {
+                // Tier 1: the YT Music "Start radio" mix for this exact track.
+                picked += pickMusicSongs(
+                    candidates = fetchMusicRadioMixItems(youtubeId),
+                    excludeIds = excludeIds,
+                    pickedTitleKeys = pickedTitleKeys,
+                    remaining = safeLimit,
+                    proxyUrlProvider = proxyUrlProvider
                 )
-                picked += song
+            }
+            if (picked.size < safeLimit) {
+                // Tier 2: the YT Music songs index for this artist + title.
+                // Also the primary source for seeds without a YouTube id
+                // (local-library radio).
+                picked += pickMusicSongs(
+                    candidates = fetchMusicSearchItems(currentSong),
+                    excludeIds = excludeIds,
+                    pickedTitleKeys = pickedTitleKeys,
+                    remaining = safeLimit - picked.size,
+                    proxyUrlProvider = proxyUrlProvider
+                )
             }
             picked
         } catch (e: Exception) {
             Timber.e(e, "Error getting multiple autoplay recommendations")
             emptyList()
         }
+    }
+
+    /**
+     * FIX(music-only-radio): fetches YouTube Music's own radio mix for
+     * [videoId]. Playlist id `RDAMVM<videoId>` is the exact "Start radio"
+     * station YT Music builds for the track, so every entry is a real song
+     * related to the seed — the same station the YouTube Music app plays.
+     * Returns an empty list on ANY failure (non-music video id, extractor
+     * error, network) so the caller can fall back to the music search.
+     */
+    private fun fetchMusicRadioMixItems(videoId: String): List<StreamInfoItem> {
+        if (videoId.isEmpty()) return emptyList()
+        return runCatching {
+            val mixUrl = "https://www.youtube.com/watch?v=$videoId&list=RDAMVM$videoId"
+            val playlistExtractor = ServiceList.YouTube.getPlaylistExtractor(mixUrl)
+            playlistExtractor.fetchPage()
+            playlistExtractor.initialPage.items.filterIsInstance<StreamInfoItem>()
+        }.onFailure { e ->
+            Timber.w(
+                e,
+                "YT Music radio mix unavailable for %s — falling back to music search",
+                videoId
+            )
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * FIX(music-only-radio): searches the YouTube MUSIC songs index (never
+     * generic videos) for the seed song, so every candidate is a real track.
+     * Guards the query the same way the old fallback did: a blank/placeholder
+     * artist ("Unknown", "-") must not poison the search.
+     */
+    private fun fetchMusicSearchItems(song: Song): List<StreamInfoItem> {
+        val title = song.title.trim().takeIf { it.isNotEmpty() } ?: return emptyList()
+        val artist = song.artist.trim()
+        val usableArtist = artist.takeIf {
+            it.isNotEmpty() && !it.equals("unknown", ignoreCase = true) && it != "-"
+        }
+        val query = if (usableArtist != null) "$usableArtist $title" else title
+        return runCatching {
+            val searchExtractor = ServiceList.YouTube.getSearchExtractor(
+                query,
+                listOf(YoutubeSearchQueryHandlerFactory.MUSIC_SONGS),
+                ""
+            )
+            searchExtractor.fetchPage()
+            searchExtractor.initialPage.items.filterIsInstance<StreamInfoItem>()
+        }.onFailure { e ->
+            Timber.w(e, "YT Music songs search failed for query: %s", query)
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Turns music candidate [candidates] into playable [Song]s:
+     *  - [isMusicCandidate] still applies (no live streams, real durations,
+     *    single-song length) as a sanity net even for music mixes;
+     *  - items already queued / recently played ([excludeIds]) are skipped;
+     *  - near-duplicate titles ([pickedTitleKeys] — the seed song's title plus
+     *    everything already picked) are skipped so one track's official
+     *    audio/video/lyric uploads can't fill the whole radio queue.
+     */
+    private fun pickMusicSongs(
+        candidates: List<StreamInfoItem>,
+        excludeIds: HashSet<String>,
+        pickedTitleKeys: HashSet<String>,
+        remaining: Int,
+        proxyUrlProvider: (String) -> String
+    ): List<Song> {
+        if (remaining <= 0 || candidates.isEmpty()) return emptyList()
+        val picked = ArrayList<Song>(remaining)
+        for (item in candidates) {
+            if (picked.size >= remaining) break
+            if (!isMusicCandidate(item)) continue
+            val videoId = extractVideoId(item.url) ?: continue
+            if (videoId in excludeIds) continue
+
+            val title = item.name ?: "Unknown"
+            val titleKey = normalizeTitleForDedup(title)
+            if (titleKey.isNotEmpty()) {
+                if (titleKey in pickedTitleKeys) continue
+                pickedTitleKeys.add(titleKey)
+            }
+
+            val durationMs = if (item.duration > 0) item.duration * 1000L else 0L
+            picked += Song.emptySong().copy(
+                id = videoId,
+                title = title,
+                artist = item.uploaderName ?: "Unknown",
+                artistId = -1L,
+                album = "",
+                albumId = -1L,
+                path = item.url,
+                contentUriString = proxyUrlProvider(videoId),
+                albumArtUriString = item.thumbnails.firstOrNull()?.url,
+                duration = durationMs,
+                mimeType = "audio/mp4",
+                youtubeId = videoId
+            )
+        }
+        return picked
+    }
+
+    /**
+     * Normalizes a song title for near-duplicate detection in the radio queue:
+     * lowercase, strip the common "official video / lyrics / audio / remaster"
+     * decoration words (whole words only, so "lyric" never mangles "lyrical")
+     * and all punctuation, collapse whitespace. "Song", "Song (Official
+     * Audio)" and "Song! - Official Video" all normalize to the same key, so a
+     * radio refill never queues the same track twice while genuinely different
+     * titles (covers, live versions, features) still pass.
+     */
+    private fun normalizeTitleForDedup(title: String): String {
+        var s = title.lowercase().trim()
+        for (pattern in TITLE_NOISE_PATTERNS) {
+            s = pattern.replace(s, " ")
+        }
+        return s.replace(Regex("[^\\p{L}\\p{N}\\s]"), " ")
+            .split(Regex("\\s+"))
+            .filter { it.isNotEmpty() }
+            .joinToString(" ")
     }
 
     /**
@@ -428,5 +536,43 @@ class YouTubeRepository @Inject constructor() {
     companion object {
         /** 20 minutes — upper bound for what still counts as a single song. */
         private const val MAX_RADIO_CANDIDATE_DURATION_SECONDS = 20 * 60
+
+        /**
+         * Decoration words stripped (as whole words) before comparing
+         * radio-candidate titles in [normalizeTitleForDedup], so the same
+         * track's "Song", "Song (Official Audio)" and "Song - Official Video"
+         * uploads collapse to one key. Bracket characters are stripped
+         * separately, so the bare phrases cover every bracketing style.
+         * Longer phrases first so "official music video" is consumed before
+         * "official video" / "official audio".
+         */
+        private val TITLE_NOISE_TERMS = listOf(
+            "official music video",
+            "official lyric video",
+            "official visualizer",
+            "official lyrics",
+            "official video",
+            "official audio",
+            "official mv",
+            "lyrics video",
+            "lyric video",
+            "audio only",
+            "visualizer",
+            "remastered",
+            "remasterizado",
+            "remaster",
+            "lyrics",
+            "lyric",
+            "m/v",
+            "mv",
+            "hd",
+            "hq",
+            "4k"
+        )
+
+        /** [TITLE_NOISE_TERMS] pre-compiled with word boundaries. */
+        private val TITLE_NOISE_PATTERNS = TITLE_NOISE_TERMS.map {
+            Regex("\\b" + Regex.escape(it) + "\\b")
+        }
     }
 }
