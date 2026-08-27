@@ -21,6 +21,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.CommandButton
 import androidx.media3.session.LibraryResult
@@ -1077,8 +1078,26 @@ class MusicService : MediaLibraryService() {
             // changed mid-fetch — leaving the queue stalled so playback just
             // looped the first / a random already-played song.
             maybeRefillRadioQueue(trigger = "transition")
+
+            // FIX(playback-start-latency): warm the NEXT queued song's
+            // resolved stream URL in the background so skipping / auto-advance
+            // starts playback instantly instead of paying the full NewPipe
+            // extraction on the critical path.
+            prefetchUpcomingStreamUrls()
             requestWidgetAndWearRefreshWithFollowUp()
             mediaSession?.let { refreshMediaSessionUi(it) }
+        }
+
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            // FIX(playback-start-latency): the queue was replaced or grew
+            // (playSongs set a new queue, or the endless-radio refill appended
+            // songs). Warm the next upcoming song's stream URL — this covers
+            // the case where the CURRENT song started before its followers
+            // existed (tap-to-play a single search result, then the radio
+            // refill appends the rest a few seconds later).
+            if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
+                prefetchUpcomingStreamUrls()
+            }
         }
 
         override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
@@ -1242,6 +1261,50 @@ class MusicService : MediaLibraryService() {
         val extras = item.mediaMetadata.extras ?: return false
         val contentUri = extras.getString(MediaItemBuilder.EXTERNAL_EXTRA_CONTENT_URI)
         return !contentUri.isNullOrBlank() && CloudUriUtils.isCloudContentUri(contentUri)
+    }
+
+    /**
+     * FIX(playback-start-latency): warms the local stream proxy's resolved-URL
+     * cache for the NEXT song in the queue (shuffle-order aware via
+     * [Player.nextMediaItemIndex]).
+     *
+     * Both cloud proxies resolve a song's real streaming URL lazily — the
+     * first ExoPlayer request for an item triggers the full NewPipe extraction
+     * (for YouTube: 4-5 sequential /player + /next requests, several seconds)
+     * while the user stares at a buffering spinner. By prefetching the next
+     * song whenever the current one changes (and whenever the queue grows),
+     * the URL is already resolved and cached by the time the user skips or
+     * the queue auto-advances — transitions become effectively instant.
+     *
+     * Cheap by construction: the proxies dedupe in-flight prefetches, skip
+     * fresh cache entries, and ignore URLs that aren't their own proxy URLs —
+     * local files / other sources are skipped here without any IO. Must be
+     * called on the main thread (reads the player).
+     */
+    private fun prefetchUpcomingStreamUrls() {
+        try {
+            val player = engine.masterPlayer
+            if (player.mediaItemCount <= 0) return
+            val nextIndex = player.nextMediaItemIndex
+            if (nextIndex == C.INDEX_UNSET || nextIndex < 0) return
+            val nextItem = player.getMediaItemAt(nextIndex)
+
+            // The playback URI ExoPlayer will actually request — for cloud
+            // songs this is the current session's local proxy URL
+            // (http://127.0.0.1:<port>/youtube/<id> or /soundcloud/<encoded>).
+            val playbackUri = nextItem.localConfiguration?.uri?.toString() ?: return
+            when {
+                playbackUri.contains("/youtube/") ->
+                    youtubeStreamProxy.prefetch(playbackUri)
+                playbackUri.contains("/soundcloud/") ->
+                    soundCloudStreamProxy.prefetch(playbackUri)
+                // Local files, Telegram, Netease, GDrive … resolve their URIs
+                // through other/cheap paths — nothing to warm here.
+            }
+        } catch (e: Exception) {
+            // A prefetch is best-effort only — never let it disturb playback.
+            Timber.tag(TAG).d(e, "Skipped upcoming stream URL prefetch")
+        }
     }
 
     /**

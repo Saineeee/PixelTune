@@ -51,6 +51,10 @@ class SoundCloudStreamProxy @Inject constructor(
     // Cache of resolved streaming URLs
     private val urlCache = ConcurrentHashMap<String, CachedUrl>()
 
+    // FIX(playback-start-latency): encoded track urls with an in-flight
+    // background prefetch — see [prefetch].
+    private val prefetchInFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     private data class CachedUrl(val url: String, val timestamp: Long) {
         fun isExpired(): Boolean = System.currentTimeMillis() - timestamp > 5 * 60 * 60 * 1000
     }
@@ -101,6 +105,65 @@ class SoundCloudStreamProxy @Inject constructor(
             return null
         }
         return getProxyUrl(encodedUrl)
+    }
+
+    /**
+     * FIX(playback-start-latency): warms the resolved-stream-URL cache for the
+     * given PROXY url (e.g. "http://127.0.0.1:port/soundcloud/<encoded track
+     * url>") in the background, so ExoPlayer's first request for that song
+     * doesn't pay the SoundCloud extraction cost (track resolve + transcoding
+     * lookup) on the playback critical path.
+     *
+     * Called by MusicService whenever a new song becomes the current one to
+     * prefetch the NEXT queued song. Mirrors YouTubeStreamProxy.prefetch:
+     *  - accepts only URLs this proxy itself produced (loopback host,
+     *    "/soundcloud/{...}" path);
+     *  - skips fresh cache entries and dedupes in-flight prefetches;
+     *  - runs on the proxy's own IO scope; failures are swallowed — the real
+     *    request simply resolves on demand, exactly as before.
+     */
+    fun prefetch(proxyUrl: String) {
+        if (actualPort == 0) return
+        val encodedUrl = parseOwnProxyUrl(proxyUrl) ?: return
+
+        // Checked synchronously; quality/cache reads happen inside the
+        // coroutine so this never blocks the (main-thread) caller.
+        if (!prefetchInFlight.add(encodedUrl)) return
+
+        proxyScope.launch {
+            try {
+                // getOrFetchStreamUrl checks the cache (keyed on the DECODED
+                // track url + quality) before extracting, so an already-warm
+                // entry returns instantly.
+                val trackUrl = URLDecoder.decode(encodedUrl, "UTF-8")
+                val resolved = getOrFetchStreamUrl(trackUrl)
+                if (resolved != null) {
+                    Timber.d("SoundCloudStreamProxy: prefetched stream URL for $trackUrl")
+                } else {
+                    Timber.d("SoundCloudStreamProxy: prefetch found no stream URL for $trackUrl")
+                }
+            } catch (e: Exception) {
+                Timber.d(e, "SoundCloudStreamProxy: background prefetch failed")
+            } finally {
+                prefetchInFlight.remove(encodedUrl)
+            }
+        }
+    }
+
+    /** Extracts the encoded track url from one of THIS proxy's own URLs, or null. */
+    private fun parseOwnProxyUrl(proxyUrl: String): String? {
+        return try {
+            val uri = android.net.Uri.parse(proxyUrl)
+            val isLoopback = uri.host == "127.0.0.1" || uri.host == "localhost"
+            if (!isLoopback) return null
+            val path = uri.path ?: return null
+            val segments = path.split("/").filter { it.isNotEmpty() }
+            if (segments.size != 2 || segments[0] != "soundcloud") return null
+            val encoded = segments[1]
+            if (encoded.isEmpty()) null else encoded
+        } catch (e: Exception) {
+            null
+        }
     }
 
     fun start() {

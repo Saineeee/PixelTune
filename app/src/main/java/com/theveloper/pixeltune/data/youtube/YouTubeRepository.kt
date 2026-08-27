@@ -21,6 +21,7 @@ import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.theveloper.pixeltune.data.preferences.StreamingQuality
+import com.theveloper.pixeltune.data.stream.CloudArtworkHelper
 import kotlin.math.abs
 
 @Singleton
@@ -184,71 +185,130 @@ class YouTubeRepository @Inject constructor() {
     }
 
     suspend fun searchYouTube(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): List<SearchResultItem> = withContext(Dispatchers.IO) {
-        try {
-            // IMPROVE(music-only): search YouTube MUSIC (the music.youtube.com
-            // index) instead of generic YouTube videos. Generic results regularly
-            // include vlogs, tutorials, podcasts and other non-music uploads the
-            // user explicitly does not want; the YT Music songs index guarantees
-            // real songs. The "All" tab maps to the same music-songs filter so
-            // ONLY music shows up everywhere (search, tap-to-play, queue refill).
-            val searchFilter = when (filter) {
-                SearchFilterType.ALL -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
-                SearchFilterType.SONGS -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
-                SearchFilterType.ALBUMS -> "playlists" // YouTube doesn't map albums cleanly, but NewPipe handles it
-                SearchFilterType.ARTISTS -> "channels"
-                SearchFilterType.PLAYLISTS -> "playlists"
+        // IMPROVE(music-only): search YouTube MUSIC (the music.youtube.com
+        // index) instead of generic YouTube videos. Generic results regularly
+        // include vlogs, tutorials, podcasts and other non-music uploads the
+        // user explicitly does not want; the YT Music songs index guarantees
+        // real songs. The "All" tab maps to the same music-songs filter so
+        // ONLY music shows up everywhere (search, tap-to-play, queue refill).
+        val searchFilter = when (filter) {
+            SearchFilterType.ALL -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
+            SearchFilterType.SONGS -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
+            SearchFilterType.ALBUMS -> "playlists" // YouTube doesn't map albums cleanly, but NewPipe handles it
+            SearchFilterType.ARTISTS -> "channels"
+            SearchFilterType.PLAYLISTS -> "playlists"
+        }
+
+        // Tier 1: the YouTube Music songs index.
+        var results = runCatching {
+            performSearch(query, searchFilter, filter, proxyUrlProvider)
+        }.onFailure { e ->
+            Timber.e(e, "Error searching YouTube for query: $query")
+        }.getOrDefault(emptyList())
+
+        // FIX(search-reliability): the YT Music index occasionally fails or
+        // returns a bot-check/HTML/short response (which NewPipe turns into an
+        // exception) — the app then showed NOTHING at all for the query
+        // ("sometimes it doesn't even show up when searching"). When the music
+        // index yielded no song items, retry once against the generic YouTube
+        // videos search and keep only music-shaped items (real duration, no
+        // live streams, single-song length via [isMusicCandidate]) so the
+        // music-only promise holds as closely as the generic index allows.
+        // Better a relevant, duration-filtered result list than a blank screen.
+        val wasMusicIndexSearch =
+            filter == SearchFilterType.ALL || filter == SearchFilterType.SONGS
+        if (wasMusicIndexSearch && results.none { it is SearchResultItem.SongItem }) {
+            val fallbackResults = runCatching {
+                performSearch(
+                    query = query,
+                    searchFilter = YoutubeSearchQueryHandlerFactory.VIDEOS,
+                    filter = filter,
+                    proxyUrlProvider = proxyUrlProvider,
+                    musicOnlyFilter = true
+                )
+            }.onFailure { e ->
+                Timber.w(e, "YouTube generic search fallback failed for query: %s", query)
+            }.getOrDefault(emptyList())
+            if (fallbackResults.isNotEmpty()) {
+                Timber.d(
+                    "YouTube music search returned no songs for '%s' — generic " +
+                        "videos fallback returned %d items",
+                    query, fallbackResults.size
+                )
+                results = fallbackResults
             }
+        }
+        results
+    }
 
-            val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
-                ServiceList.YouTube.getSearchExtractor(query, listOf(searchFilter), "")
-            } else {
-                ServiceList.YouTube.getSearchExtractor(query)
-            }
+    /**
+     * Runs one NewPipe YouTube search with [searchFilter] and maps the raw
+     * items to [SearchResultItem]s (song/playlist/artist) for the requested
+     * UI [filter].
+     *
+     * [musicOnlyFilter] is set only by the generic-videos FALLBACK tier of
+     * [searchYouTube]: it drops stream items that don't look like a single
+     * song (live streams, unknown durations, > 20 min uploads) so the
+     * fallback can never regress the music-only search requirement.
+     */
+    private fun performSearch(
+        query: String,
+        searchFilter: String,
+        filter: SearchFilterType,
+        proxyUrlProvider: (String) -> String,
+        musicOnlyFilter: Boolean = false
+    ): List<SearchResultItem> {
+        val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
+            ServiceList.YouTube.getSearchExtractor(query, listOf(searchFilter), "")
+        } else {
+            ServiceList.YouTube.getSearchExtractor(query)
+        }
 
-            extractor.fetchPage()
+        extractor.fetchPage()
 
-            val results = mutableListOf<SearchResultItem>()
+        val results = mutableListOf<SearchResultItem>()
 
-            extractor.initialPage.items.forEach { item ->
-                when (item) {
-                    is StreamInfoItem -> {
-                        if (filter == SearchFilterType.ALL || filter == SearchFilterType.SONGS) {
-                            val youtubeId = extractVideoId(item.url)
-                            if (youtubeId != null) {
-                                val durationMs = if (item.duration > 0) item.duration * 1000L else 0L
-                                val song = Song(
-                                    id = youtubeId,
-                                    title = item.name ?: "Unknown",
-                                    artist = item.uploaderName ?: "Unknown",
-                                    artistId = -1L,
-                                    artists = emptyList(),
-                                    album = "",
-                                    albumId = -1L,
-                                    albumArtist = null,
-                                    path = item.url,
-                                    contentUriString = proxyUrlProvider(youtubeId),
-                                    albumArtUriString = item.thumbnails.firstOrNull()?.url,
-                                    duration = durationMs,
-                                    genre = null,
-                                    lyrics = null,
-                                    isFavorite = false,
-                                    trackNumber = 0,
-                                    year = 0,
-                                    dateAdded = 0,
-                                    dateModified = 0,
-                                    mimeType = "audio/mp4",
-                                    bitrate = 0,
-                                    sampleRate = 0,
-                                    telegramFileId = null,
-                                    telegramChatId = null,
-                                    neteaseId = null,
-                                    gdriveFileId = null,
-                                    youtubeId = youtubeId
-                                )
-                                results.add(SearchResultItem.SongItem(song))
-                            }
+        extractor.initialPage.items.forEach { item ->
+            when (item) {
+                is StreamInfoItem -> {
+                    if (filter == SearchFilterType.ALL || filter == SearchFilterType.SONGS) {
+                        if (musicOnlyFilter && !isMusicCandidate(item)) return@forEach
+                        val youtubeId = extractVideoId(item.url)
+                        if (youtubeId != null) {
+                            val durationMs = if (item.duration > 0) item.duration * 1000L else 0L
+                            val song = Song(
+                                id = youtubeId,
+                                title = item.name ?: "Unknown",
+                                artist = item.uploaderName ?: "Unknown",
+                                artistId = -1L,
+                                artists = emptyList(),
+                                album = "",
+                                albumId = -1L,
+                                albumArtist = null,
+                                path = item.url,
+                                contentUriString = proxyUrlProvider(youtubeId),
+                                albumArtUriString = bestArtworkUrl(item, youtubeId),
+                                duration = durationMs,
+                                genre = null,
+                                lyrics = null,
+                                isFavorite = false,
+                                trackNumber = 0,
+                                year = 0,
+                                dateAdded = 0,
+                                dateModified = 0,
+                                mimeType = "audio/mp4",
+                                bitrate = 0,
+                                sampleRate = 0,
+                                telegramFileId = null,
+                                telegramChatId = null,
+                                neteaseId = null,
+                                gdriveFileId = null,
+                                youtubeId = youtubeId
+                            )
+                            results.add(SearchResultItem.SongItem(song))
                         }
                     }
+                }
                     is PlaylistInfoItem -> {
                         if (filter == SearchFilterType.ALL || filter == SearchFilterType.PLAYLISTS || filter == SearchFilterType.ALBUMS) {
                             val playlistId = extractPlaylistId(item.url) ?: item.url
@@ -274,11 +334,7 @@ class YouTubeRepository @Inject constructor() {
                     }
                 }
             }
-            results
-        } catch (e: Exception) {
-            Timber.e(e, "Error searching YouTube for query: $query")
-            emptyList()
-        }
+        return results
     }
 
     private fun extractVideoId(url: String): String? {
@@ -294,6 +350,27 @@ class YouTubeRepository @Inject constructor() {
 
     private fun extractChannelId(url: String): String? {
         return url.substringAfterLast("/")
+    }
+
+    /**
+     * FIX(album-art-quality): best available artwork URL for a YouTube item.
+     *
+     * NewPipe's thumbnail lists are ordered SMALLEST-FIRST, so the old
+     * `thumbnails.firstOrNull()` picked a 60x60 variant for YouTube Music
+     * results (blurry art everywhere) and returned null — "no artwork at
+     * all" — when the item's list was empty.
+     *
+     *  1. Pick the highest-resolution entry from the list
+     *     (see [CloudArtworkHelper.bestArtworkUrl]).
+     *  2. When the list is empty, synthesize the deterministic YouTube
+     *     thumbnail URL for the video id — `hqdefault.jpg` (480x360) is
+     *     generated for EVERY valid video and never 404s, so artwork always
+     *     has something to load.
+     */
+    private fun bestArtworkUrl(item: StreamInfoItem, videoId: String?): String? {
+        CloudArtworkHelper.bestArtworkUrl(item)?.let { return it }
+        return videoId?.takeIf { it.isNotEmpty() }
+            ?.let { "https://i.ytimg.com/vi/$it/hqdefault.jpg" }
     }
 
     suspend fun getAutoplayRecommendation(
@@ -486,7 +563,7 @@ class YouTubeRepository @Inject constructor() {
                 albumId = -1L,
                 path = item.url,
                 contentUriString = proxyUrlProvider(videoId),
-                albumArtUriString = item.thumbnails.firstOrNull()?.url,
+                albumArtUriString = bestArtworkUrl(item, videoId),
                 duration = durationMs,
                 mimeType = "audio/mp4",
                 youtubeId = videoId

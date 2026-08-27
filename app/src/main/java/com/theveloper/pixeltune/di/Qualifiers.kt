@@ -39,6 +39,29 @@ annotation class FastOkHttpClient
 annotation class StreamingOkHttpClient
 
 /**
+ * Qualifier for the dedicated OkHttpClient used by NewPipeDownloader
+ * (all YouTube / YouTube Music / SoundCloud extractor requests).
+ *
+ * FIX(streaming-performance): NewPipe previously ran on the app-wide default
+ * client, which attaches an HttpLoggingInterceptor at Level.BODY in DEBUG
+ * builds. The CI ships debug APKs, so EVERY extractor response body —
+ * search JSON (100s of KB), 4-5 sequential /player + /next JSON responses per
+ * playback (100s of KB each), sw.js / base.js (1-2+ MB) — was being piped
+ * through android.util.Log in 4 KB chunks. That logcat I/O plus the string
+ * allocations/GC it triggers added whole seconds to every search and every
+ * playback start ("incredibly slow" search results / playback / artwork in
+ * the user report).
+ *
+ * This client NEVER logs bodies: BASIC (request line + headers) in debug for
+ * diagnosability, NONE in release. It also uses a read timeout sized for
+ * multi-megabyte extractor pages (sw.js, base.js, watch/search HTML) on slow
+ * networks, which the default 8s read timeout occasionally tripped.
+ */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class NewPipeOkHttpClient
+
+/**
  * Qualifier for Gson instance configured for backup serialization.
  */
 @Qualifier

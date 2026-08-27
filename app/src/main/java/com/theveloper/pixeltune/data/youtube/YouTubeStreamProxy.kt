@@ -50,6 +50,10 @@ class YouTubeStreamProxy @Inject constructor(
     // Cache of resolved streaming URLs
     private val urlCache = ConcurrentHashMap<String, CachedUrl>()
 
+    // FIX(playback-start-latency): video ids with an in-flight background
+    // prefetch — see [prefetch].
+    private val prefetchInFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     private data class CachedUrl(val url: String, val timestamp: Long) {
         fun isExpired(): Boolean {
             try {
@@ -101,6 +105,70 @@ class YouTubeStreamProxy @Inject constructor(
         val youtubeId = uri.host ?: return null
         if (!youtubeId.matches(Regex("^[a-zA-Z0-9_-]{11}$"))) return null
         return getProxyUrl(youtubeId)
+    }
+
+    /**
+     * FIX(playback-start-latency): warms the resolved-stream-URL cache for the
+     * given PROXY url (e.g. "http://127.0.0.1:port/youtube/<id>") in the
+     * background, so ExoPlayer's first request for that song doesn't pay the
+     * full NewPipe extraction cost (4-5 sequential /player + /next requests,
+     * several seconds) on the playback critical path.
+     *
+     * Called by MusicService whenever a new song becomes the current one to
+     * prefetch the NEXT queued song — by the time the user skips or the queue
+     * auto-advances, the URL is already resolved and playback starts instantly.
+     *
+     * Safe by construction:
+     *  - accepts only URLs this proxy itself produced (scheme http/https,
+     *    loopback host, "/youtube/{11-char id}" path) — anything else is
+     *    ignored;
+     *  - skips when a fresh (non-expired) cache entry already exists;
+     *  - an in-flight guard dedupes concurrent prefetches for the same id so
+     *    rapid track changes never spawn duplicate extractions;
+     *  - runs on the proxy's own IO scope; failures are logged and swallowed —
+     *    a prefetch can never disturb playback (the real request will simply
+     *    resolve on demand, exactly as before).
+     */
+    fun prefetch(proxyUrl: String) {
+        if (actualPort == 0) return
+        val youtubeId = parseOwnProxyUrl(proxyUrl) ?: return
+
+        // One in-flight prefetch per video id (checked synchronously, without
+        // touching DataStore — the quality/cache checks happen inside the
+        // coroutine below so this method never blocks its caller, which is the
+        // main thread when invoked from MusicService's player listener).
+        if (!prefetchInFlight.add(youtubeId)) return
+
+        proxyScope.launch {
+            try {
+                val resolved = getOrFetchStreamUrl(youtubeId)
+                if (resolved != null) {
+                    Timber.d("YouTubeStreamProxy: prefetched stream URL for $youtubeId")
+                } else {
+                    Timber.d("YouTubeStreamProxy: prefetch found no stream URL for $youtubeId")
+                }
+            } catch (e: Exception) {
+                Timber.d(e, "YouTubeStreamProxy: background prefetch failed for $youtubeId")
+            } finally {
+                prefetchInFlight.remove(youtubeId)
+            }
+        }
+    }
+
+    /** Extracts the video id from one of THIS proxy's own URLs, or null. */
+    private fun parseOwnProxyUrl(proxyUrl: String): String? {
+        return try {
+            val uri = Uri.parse(proxyUrl)
+            val isLoopback = uri.host == "127.0.0.1" || uri.host == "localhost"
+            if (!isLoopback) return null
+            val path = uri.path ?: return null
+            val segments = path.split("/").filter { it.isNotEmpty() }
+            if (segments.size != 2 || segments[0] != "youtube") return null
+            val id = segments[1]
+            if (!id.matches(Regex("^[a-zA-Z0-9_-]{11}$"))) null else id
+        } catch (e: Exception) {
+            null
+        }
     }
 
     fun start() {

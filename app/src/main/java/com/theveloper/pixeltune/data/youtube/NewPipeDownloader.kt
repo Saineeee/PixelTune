@@ -15,20 +15,26 @@ class NewPipeDownloader @Inject constructor(
 ) : Downloader() {
 
     /**
-     * Browser-like User-Agent used for every NewPipe request.
+     * Browser-like User-Agent used as the DEFAULT for NewPipe requests that do
+     * not carry a User-Agent of their own.
      *
      * YouTube and SoundCloud both inspect the User-Agent header:
      *   - YouTube serves a "page needs to be reloaded" bot-check page when the UA is
      *     not a recognized browser, which surfaces as
-     *     `ContentNotAvailableException` inside `YoutubeStreamExtractor.fetchPage()`
-     *     and breaks playback (player stays at 00:00).
+     *     `ContentNotAvailableException` inside HTML-page fetches
+     *     (generic search results page).
      *   - SoundCloud's homepage HTML returned to non-browser UAs may omit the
      *     `<script>` tags that `SoundcloudParsingHelper.clientId()` scans, which
      *     breaks the client_id extraction and returns no search results at all.
      *
+     * Requests for which NewPipe DOES provide its own User-Agent (the
+     * ANDROID / IOS / VISIONOS InnerTube /player POSTs used for stream
+     * extraction) keep NewPipe's client UA — see the UA policy comment inside
+     * [execute].
+     *
      * The app-wide OkHttpClient interceptor in AppModule only sets the default
-     * "PixelTune/1.0" UA when no UA is present, so this explicit header is preserved
-     * end-to-end.
+     * "PixelTune/1.0" UA when no UA is present, so an explicitly set header is
+     * preserved end-to-end.
      */
     private val browserUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -42,15 +48,47 @@ class NewPipeDownloader @Inject constructor(
 
         val requestBuilder = Request.Builder().url(url)
 
-        // Force a browser User-Agent on every NewPipe request. NewPipe itself does
-        // not set one, so without this the OkHttpClient's default app UA would be
-        // used and YouTube/SoundCloud would block the requests.
-        requestBuilder.header("User-Agent", browserUserAgent)
-
-        // Also default Accept-Language to a browser-like value (some NewPipe
-        // requests do not include one, and a missing Accept-Language can cause
-        // YouTube to return region/consent redirects).
+        // Default a browser-like Accept-Language (some NewPipe requests do not
+        // include one, and a missing Accept-Language can cause YouTube to return
+        // region/consent redirects). If NewPipe's own headers carry one it will
+        // replace this below, exactly as before.
         requestBuilder.header("Accept-Language", "en-GB, en;q=0.9")
+
+        // FIX(streaming-performance): only default the browser User-Agent when
+        // NewPipe did NOT provide one of its own.
+        //
+        // NewPipeExtractor v0.26.3 sends CLIENT-SPECIFIC User-Agents for the
+        // mobile InnerTube /player requests that stream extraction depends on:
+        //   - ANDROID: "com.google.android.youtube/19.x (Linux; U; Android 15; …) gzip"
+        //   - IOS:     "com.google.ios.youtube/19.x (iPhone…)"
+        //   - VISIONOS:"com.google.visionos.youtube/…"
+        // (see YoutubeParsingHelper.getAndroidUserAgent / getIosUserAgent /
+        // getVisionOsUserAgent, passed via YoutubeStreamHelper.getMobileClientHeaders).
+        //
+        // The previous implementation force-replaced NewPipe's User-Agent with a
+        // desktop Chrome UA on EVERY request. That was added when the extractor
+        // still fetched the www.youtube.com watch page HTML (which does need a
+        // browser UA to dodge the "page needs to be reloaded" bot check), but
+        // v0.26.3's YoutubeStreamExtractor.onFetchPage no longer fetches the
+        // watch page at all — it POSTs to youtubei.googleapis.com with the
+        // mobile clients above. Sending an ANDROID/IOS/VISIONOS request body
+        // under a desktop Chrome UA is a client-identity mismatch that YouTube
+        // can answer with degraded responses or bot checks, which surfaced as
+        // slow/failed stream resolution (long "buffering" before playback).
+        //
+        // New UA policy:
+        //   - NewPipe's own User-Agent (when present) ALWAYS wins — the mobile
+        //     innertube clients must be identified correctly.
+        //   - Only requests WITHOUT a User-Agent (the youtube.com results HTML
+        //     page, music.youtube.com search POSTs, soundcloud.com homepage for
+        //     client_id extraction, sw.js) get the browser UA — preserving the
+        //     original bot-check / client_id fixes that motivated the header.
+        val newPipeUserAgent = headers.entries
+            .firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }
+            ?.value?.firstOrNull()
+        if (newPipeUserAgent.isNullOrBlank()) {
+            requestBuilder.header("User-Agent", browserUserAgent)
+        }
 
         val contentTypeHeader = headers.entries.find { it.key.equals("Content-Type", ignoreCase = true) }?.value?.firstOrNull()
         val mediaType = contentTypeHeader?.toMediaTypeOrNull()
@@ -75,8 +113,10 @@ class NewPipeDownloader @Inject constructor(
             // text it needs to extract the SoundCloud client_id.
             if (key.equals("Accept-Encoding", ignoreCase = true)) return@forEach
 
-            // Never let NewPipe override our browser User-Agent — see comment above.
-            if (key.equals("User-Agent", ignoreCase = true)) return@forEach
+            // FIX(streaming-performance): NewPipe's own User-Agent header (the
+            // mobile innertube client UAs) is now COPIED through instead of
+            // being dropped — see the UA policy comment above. When NewPipe
+            // provided no UA at all, the browser default was already set above.
 
             if (values.size == 1) {
                 requestBuilder.header(key, values[0])

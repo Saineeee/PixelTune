@@ -305,6 +305,48 @@ object AppModule {
     }
 
         /**
+     * Dedicated OkHttpClient for NewPipe extractor requests (YouTube / YouTube
+     * Music / SoundCloud) — see the @NewPipeOkHttpClient qualifier for the full
+     * rationale.
+     *
+     * Key differences from the app-wide default client:
+     *  - Logging is BASIC in debug (request line + headers only) and NONE in
+     *    release. The default client's Level.BODY logging in debug builds piped
+     *    every extractor response — including multi-megabyte sw.js / base.js and
+     *    the 4-5 sequential /player JSON responses per playback — through
+     *    logcat, adding seconds of I/O + GC to every search and playback start.
+     *  - 30s read timeout: NewPipe pages can be several MB on slow networks;
+     *    the default 8s occasionally tripped mid-download.
+     */
+    @Provides
+    @Singleton
+    @com.theveloper.pixeltune.di.NewPipeOkHttpClient
+    fun provideNewPipeOkHttpClient(): OkHttpClient {
+        val loggingInterceptor = HttpLoggingInterceptor().apply {
+            level = if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.BASIC
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
+        }
+
+        val connectionPool = okhttp3.ConnectionPool(
+            maxIdleConnections = 8,
+            keepAliveDuration = 60,
+            timeUnit = java.util.concurrent.TimeUnit.SECONDS
+        )
+
+        return OkHttpClient.Builder()
+            .connectionPool(connectionPool)
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .addInterceptor(loggingInterceptor)
+            .build()
+    }
+
+    /**
      * Provee una instancia singleton de OkHttpClient con logging e interceptor de User-Agent.
      * Retry logic with backoff is handled in coroutine-based callers.
      */

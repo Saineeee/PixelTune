@@ -7,6 +7,7 @@ import com.theveloper.pixeltune.data.model.SearchResultItem
 import com.theveloper.pixeltune.data.model.SearchFilterType
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.preferences.StreamingQuality
+import com.theveloper.pixeltune.data.stream.CloudArtworkHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
@@ -159,7 +160,11 @@ class SoundCloudRepository @Inject constructor() {
                     albumArtist = null,
                     path = itemUrl,
                     contentUriString = proxyUrlProvider(encodedUrl),
-                    albumArtUriString = item.thumbnails.firstOrNull()?.url,
+                    // FIX(album-art-quality): pick the LARGEST artwork variant
+                    // (t500x500) — NewPipe's list is ordered ascending, so the
+                    // old firstOrNull() grabbed the 16x16 "mini" artwork and the
+                    // album art rendered very low quality and blurry.
+                    albumArtUriString = CloudArtworkHelper.bestArtworkUrl(item),
                     duration = durationMs,
                     genre = null,
                     lyrics = null,
@@ -224,7 +229,10 @@ class SoundCloudRepository @Inject constructor() {
                                 albumArtist = null,
                                 path = item.url,
                                 contentUriString = proxyUrlProvider(encodedUrl),
-                                albumArtUriString = item.thumbnails.firstOrNull()?.url,
+                                // FIX(album-art-quality): pick the LARGEST
+                                // artwork variant (t500x500) instead of the
+                                // 16x16 "mini" one NewPipe lists first.
+                                albumArtUriString = CloudArtworkHelper.bestArtworkUrl(item),
                                 duration = durationMs,
                                 genre = null,
                                 lyrics = null,

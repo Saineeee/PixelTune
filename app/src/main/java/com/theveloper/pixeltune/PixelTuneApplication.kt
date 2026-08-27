@@ -44,6 +44,15 @@ class PixelTuneApplication : Application(), ImageLoaderFactory, Configuration.Pr
     @Inject
     lateinit var okHttpClient: OkHttpClient
 
+    // FIX(streaming-performance): dedicated client for ALL NewPipe extractor
+    // requests. The app-wide default client logs every response BODY in debug
+    // builds (and the CI ships debug APKs) — piping multi-MB extractor pages
+    // through logcat made every search/playback/artwork fetch take seconds.
+    // See @NewPipeOkHttpClient in di/ for the full rationale.
+    @Inject
+    @com.theveloper.pixeltune.di.NewPipeOkHttpClient
+    lateinit var newPipeOkHttpClient: OkHttpClient
+
     @Inject
     lateinit var telegramCacheManager: dagger.Lazy<com.theveloper.pixeltune.data.telegram.TelegramCacheManager>
 
@@ -82,7 +91,10 @@ class PixelTuneApplication : Application(), ImageLoaderFactory, Configuration.Pr
         }
         
         // Initialize NewPipe Extractor
-        NewPipe.init(NewPipeDownloader(okHttpClient))
+        // FIX(streaming-performance): run NewPipe on the dedicated non-BODY-logging
+        // client — see @NewPipeOkHttpClient. (The app-wide default client is still
+        // used everywhere else: Retrofit APIs, lyrics, Deezer, GDrive, …)
+        NewPipe.init(NewPipeDownloader(newPipeOkHttpClient))
 
         // Start proxies
         neteaseStreamProxy.start()
