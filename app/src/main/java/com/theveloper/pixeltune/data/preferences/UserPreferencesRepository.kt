@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey // Added import
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -211,6 +212,10 @@ constructor(
         // ReplayGain
         val REPLAYGAIN_ENABLED = booleanPreferencesKey("replaygain_enabled")
         val REPLAYGAIN_USE_ALBUM_GAIN = booleanPreferencesKey("replaygain_use_album_gain")
+
+        // FIX(volume-reset): persist the user's player volume so it survives
+        // process / service restarts instead of snapping back to 100%.
+        val PLAYER_VOLUME = floatPreferencesKey("player_volume")
         
         // AI Provider Settings
         val AI_PROVIDER = stringPreferencesKey("ai_provider")
@@ -840,6 +845,27 @@ constructor(
     }
 
     // ===== End ReplayGain =====
+
+    // ===== Player Volume (FIX volume-reset) =====
+
+    /**
+     * The user's last selected in-app player volume (0..1). Restored by
+     * MusicService on startup so the volume slider no longer resets to 100%
+     * after the process is recreated. Defaults to 1f on first run.
+     */
+    val playerVolumeFlow: Flow<Float> =
+        dataStore.data.map { preferences ->
+            (preferences[PreferencesKeys.PLAYER_VOLUME] ?: 1f).coerceIn(0f, 1f)
+        }
+
+    suspend fun setPlayerVolume(volume: Float) {
+        val clamped = volume.coerceIn(0f, 1f)
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYER_VOLUME] = clamped
+        }
+    }
+
+    // ===== End Player Volume =====
 
     val allowedDirectoriesFlow: Flow<Set<String>> =
             dataStore.data.map { preferences ->

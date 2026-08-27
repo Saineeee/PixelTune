@@ -1475,10 +1475,33 @@ fun LibraryScreen(
                 it.id)
         } } }.value ?: false
 
+        // IMPROVE(offline-downloads): live download state for the song opened
+        // through this shared sheet. Cloud songs (added from online playback,
+        // e.g. liked YouTube/SoundCloud tracks in the LIKED tab) get a
+        // Download / Remove Download action; local MediaStore songs resolve
+        // to SongDownloadStatus.Hidden so the option never shows up for them.
+        val downloadedSongs by playerViewModel.downloadedSongs.collectAsStateWithLifecycle()
+        val downloadStates by playerViewModel.downloadStates.collectAsStateWithLifecycle()
+        val songDownloadStatus = remember(
+            currentSong,
+            downloadedSongs,
+            downloadStates,
+            playerViewModel
+        ) {
+            com.theveloper.pixeltune.data.downloads.songDownloadStatus(
+                song = currentSong,
+                isCloud = playerViewModel.isSongCloudStreamed(currentSong),
+                downloaded = downloadedSongs,
+                states = downloadStates
+            )
+        }
+
         if (currentSong != null) {
             SongInfoBottomSheet(
                 song = currentSong,
                 isFavorite = isFavorite,
+                downloadStatus = songDownloadStatus,
+                onDownloadToggle = { playerViewModel.toggleDownloadForSong(currentSong) },
                 onToggleFavorite = {
                     // Directly use PlayerViewModel's method to toggle, which should handle UserPreferencesRepository
                     playerViewModel.toggleFavoriteSpecificSong(currentSong) // Assumes such a method exists or will be added to PlayerViewModel

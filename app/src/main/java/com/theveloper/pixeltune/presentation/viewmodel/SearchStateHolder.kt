@@ -109,6 +109,17 @@ class SearchStateHolder @Inject constructor(
     private val _searchResults = MutableStateFlow<ImmutableList<SearchResultItem>>(persistentListOf())
     val searchResults = _searchResults.asStateFlow()
 
+    /**
+     * IMPROVE(search-loading): true while an ONLINE search request is in
+     * flight (from the moment the debounced request starts executing until
+     * its results are published / it fails / it is superseded by a newer
+     * query). Drives the expressive Material 3 loading indicator on the
+     * Search screen. Local (MediaStore) searches resolve in milliseconds and
+     * deliberately never set this flag.
+     */
+    private val _isSearching = MutableStateFlow(false)
+    val isSearching = _isSearching.asStateFlow()
+
     private val _selectedSearchFilter = MutableStateFlow(SearchFilterType.ALL)
     val selectedSearchFilter = _selectedSearchFilter.asStateFlow()
 
@@ -147,10 +158,16 @@ class SearchStateHolder @Inject constructor(
                         if (_searchResults.value.isNotEmpty()) {
                             _searchResults.value = persistentListOf()
                         }
+                        _isSearching.value = false
                         return@collectLatest
                     }
 
                     try {
+                        // IMPROVE(search-loading): surface the loading indicator
+                        // the moment the (debounced) request starts executing.
+                        // Only online searches are slow enough to warrant it.
+                        _isSearching.value = request.isOnline
+
                         val currentFilter = _selectedSearchFilter.value
 
                         val resultsList = withContext(Dispatchers.IO) {
@@ -170,8 +187,12 @@ class SearchStateHolder @Inject constructor(
                         }
 
                         if (request.requestId != latestSearchRequestId.get()) {
+                            // Superseded by a newer query — that request owns
+                            // the loading flag now; do not touch it.
                             return@collectLatest
                         }
+
+                        _isSearching.value = false
 
                         val immutableResults = resultsList.toImmutableList()
                         if (_searchResults.value != immutableResults) {
@@ -214,11 +235,14 @@ class SearchStateHolder @Inject constructor(
                                 }
                         }
                     } catch (_: CancellationException) {
-                        // Superseded by a newer query; ignore.
+                        // Superseded by a newer query; the newer collector
+                        // re-raises the flag immediately — leave the state
+                        // untouched so the indicator doesn't flicker.
                     } catch (e: Exception) {
                         if (request.requestId == latestSearchRequestId.get()) {
                             Log.e("SearchStateHolder", "Error performing search for query: $normalizedQuery", e)
                             _searchResults.value = persistentListOf()
+                            _isSearching.value = false
                         }
                     }
                 }

@@ -85,6 +85,21 @@ class DualPlayerEngine @Inject constructor(
     private var transitionJob: Job? = null
     private var transitionRunning = false
 
+    /**
+     * FIX(volume-reset): the user's selected base volume (0..1) for the MASTER
+     * player and as the scaling factor for every crossfade curve.
+     *
+     * Historically every transition path hardcoded `playerA.volume = 1f` and
+     * faded Player B in toward 1f — silently stomping the user's volume slider
+     * back to 100% whenever a track was tapped (queue timeline change ->
+     * cancelNext()) or auto-advanced (crossfade ended at 1f). The service keeps
+     * this field in sync with the genuine user selection (ReplayGain-adjusted
+     * writes are filtered out on the service side), and ALL engine volume math
+     * now scales through it instead of a literal 1f.
+     */
+    @Volatile
+    var userVolume: Float = 1f
+
     private lateinit var playerA: ExoPlayer
     private lateinit var playerB: ExoPlayer
 
@@ -693,8 +708,11 @@ class DualPlayerEngine @Inject constructor(
             playerB.stop()
             playerB.clearMediaItems()
         }
-        // Ensure master player is full volume if we cancel and reset focus logic
-        playerA.volume = 1f
+        // Ensure master player is at the user's selected volume if we cancel
+        // and reset the transition machinery (was a hardcoded 1f reset —
+        // the direct cause of the volume slider snapping back to 100% when a
+        // song was tapped while a pre-buffered next track was pending).
+        playerA.volume = userVolume
         setPauseAtEndOfMediaItems(false)
     }
 
@@ -710,8 +728,8 @@ class DualPlayerEngine @Inject constructor(
                 performOverlapTransition(settings)
             } catch (e: Exception) {
                 Timber.tag("TransitionDebug").e(e, "Error performing transition")
-                // Fallback: Restore volume and reset logic
-                playerA.volume = 1f
+                // Fallback: Restore the user's volume and reset logic
+                playerA.volume = userVolume
                 setPauseAtEndOfMediaItems(false)
                 playerB.stop()
             } finally {
@@ -725,7 +743,7 @@ class DualPlayerEngine @Inject constructor(
 
         if (playerB.mediaItemCount == 0) {
             Timber.tag("TransitionDebug").w("Skipping overlap - next player not prepared (count=0)")
-            playerA.volume = 1f
+            playerA.volume = userVolume
             setPauseAtEndOfMediaItems(false)
             return
         }
@@ -741,21 +759,23 @@ class DualPlayerEngine @Inject constructor(
             val ready = awaitPlayerReady(playerB, timeoutMs = 3000L)
             if (!ready) {
                 Timber.tag("TransitionDebug").w("Player B not ready for overlap. State=%d", playerB.playbackState)
-                playerA.volume = 1f
+                playerA.volume = userVolume
                 setPauseAtEndOfMediaItems(false)
                 return
             }
         } else if (playerB.playbackState != Player.STATE_READY) {
             Timber.tag("TransitionDebug").w("Player B not ready for overlap. State=%d", playerB.playbackState)
-            playerA.volume = 1f
+            playerA.volume = userVolume
             setPauseAtEndOfMediaItems(false)
             return
         }
 
         // 1. Start Player B (Next Song) paused with volume=0 then immediately request play so overlap is audible
         // NOTE: playerA is currently playing "Old Song". playerB is "Next Song".
+        // FIX(volume-reset): the outgoing track continues at the USER's volume
+        // (was hardcoded 1f — audibly blasting back to 100% at fade start).
         playerB.volume = 0f
-        playerA.volume = 1f
+        playerA.volume = userVolume
         if (!playerA.isPlaying && playerA.playbackState == Player.STATE_READY) {
             // Ensure the outgoing track keeps rendering during the crossfade window
             playerA.play()
@@ -772,7 +792,7 @@ class DualPlayerEngine @Inject constructor(
             val playing = awaitPlayerPlaying(playerB, timeoutMs = 2000L)
             if (!playing) {
                 Timber.tag("TransitionDebug").e("Player B failed to start in time. Aborting crossfade.")
-                playerA.volume = 1f
+                playerA.volume = userVolume
                 setPauseAtEndOfMediaItems(false)
                 return
             }
@@ -865,10 +885,15 @@ class DualPlayerEngine @Inject constructor(
 
         while (elapsed <= duration) {
             val progress = (elapsed.toFloat() / duration).coerceIn(0f, 1f)
-            val volIn = envelope(progress, settings.curveIn)  // Incoming (Now A)
-            val volOut = 1f - envelope(progress, settings.curveOut) // Outgoing (Now B)
+            // FIX(volume-reset): fade curves are scaled by the USER's selected
+            // volume so a crossfade fades between userVolume*envelope values
+            // instead of 0..1 — the fade used to end at exactly 1f, resetting
+            // the audible volume (and the UI slider) to 100% on every
+            // auto-advance.
+            val volIn = envelope(progress, settings.curveIn) * userVolume  // Incoming (Now A)
+            val volOut = (1f - envelope(progress, settings.curveOut)) * userVolume // Outgoing (Now B)
 
-            playerA.volume = volIn
+            playerA.volume = volIn.coerceIn(0f, 1f)
             playerB.volume = volOut.coerceIn(0f, 1f)
 
             if (elapsed - lastLog >= 250) {
@@ -889,7 +914,8 @@ class DualPlayerEngine @Inject constructor(
 
         Timber.tag("TransitionDebug").d("Overlap loop finished.")
         playerB.volume = 0f
-        playerA.volume = 1f
+        // FIX(volume-reset): settle the new master at the user's volume, not 1f.
+        playerA.volume = userVolume
 
         // Clean up Old Player (now B)
         playerB.pause()

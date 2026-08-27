@@ -1937,6 +1937,17 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
+        // IMPROVE(search-loading): mirror the in-flight online search flag
+        // into the UI state consumed by SearchScreen's expressive loading
+        // indicator.
+        viewModelScope.launch {
+            searchStateHolder.isSearching.collect { searching ->
+                _playerUiState.update {
+                    it.copy(isSearching = searching)
+                }
+            }
+        }
+
         viewModelScope.launch {
             searchStateHolder.isOnlineSearch.collect { isOnline ->
                 _playerUiState.update {

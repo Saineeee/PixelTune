@@ -131,6 +131,14 @@ class MusicService : MediaLibraryService() {
     private var userSelectedVolume = 1f
     private var expectedReplayGainVolume: Float? = null
 
+    /**
+     * FIX(volume-reset): set as soon as the user adjusts the volume after
+     * service start. The async persisted-volume restore checks this flag so
+     * it never clobbers a change the user made in the (tiny) window between
+     * service creation and the DataStore read completing.
+     */
+    private var userChangedVolumeSinceStart = false
+
     private var favoriteSongIds = emptySet<String>()
     private var mediaSession: MediaLibraryService.MediaLibrarySession? = null
     private val controllerLastBrowsedParent = mutableMapOf<String, String>()
@@ -374,6 +382,34 @@ class MusicService : MediaLibraryService() {
         // Ensure engine is ready (re-initialize if service was restarted)
         engine.initialize()
         userSelectedVolume = engine.masterPlayer.volume.coerceIn(0f, 1f)
+
+        // FIX(volume-reset): keep the engine's userVolume in sync with the
+        // restored selection so any pending crossfade / cancelNext() scales
+        // fades by the USER's volume instead of resetting the master player
+        // to a hardcoded 1f (= slider snapping back to 100%).
+        engine.userVolume = userSelectedVolume
+
+        // FIX(volume-reset): restore the persisted volume so the selection
+        // survives process restarts (previously every fresh process came up
+        // at the ExoPlayer default of 1f = 100%).
+        serviceScope.launch {
+            try {
+                val persistedVolume = userPreferencesRepository.playerVolumeFlow.first()
+                val restored = persistedVolume.coerceIn(0f, 1f)
+                // Do not clobber a change the user already made while the
+                // DataStore read was in flight.
+                if (!userChangedVolumeSinceStart) {
+                    userSelectedVolume = restored
+                    engine.userVolume = restored
+                    if (abs(engine.masterPlayer.volume - restored) > 0.0005f) {
+                        engine.masterPlayer.volume = restored
+                    }
+                }
+                Timber.tag(TAG).d("Restored persisted player volume: %.2f", restored)
+            } catch (e: Exception) {
+                Timber.tag(TAG).w(e, "Failed to restore persisted player volume")
+            }
+        }
 
         engine.masterPlayer.addListener(playerListener)
 
@@ -1016,6 +1052,18 @@ class MusicService : MediaLibraryService() {
             }
             expectedReplayGainVolume = null
             userSelectedVolume = volume.coerceIn(0f, 1f)
+            userChangedVolumeSinceStart = true
+            // FIX(volume-reset): a genuine user volume change must propagate
+            // to the engine (so crossfades scale with the new selection) and
+            // be persisted (so it survives process restarts).
+            engine.userVolume = userSelectedVolume
+            serviceScope.launch {
+                try {
+                    userPreferencesRepository.setPlayerVolume(userSelectedVolume)
+                } catch (e: Exception) {
+                    Timber.tag(TAG).w(e, "Failed to persist player volume")
+                }
+            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -1477,7 +1525,7 @@ class MusicService : MediaLibraryService() {
                 return@launch
             }
 
-            val volume = replayGainManager.getVolumeMultiplier(
+            val volume = userSelectedVolume * replayGainManager.getVolumeMultiplier(
                 rgValues,
                 useAlbumGain = useAlbumGain
             )
@@ -1485,8 +1533,8 @@ class MusicService : MediaLibraryService() {
             // Only apply if we're not mid-crossfade
             if (!engine.isTransitionRunning()) {
                 setPlayerVolume(player, volume)
-                Timber.tag(TAG).d("ReplayGain: Applied volume=%.2f for %s",
-                    volume, mediaItem.mediaMetadata?.title)
+                Timber.tag(TAG).d("ReplayGain: Applied volume=%.2f (user=%.2f) for %s",
+                    volume, userSelectedVolume, mediaItem.mediaMetadata?.title)
             }
         }
     }

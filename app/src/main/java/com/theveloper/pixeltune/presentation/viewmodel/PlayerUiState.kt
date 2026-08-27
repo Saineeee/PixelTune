@@ -56,6 +56,9 @@ data class PlayerUiState(
     val searchHistory: ImmutableList<SearchHistoryItem> = persistentListOf(),
     val searchQuery: String = "",
     val isOnlineSearch: Boolean = true,
+    // IMPROVE(search-loading): true while an online search request is in
+    // flight — drives the expressive loading indicator on the Search screen.
+    val isSearching: Boolean = false,
     val isSyncingLibrary: Boolean = false,
     val selectedSearchFilter: SearchFilterType = SearchFilterType.ALL,
     val currentStorageFilter: com.theveloper.pixeltune.data.model.StorageFilter = com.theveloper.pixeltune.data.model.StorageFilter.ALL,

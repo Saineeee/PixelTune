@@ -14,7 +14,8 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +35,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Card
@@ -45,6 +47,7 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SearchBar
 import androidx.compose.material3.SearchBarDefaults
@@ -64,7 +67,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -78,11 +80,11 @@ import com.theveloper.pixeltune.data.model.SearchHistoryItem
 import com.theveloper.pixeltune.data.model.SearchResultItem
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.presentation.components.SmartImage
+import com.theveloper.pixeltune.presentation.components.ShimmerBox
 import com.theveloper.pixeltune.presentation.components.SongInfoBottomSheet
 import com.theveloper.pixeltune.presentation.viewmodel.PlayerViewModel
 import android.util.Log
 import com.theveloper.pixeltune.ui.theme.LocalPixelTuneDarkTheme
-import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material3.TextButton
@@ -93,6 +95,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.material.icons.automirrored.rounded.CallMade
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.ui.platform.LocalDensity
@@ -119,6 +122,20 @@ import kotlinx.coroutines.withContext
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
 import timber.log.Timber
 import com.theveloper.pixeltune.presentation.components.subcomps.EnhancedSongListItem
+
+
+/**
+ * IMPROVE(search-history): the three landing modes of the Search screen body.
+ *
+ *  - ONLINE_HISTORY — blank query while in Online mode: shows the recent
+ *    online search history (per-entry remove, autocomplete arrow, clear all).
+ *  - GENRE_BROWSE   — blank query while in Local mode: the genre grid.
+ *  - RESULTS        — a query is typed: filter chips + loading / results.
+ */
+private enum class SearchBodyMode { GENRE_BROWSE, ONLINE_HISTORY, RESULTS }
+
+/** IMPROVE(search-loading): what the results area shows. */
+private enum class SearchResultsViewState { LOADING, EMPTY, RESULTS }
 
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -163,6 +180,40 @@ fun SearchScreen(
         playerViewModel.performSearch(searchQuery)
     }
     val searchResults = uiState.searchResults
+
+    // IMPROVE(search-loading): true only while an ONLINE search request is in
+    // flight — drives the expressive Material 3 loading indicator below.
+    val isSearchingOnline by remember { derivedStateOf { uiState.isSearching && isOnlineSearch } }
+
+    // IMPROVE(search-history): recent-search state + actions for the Online
+    // landing. Refreshed whenever the online landing becomes visible so the
+    // list always reflects the latest submits / deletions.
+    val searchHistory = uiState.searchHistory
+    LaunchedEffect(isOnlineSearch, searchQuery.isNotBlank()) {
+        if (isOnlineSearch && searchQuery.isBlank()) {
+            playerViewModel.loadSearchHistory()
+        }
+    }
+    val onHistoryQuerySelected: (String) -> Unit = { query ->
+        searchQuery = query
+        playerViewModel.updateSearchQuery(query)
+        // Re-record so the tapped entry bubbles back to the top of recents.
+        playerViewModel.onSearchQuerySubmitted(query)
+        keyboardController?.hide()
+    }
+    val onHistoryQueryFill: (String) -> Unit = { query ->
+        searchQuery = query
+        playerViewModel.updateSearchQuery(query)
+        searchInputFocusRequester.requestFocus()
+        keyboardController?.show()
+    }
+    val onDeleteHistoryEntry: (String) -> Unit = { query ->
+        playerViewModel.deleteSearchHistoryItem(query)
+    }
+    val onClearHistory: () -> Unit = {
+        playerViewModel.clearSearchHistory()
+    }
+
     val handleSongMoreOptionsClick: (Song) -> Unit = { song ->
         selectedSongForInfo = song
         playerViewModel.selectSongForInfo(song)
@@ -299,11 +350,70 @@ fun SearchScreen(
                 )
             }
 
-            val showGenreBrowse by remember(searchQuery) { derivedStateOf { searchQuery.isBlank() } }
+            // IMPROVE(search-history): the Local/Online toggle now lives ABOVE
+            // the animated body so the user can pick a mode BEFORE typing —
+            // Online + blank query lands on the recent-searches history,
+            // Local + blank query lands on the genre browse grid.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp)
+                    .height(48.dp),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxSize()
+                ) {
+                    ToggleSegmentButton(
+                        modifier = Modifier.fillMaxSize(),
+                        active = !isOnlineSearch,
+                        activeColor = MaterialTheme.colorScheme.primary,
+                        inactiveColor = MaterialTheme.colorScheme.surfaceVariant,
+                        activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                        inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        activeCornerRadius = 24.dp,
+                        onClick = { playerViewModel.toggleSearchMode(false) },
+                        text = "Local"
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxSize()
+                ) {
+                    ToggleSegmentButton(
+                        modifier = Modifier.fillMaxSize(),
+                        active = isOnlineSearch,
+                        activeColor = MaterialTheme.colorScheme.primary,
+                        inactiveColor = MaterialTheme.colorScheme.surfaceVariant,
+                        activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                        inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        activeCornerRadius = 24.dp,
+                        onClick = { playerViewModel.toggleSearchMode(true) },
+                        text = "Online"
+                    )
+                }
+            }
+
+            // IMPROVE(search-history): three-way landing mode — history when
+            // the query is blank and Online is selected, genre grid when blank
+            // and Local is selected, otherwise the search results UI.
+            val searchBodyMode by remember(searchQuery, isOnlineSearch) {
+                derivedStateOf {
+                    when {
+                        searchQuery.isNotBlank() -> SearchBodyMode.RESULTS
+                        isOnlineSearch -> SearchBodyMode.ONLINE_HISTORY
+                        else -> SearchBodyMode.GENRE_BROWSE
+                    }
+                }
+            }
             AnimatedContent(
-                targetState = showGenreBrowse,
+                targetState = searchBodyMode,
                 transitionSpec = {
-                    val switchingToGenre = targetState
+                    val switchingToGenre = targetState == SearchBodyMode.GENRE_BROWSE
                     val enter = fadeIn(animationSpec = tween(durationMillis = 320, delayMillis = 70)) +
                         slideInVertically(animationSpec = tween(durationMillis = 320)) { fullHeight ->
                             if (switchingToGenre) -fullHeight / 10 else fullHeight / 10
@@ -315,125 +425,109 @@ fun SearchScreen(
                     (enter togetherWith exit).using(SizeTransform(clip = false))
                 },
                 label = "search_mode_transition"
-            ) { isGenreMode ->
-                if (isGenreMode) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        GenreCategoriesGrid(
-                            genres = genres,
-                            onGenreClick = { genre ->
-                                Timber.tag("SearchScreen")
-                                    .d("Genre clicked: ${genre.name} (ID: ${genre.id})")
-                                val encodedGenreId = java.net.URLEncoder.encode(genre.id, "UTF-8")
-                                navController.navigateSafely(Screen.GenreDetail.createRoute(encodedGenreId))
-                            },
-                            playerViewModel = playerViewModel,
-                            modifier = Modifier.padding(top = 12.dp)
-                        )
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .align(Alignment.BottomCenter)
-                                .height(80.dp)
-                                .background(
-                                    brush = Brush.verticalGradient(
-                                        colors = listOf(
-                                            Color.Transparent,
-                                            MaterialTheme.colorScheme.surfaceContainerLowest.copy(
-                                                0.5f
-                                            ),
-                                            MaterialTheme.colorScheme.surfaceContainerLowest
+            ) { bodyMode ->
+                when (bodyMode) {
+                    SearchBodyMode.GENRE_BROWSE -> {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            GenreCategoriesGrid(
+                                genres = genres,
+                                onGenreClick = { genre ->
+                                    Timber.tag("SearchScreen")
+                                        .d("Genre clicked: ${genre.name} (ID: ${genre.id})")
+                                    val encodedGenreId = java.net.URLEncoder.encode(genre.id, "UTF-8")
+                                    navController.navigateSafely(Screen.GenreDetail.createRoute(encodedGenreId))
+                                },
+                                playerViewModel = playerViewModel,
+                                modifier = Modifier.padding(top = 12.dp)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .align(Alignment.BottomCenter)
+                                    .height(80.dp)
+                                    .background(
+                                        brush = Brush.verticalGradient(
+                                            colors = listOf(
+                                                Color.Transparent,
+                                                MaterialTheme.colorScheme.surfaceContainerLowest.copy(
+                                                    0.5f
+                                                ),
+                                                MaterialTheme.colorScheme.surfaceContainerLowest
+                                            )
                                         )
                                     )
-                                )
+                            )
+                        }
+                    }
+
+                    SearchBodyMode.ONLINE_HISTORY -> {
+                        OnlineSearchHistorySection(
+                            historyItems = searchHistory,
+                            onQuerySelected = onHistoryQuerySelected,
+                            onQueryFill = onHistoryQueryFill,
+                            onDeleteEntry = onDeleteHistoryEntry,
+                            onClearAll = onClearHistory
                         )
                     }
-                } else {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 16.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp)
-                                .height(48.dp),
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxSize()
-                            ) {
-                                ToggleSegmentButton(
-                                    modifier = Modifier.fillMaxSize(),
-                                    active = !isOnlineSearch,
-                                    activeColor = MaterialTheme.colorScheme.primary,
-                                    inactiveColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    activeContentColor = MaterialTheme.colorScheme.onPrimary,
-                                    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    activeCornerRadius = 24.dp,
-                                    onClick = { playerViewModel.toggleSearchMode(false) },
-                                    text = "Local"
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxSize()
-                            ) {
-                                ToggleSegmentButton(
-                                    modifier = Modifier.fillMaxSize(),
-                                    active = isOnlineSearch,
-                                    activeColor = MaterialTheme.colorScheme.primary,
-                                    inactiveColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    activeContentColor = MaterialTheme.colorScheme.onPrimary,
-                                    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    activeCornerRadius = 24.dp,
-                                    onClick = { playerViewModel.toggleSearchMode(true) },
-                                    text = "Online"
-                                )
-                            }
-                        }
 
-                        FlowRow(
+                    SearchBodyMode.RESULTS -> {
+                        Column(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                .fillMaxSize()
+                                .padding(horizontal = 16.dp)
                         ) {
-                            SearchFilterChip(SearchFilterType.ALL, currentFilter, playerViewModel)
-                            SearchFilterChip(SearchFilterType.SONGS, currentFilter, playerViewModel)
-                            SearchFilterChip(SearchFilterType.ALBUMS, currentFilter, playerViewModel)
-                            SearchFilterChip(SearchFilterType.ARTISTS, currentFilter, playerViewModel)
-                            SearchFilterChip(SearchFilterType.PLAYLISTS, currentFilter, playerViewModel)
-                        }
-                        Crossfade(
-                            targetState = searchResults.isEmpty(),
-                            animationSpec = tween(durationMillis = 190),
-                            label = "search_results_fade"
-                        ) { isEmpty ->
-                            if (isEmpty) {
-                                EmptySearchResults(
-                                    searchQuery = searchQuery,
-                                    colorScheme = colorScheme
-                                )
-                            } else {
-                                SearchResultsList(
-                                    results = searchResults,
-                                    playerViewModel = playerViewModel,
-                                    onItemSelected = {
-                                        if (searchQuery.isNotBlank()) {
-                                            playerViewModel.onSearchQuerySubmitted(searchQuery)
-                                        }
-                                    },
-                                    currentPlayingSongId = stablePlayerState.currentSong?.id,
-                                    isPlaying = stablePlayerState.isPlaying,
-                                    onSongMoreOptionsClick = handleSongMoreOptionsClick,
-                                    navController = navController
-                                )
+                            FlowRow(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                SearchFilterChip(SearchFilterType.ALL, currentFilter, playerViewModel)
+                                SearchFilterChip(SearchFilterType.SONGS, currentFilter, playerViewModel)
+                                SearchFilterChip(SearchFilterType.ALBUMS, currentFilter, playerViewModel)
+                                SearchFilterChip(SearchFilterType.ARTISTS, currentFilter, playerViewModel)
+                                SearchFilterChip(SearchFilterType.PLAYLISTS, currentFilter, playerViewModel)
+                            }
+
+                            // IMPROVE(search-loading): the results area now has
+                            // three states — an expressive Material 3 loading
+                            // indicator while the online search is in flight,
+                            // the empty state, and the results list.
+                            val resultsViewState = when {
+                                isSearchingOnline -> SearchResultsViewState.LOADING
+                                searchResults.isEmpty() -> SearchResultsViewState.EMPTY
+                                else -> SearchResultsViewState.RESULTS
+                            }
+                            Crossfade(
+                                targetState = resultsViewState,
+                                animationSpec = tween(durationMillis = 190),
+                                label = "search_results_fade"
+                            ) { state ->
+                                when (state) {
+                                    SearchResultsViewState.LOADING -> OnlineSearchLoadingIndicator(
+                                        searchQuery = searchQuery
+                                    )
+
+                                    SearchResultsViewState.EMPTY -> EmptySearchResults(
+                                        searchQuery = searchQuery,
+                                        colorScheme = colorScheme
+                                    )
+
+                                    SearchResultsViewState.RESULTS -> SearchResultsList(
+                                        results = searchResults,
+                                        playerViewModel = playerViewModel,
+                                        onItemSelected = {
+                                            if (searchQuery.isNotBlank()) {
+                                                playerViewModel.onSearchQuerySubmitted(searchQuery)
+                                            }
+                                        },
+                                        currentPlayingSongId = stablePlayerState.currentSong?.id,
+                                        isPlaying = stablePlayerState.isPlaying,
+                                        onSongMoreOptionsClick = handleSongMoreOptionsClick,
+                                        navController = navController
+                                    )
+                                }
                             }
                         }
                     }
@@ -542,69 +636,156 @@ fun SearchResultSectionHeader(title: String) {
     )
 }
 
+/**
+ * IMPROVE(search-history): the Online search landing — recent searches with a
+ * per-entry remove action, an autocomplete arrow that fills the entry into
+ * the search bar, and a master clear-all button. Styled after the app's
+ * existing M3 expressive cards (AbsoluteSmoothCornerShape / surfaceContainerLow)
+ * so it matches the search results list it sits above.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SearchHistoryList(
+fun OnlineSearchHistorySection(
     historyItems: List<SearchHistoryItem>,
-    onHistoryClick: (String) -> Unit,
-    onHistoryDelete: (String) -> Unit,
-    onClearAllHistory: () -> Unit
+    onQuerySelected: (String) -> Unit,
+    onQueryFill: (String) -> Unit,
+    onDeleteEntry: (String) -> Unit,
+    onClearAll: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val localDensity = LocalDensity.current
-    Column {
+    val systemBarPaddingBottom =
+        WindowInsets.systemBars.asPaddingValues().calculateBottomPadding() + 94.dp
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 8.dp, horizontal = 8.dp),
+                .padding(vertical = 8.dp, horizontal = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 "Recent Searches",
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
             if (historyItems.isNotEmpty()) {
-                TextButton(onClick = onClearAllHistory) {
+                TextButton(
+                    onClick = onClearAll,
+                    contentPadding = PaddingValues(horizontal = 10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.DeleteSweep,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text("Clear All")
                 }
             }
         }
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(
-                top = 8.dp,
-            )
-        ) {
-            items(historyItems, key = { "history_${it.id ?: it.query}" }) { item ->
-                SearchHistoryListItem(
-                    item = item,
-                    onHistoryClick = onHistoryClick,
-                    onHistoryDelete = onHistoryDelete
+
+        if (historyItems.isEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 48.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.History,
+                    contentDescription = "No recent searches",
+                    modifier = Modifier.size(72.dp),
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
                 )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "No recent searches",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Your online searches will show up here",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(
+                    top = 4.dp,
+                    bottom = systemBarPaddingBottom
+                )
+            ) {
+                items(
+                    historyItems,
+                    key = { "history_${it.id ?: it.query}" }
+                ) { item ->
+                    OnlineSearchHistoryRow(
+                        item = item,
+                        onClick = { onQuerySelected(item.query) },
+                        onFillClick = { onQueryFill(item.query) },
+                        onDeleteClick = { onDeleteEntry(item.query) }
+                    )
+                }
             }
         }
     }
 }
 
+/**
+ * A single recent-search row: tapping it searches the query again, the
+ * arrow button fills it into the search bar for editing, and the close
+ * button removes that single entry from the history.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SearchHistoryListItem(
+private fun OnlineSearchHistoryRow(
     item: SearchHistoryItem,
-    onHistoryClick: (String) -> Unit,
-    onHistoryDelete: (String) -> Unit
+    onClick: () -> Unit,
+    onFillClick: () -> Unit,
+    onDeleteClick: () -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .pointerInput(Unit) { detectTapGestures(onTap = { onHistoryClick(item.query) }) }
-            .padding(horizontal = 8.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+    val rowShape = remember {
+        AbsoluteSmoothCornerShape(
+            cornerRadiusTL = 26.dp,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusTR = 26.dp,
+            smoothnessAsPercentBR = 60,
+            cornerRadiusBR = 26.dp,
+            smoothnessAsPercentBL = 60,
+            cornerRadiusBL = 26.dp,
+            smoothnessAsPercentTL = 60
+        )
+    }
+
+    Card(
+        onClick = onClick,
+        shape = rowShape,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ),
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Icon(
                 imageVector = Icons.Rounded.History,
-                contentDescription = "History Icon",
+                contentDescription = null,
                 modifier = Modifier.size(20.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -613,15 +794,86 @@ fun SearchHistoryListItem(
                 text = item.query,
                 style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
             )
+            // Autocomplete arrow — fills this entry into the search bar.
+            IconButton(onClick = onFillClick, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.CallMade,
+                    contentDescription = "Fill search bar",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+            // Remove this single entry from the search history.
+            IconButton(onClick = onDeleteClick, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Remove from search history",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+            }
         }
-        IconButton(onClick = { onHistoryDelete(item.query) }) {
-            Icon(
-                imageVector = Icons.Rounded.DeleteForever,
-                contentDescription = "Delete history item",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+    }
+}
+
+/**
+ * IMPROVE(search-loading): expressive Material 3 loading state shown while an
+ * online search is in flight. Uses the same M3 expressive [LoadingIndicator]
+ * the full player uses, plus shimmering skeleton rows that mirror the shape
+ * of the incoming result rows — matching the app's existing animation
+ * language instead of a plain spinner.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun OnlineSearchLoadingIndicator(
+    searchQuery: String,
+    modifier: Modifier = Modifier
+) {
+    val skeletonShape = remember {
+        RoundedCornerShape(20.dp)
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(modifier = Modifier.height(40.dp))
+        LoadingIndicator(
+            modifier = Modifier.size(36.dp),
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(modifier = Modifier.height(20.dp))
+        Text(
+            text = if (searchQuery.isNotBlank()) {
+                "Searching for \"$searchQuery\""
+            } else {
+                "Searching"
+            },
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Fetching the best matches for you",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(28.dp))
+        repeat(5) {
+            ShimmerBox(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(76.dp)
+                    .clip(skeletonShape)
             )
+            Spacer(modifier = Modifier.height(12.dp))
         }
     }
 }
