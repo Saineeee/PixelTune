@@ -397,13 +397,23 @@ class DualPlayerEngine @Inject constructor(
         val resolvingFactory = ResolvingDataSource.Factory(dataSourceFactory, resolver)
 
         // Tune LoadControl to prevent "loop of death" (underrun -> start -> underrun)
-        // Increase bufferForPlaybackMs to wait for more data before starting/resuming.
+        // while keeping playback start and seek resume snappy.
+        //
+        // FIX(cloud-streaming-speed): the start/rebuffer gates were 5s/5s —
+        // after EVERY seek ExoPlayer had to buffer a full 5 seconds of audio
+        // through the localhost proxy before playback resumed, stacking a
+        // fixed +5s delay on top of the upstream (re)connection time ("takes
+        // extremely long to play from a forwarded position"). The underrun
+        // cycling the 5s gates were raised for is actually prevented by the
+        // 30s minimum buffer (loading continues toward it while playing);
+        // 2s start / 3s rebuffer gates resume audio 2-2.5x sooner and are
+        // still above media3's own defaults of 2.5s/5s.
         val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 30_000, // Min buffer 30s
                 60_000, // Max buffer 60s
-                5_000,  // Buffer for playback start (Increased from 2.5s for stability)
-                5_000   // Buffer for rebuffer (Increased to 5s to stop rapid cycling)
+                2_000,  // Buffer for playback start (was 5s — resume/start 2.5x sooner)
+                3_000   // Buffer for rebuffer after seek/underrun (was 5s)
             )
             .build()
 

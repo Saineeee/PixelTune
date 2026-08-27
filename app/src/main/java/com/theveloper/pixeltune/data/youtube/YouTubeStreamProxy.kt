@@ -3,6 +3,7 @@ package com.theveloper.pixeltune.data.youtube
 import android.net.Uri
 import com.theveloper.pixeltune.data.stream.CloudStreamForwarder
 import com.theveloper.pixeltune.data.stream.CloudStreamSecurity
+import com.theveloper.pixeltune.data.stream.ForwardOutcome
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.engine.*
@@ -18,6 +19,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import timber.log.Timber
@@ -40,6 +43,15 @@ class YouTubeStreamProxy @Inject constructor(
             "youtube.com",
             "ytimg.com"
         )
+
+        /**
+         * FIX(cloud-streaming-speed): upstream status codes that mean "the
+         * cached stream URL went stale" — googlevideo signed URLs carry an
+         * `expire` parameter, and once it passes, the CDN answers 403/404.
+         * When the forwarder sees one of these, it does NOT answer ExoPlayer;
+         * instead the proxy re-resolves the stream URL once and retries.
+         */
+        val STALE_UPSTREAM_STATUS_CODES = setOf(403, 404, 410)
     }
 
     private var server: ApplicationEngine? = null
@@ -49,6 +61,22 @@ class YouTubeStreamProxy @Inject constructor(
 
     // Cache of resolved streaming URLs
     private val urlCache = ConcurrentHashMap<String, CachedUrl>()
+
+    /**
+     * FIX(cloud-streaming-speed): one mutex per cache key, serializing
+     * stream-URL resolutions for the same video.
+     *
+     * ExoPlayer opens a media source's DataSource multiple times in quick
+     * succession (header/moov reads, ranged re-reads, and every seek).
+     * Without serialization, EACH of those proxy requests that missed the
+     * URL cache kicked off its OWN full NewPipe extraction — 6-7 sequential
+     * network requests each, in parallel — doubling/tripling playback-start
+     * latency and multiplying the innertube request volume against YouTube
+     * (which itself raises bot-check risk). With the mutex, concurrent
+     * callers wait for the first resolution and then hit the freshly
+     * populated cache.
+     */
+    private val resolutionMutexes = ConcurrentHashMap<String, Mutex>()
 
     // FIX(playback-start-latency): video ids with an in-flight background
     // prefetch — see [prefetch].
@@ -247,29 +275,21 @@ class YouTubeStreamProxy @Inject constructor(
                         // byte ranges line up 1:1 with what we forward to
                         // ExoPlayer — Media3's DefaultHttpDataSource relies on
                         // exact byte offsets for Range-based seeking.
-                        val requestBuilder = Request.Builder()
-                            .url(streamUrl)
-                            .header("Accept-Encoding", "identity")
-                            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-                        rangeValidation.normalizedHeader?.let {
-                            requestBuilder.header("Range", it)
+                        fun buildUpstreamRequest(url: String): Request {
+                            val builder = Request.Builder()
+                                .url(url)
+                                .header("Accept-Encoding", "identity")
+                                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                            rangeValidation.normalizedHeader?.let {
+                                builder.header("Range", it)
+                            }
+                            return builder.build()
                         }
 
                         // FIX: Stream the upstream response chunk-by-chunk through
                         // CloudStreamForwarder instead of buffering the entire body
                         // in memory via OkHttp's `bytes()`. This is the actual fix
                         // for the "YouTube playback stuck at 00:00" bug.
-                        //
-                        // The previous "fix" in this file (calling `bytes()` then
-                        // `respondBytes`) didn't actually solve the issue — it just
-                        // shifted the timeout from ExoPlayer's side to OkHttp's side.
-                        // With the default 8s readTimeout, OkHttp's `bytes()` would
-                        // throw SocketTimeoutException on throttled YouTube audio
-                        // streams, and the catch block swallowed the error without
-                        // ever sending a response to ExoPlayer. ExoPlayer's own
-                        // connect timeout then fired, leaving the progress bar
-                        // frozen at 00:00 with no error surfaced to the UI.
                         //
                         // The forwarder:
                         //   1. Opens the upstream connection on Dispatchers.IO.
@@ -283,11 +303,57 @@ class YouTubeStreamProxy @Inject constructor(
                         // abort mid-read, and ExoPlayer receives the HTTP
                         // status line + first audio bytes within milliseconds
                         // of the upstream's response.
-                        CloudStreamForwarder.forwardStream(
+                        //
+                        // FIX(cloud-streaming-speed): the deferred status codes
+                        // make the forwarder return INSTEAD of answering
+                        // ExoPlayer when googlevideo rejects the cached signed
+                        // URL (403/404/410 — the URL's `expire` parameter has
+                        // passed). The self-heal below then re-resolves the
+                        // stream URL once and forwards again, so a seek that
+                        // lands after URL expiry recovers in ~one extraction
+                        // instead of failing playback outright.
+                        val outcome = CloudStreamForwarder.forwardStream(
                             call = call,
                             client = okHttpClient,
-                            upstreamRequest = requestBuilder.build()
+                            upstreamRequest = buildUpstreamRequest(streamUrl),
+                            deferUpstreamStatusCodes = STALE_UPSTREAM_STATUS_CODES
                         )
+
+                        if (outcome is ForwardOutcome.UpstreamRejected) {
+                            Timber.d(
+                                "YouTubeStreamProxy: cached stream URL for %s rejected " +
+                                    "upstream (code=%d) — re-resolving once",
+                                youtubeId, outcome.statusCode
+                            )
+                            val freshUrl = runCatching {
+                                getOrFetchStreamUrl(youtubeId, forceRefresh = true)
+                            }.getOrNull()
+
+                            if (freshUrl != null &&
+                                CloudStreamSecurity.isSafeRemoteStreamUrl(
+                                    url = freshUrl,
+                                    allowedHostSuffixes = ALLOWED_REMOTE_HOST_SUFFIXES,
+                                    allowHttpForAllowedHosts = true
+                                )
+                            ) {
+                                val retryOutcome = CloudStreamForwarder.forwardStream(
+                                    call = call,
+                                    client = okHttpClient,
+                                    upstreamRequest = buildUpstreamRequest(freshUrl)
+                                )
+                                if (retryOutcome is ForwardOutcome.UpstreamRejected) {
+                                    call.respond(
+                                        HttpStatusCode.BadGateway,
+                                        "Upstream rejected refreshed stream URL (code=${retryOutcome.statusCode})"
+                                    )
+                                }
+                            } else {
+                                call.respond(
+                                    HttpStatusCode.BadGateway,
+                                    "Upstream stream URL expired (code=${outcome.statusCode})"
+                                )
+                            }
+                        }
                     } catch (e: Exception) {
                         val msg = e.toString()
                         if (msg.contains("ChannelWriteException") ||
@@ -304,19 +370,40 @@ class YouTubeStreamProxy @Inject constructor(
         }
     }
 
-    private suspend fun getOrFetchStreamUrl(youtubeId: String): String? {
+    /**
+     * Resolves (or reuses) the googleaudio stream URL for [youtubeId].
+     *
+     * FIX(cloud-streaming-speed):
+     *  - Mutex-per-key dedup — see [resolutionMutexes].
+     *  - [forceRefresh] bypasses and evicts the cache entry first; used by
+     *    the stale-URL self-heal path after the CDN rejected a previously
+     *    cached URL (403/404/410).
+     */
+    private suspend fun getOrFetchStreamUrl(youtubeId: String, forceRefresh: Boolean = false): String? {
         val quality = userPreferencesRepository.streamingQualityFlow.first()
         val cacheKey = "${youtubeId}_${quality.name}"
 
-        // Check cache first
-        urlCache[cacheKey]?.let { cached ->
-            if (!cached.isExpired()) return cached.url
+        if (forceRefresh) {
+            urlCache.remove(cacheKey)
+        } else {
+            urlCache[cacheKey]?.let { cached ->
+                if (!cached.isExpired()) return cached.url
+            }
         }
 
-        // Fetch fresh URL
-        val result = repository.getAudioStreamUrl(youtubeId, quality)
-        return result.getOrNull()?.also { url ->
-            urlCache[cacheKey] = CachedUrl(url, System.currentTimeMillis())
+        val mutex = resolutionMutexes.computeIfAbsent(cacheKey) { Mutex() }
+        return mutex.withLock {
+            // Double-check inside the lock: another proxy request may have
+            // completed the extraction while this caller was waiting.
+            if (!forceRefresh) {
+                urlCache[cacheKey]?.let { cached ->
+                    if (!cached.isExpired()) return@withLock cached.url
+                }
+            }
+            val result = repository.getAudioStreamUrl(youtubeId, quality)
+            result.getOrNull()?.also { url ->
+                urlCache[cacheKey] = CachedUrl(url, System.currentTimeMillis())
+            }
         }
     }
 }

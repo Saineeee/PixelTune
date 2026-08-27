@@ -2,6 +2,7 @@ package com.theveloper.pixeltune.data.soundcloud
 
 import com.theveloper.pixeltune.data.stream.CloudStreamForwarder
 import com.theveloper.pixeltune.data.stream.CloudStreamSecurity
+import com.theveloper.pixeltune.data.stream.ForwardOutcome
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.engine.*
@@ -17,6 +18,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import timber.log.Timber
@@ -41,6 +44,16 @@ class SoundCloudStreamProxy @Inject constructor(
             "soundcloud.cloud",
             "sndcdn.com"
         )
+
+        /**
+         * FIX(cloud-streaming-speed): upstream status codes that mean "the
+         * cached stream URL went stale". SoundCloud progressive URLs are
+         * served from CloudFront with a signed `Policy` query parameter that
+         * expires within minutes-to-hours; once it passes, the CDN answers
+         * 403/404/410. The proxy then re-resolves the stream URL once and
+         * retries instead of failing the seek / playback outright.
+         */
+        val STALE_UPSTREAM_STATUS_CODES = setOf(403, 404, 410)
     }
 
     private var server: ApplicationEngine? = null
@@ -51,12 +64,35 @@ class SoundCloudStreamProxy @Inject constructor(
     // Cache of resolved streaming URLs
     private val urlCache = ConcurrentHashMap<String, CachedUrl>()
 
+    /**
+     * FIX(cloud-streaming-speed): one mutex per cache key, serializing
+     * stream-URL resolutions for the same track — ExoPlayer opens a media
+     * source's DataSource several times in quick succession (header reads,
+     * ranged re-reads, every seek), and without serialization each cache
+     * miss triggered a SEPARATE full SoundCloud extraction. Concurrent
+     * callers now wait for the first resolution and hit the freshly
+     * populated cache. See YouTubeStreamProxy.resolutionMutexes.
+     */
+    private val resolutionMutexes = ConcurrentHashMap<String, Mutex>()
+
     // FIX(playback-start-latency): encoded track urls with an in-flight
     // background prefetch — see [prefetch].
     private val prefetchInFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     private data class CachedUrl(val url: String, val timestamp: Long) {
-        fun isExpired(): Boolean = System.currentTimeMillis() - timestamp > 5 * 60 * 60 * 1000
+        /**
+         * FIX(cloud-streaming-speed): 30 minutes (was 5 HOURS).
+         *
+         * SoundCloud progressive stream URLs are CloudFront URLs signed with
+         * a `Policy` query parameter whose lifetime is minutes-to-hours — a
+         * 5-hour cache meant any seek after the first ~30 minutes requested
+         * an upstream URL that had long expired (403), surfacing as a failed
+         * or endlessly-rebuffering seek. 30 minutes keeps re-extraction rare
+         * (one request per half hour of continuous listening) while never
+         * serving a URL old enough to be reasonably considered expired. The
+         * stale-URL self-heal below covers any residual gap.
+         */
+        fun isExpired(): Boolean = System.currentTimeMillis() - timestamp > 30 * 60 * 1000
     }
 
     fun isReady(): Boolean = actualPort > 0
@@ -231,9 +267,12 @@ class SoundCloudStreamProxy @Inject constructor(
                         }
 
                         // Proxy the audio stream.
-                        val requestBuilder = Request.Builder().url(streamUrl)
-                        rangeValidation.normalizedHeader?.let {
-                            requestBuilder.header("Range", it)
+                        fun buildUpstreamRequest(url: String): Request {
+                            val builder = Request.Builder().url(url)
+                            rangeValidation.normalizedHeader?.let {
+                                builder.header("Range", it)
+                            }
+                            return builder.build()
                         }
 
                         // FIX: Stream chunk-by-chunk through CloudStreamForwarder
@@ -241,11 +280,54 @@ class SoundCloudStreamProxy @Inject constructor(
                         // Same root-cause fix as YouTubeStreamProxy — see the
                         // forwarder's KDoc for the full analysis of the original
                         // "playback stuck at 00:00" production bug.
-                        CloudStreamForwarder.forwardStream(
+                        //
+                        // FIX(cloud-streaming-speed): deferred stale-status codes —
+                        // when CloudFront rejects the cached signed URL (403/404/410,
+                        // the `Policy` signature expired), the forwarder returns
+                        // instead of answering ExoPlayer, and the self-heal below
+                        // re-resolves the stream URL once and forwards again.
+                        val outcome = CloudStreamForwarder.forwardStream(
                             call = call,
                             client = okHttpClient,
-                            upstreamRequest = requestBuilder.build()
+                            upstreamRequest = buildUpstreamRequest(streamUrl),
+                            deferUpstreamStatusCodes = STALE_UPSTREAM_STATUS_CODES
                         )
+
+                        if (outcome is ForwardOutcome.UpstreamRejected) {
+                            Timber.d(
+                                "SoundCloudStreamProxy: cached stream URL rejected " +
+                                    "upstream (code=%d) — re-resolving once",
+                                outcome.statusCode
+                            )
+                            val freshUrl = runCatching {
+                                getOrFetchStreamUrl(soundCloudUrl, forceRefresh = true)
+                            }.getOrNull()
+
+                            if (freshUrl != null &&
+                                CloudStreamSecurity.isSafeRemoteStreamUrl(
+                                    url = freshUrl,
+                                    allowedHostSuffixes = ALLOWED_REMOTE_HOST_SUFFIXES,
+                                    allowHttpForAllowedHosts = true
+                                )
+                            ) {
+                                val retryOutcome = CloudStreamForwarder.forwardStream(
+                                    call = call,
+                                    client = okHttpClient,
+                                    upstreamRequest = buildUpstreamRequest(freshUrl)
+                                )
+                                if (retryOutcome is ForwardOutcome.UpstreamRejected) {
+                                    call.respond(
+                                        HttpStatusCode.BadGateway,
+                                        "Upstream rejected refreshed stream URL (code=${retryOutcome.statusCode})"
+                                    )
+                                }
+                            } else {
+                                call.respond(
+                                    HttpStatusCode.BadGateway,
+                                    "Upstream stream URL expired (code=${outcome.statusCode})"
+                                )
+                            }
+                        }
                     } catch (e: Exception) {
                         val msg = e.toString()
                         if (msg.contains("ChannelWriteException") ||
@@ -262,19 +344,40 @@ class SoundCloudStreamProxy @Inject constructor(
         }
     }
 
-    private suspend fun getOrFetchStreamUrl(soundCloudUrl: String): String? {
+    /**
+     * Resolves (or reuses) the progressive stream URL for [soundCloudUrl].
+     *
+     * FIX(cloud-streaming-speed):
+     *  - Mutex-per-key dedup — see [resolutionMutexes].
+     *  - [forceRefresh] bypasses and evicts the cache entry first; used by
+     *    the stale-URL self-heal path after CloudFront rejected a previously
+     *    cached URL (403/404/410).
+     */
+    private suspend fun getOrFetchStreamUrl(soundCloudUrl: String, forceRefresh: Boolean = false): String? {
         val quality = userPreferencesRepository.streamingQualityFlow.first()
         val cacheKey = "$soundCloudUrl-${quality.name}"
 
-        // Check cache first
-        urlCache[cacheKey]?.let { cached ->
-            if (!cached.isExpired()) return cached.url
+        if (forceRefresh) {
+            urlCache.remove(cacheKey)
+        } else {
+            urlCache[cacheKey]?.let { cached ->
+                if (!cached.isExpired()) return cached.url
+            }
         }
 
-        // Fetch fresh URL
-        val result = repository.getAudioStreamUrl(soundCloudUrl, quality)
-        return result.getOrNull()?.also { url ->
-            urlCache[cacheKey] = CachedUrl(url, System.currentTimeMillis())
+        val mutex = resolutionMutexes.computeIfAbsent(cacheKey) { Mutex() }
+        return mutex.withLock {
+            // Double-check inside the lock: another proxy request may have
+            // completed the extraction while this caller was waiting.
+            if (!forceRefresh) {
+                urlCache[cacheKey]?.let { cached ->
+                    if (!cached.isExpired()) return@withLock cached.url
+                }
+            }
+            val result = repository.getAudioStreamUrl(soundCloudUrl, quality)
+            result.getOrNull()?.also { url ->
+                urlCache[cacheKey] = CachedUrl(url, System.currentTimeMillis())
+            }
         }
     }
 }

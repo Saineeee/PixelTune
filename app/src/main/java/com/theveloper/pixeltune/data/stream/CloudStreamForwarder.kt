@@ -14,6 +14,38 @@ import timber.log.Timber
 import java.io.OutputStream
 
 /**
+ * FIX(cloud-streaming-speed): result of a [CloudStreamForwarder.forwardStream]
+ * call, so callers (the stream proxies) can detect a rejected upstream
+ * response BEFORE anything was sent downstream and react — e.g. re-resolve
+ * a stale signed stream URL and forward once more (see the proxies'
+ * self-heal logic).
+ */
+sealed interface ForwardOutcome {
+
+    /**
+     * The downstream (ExoPlayer) request was fully handled: either the
+     * upstream body was streamed through, or an error response (bad status
+     * / content type / length) was already sent to the client, or the
+     * client disconnected mid-stream. The caller must NOT respond again.
+     */
+    data object Handled : ForwardOutcome
+
+    /**
+     * The upstream answered with [statusCode] BEFORE anything was sent to
+     * the downstream client, and that code was in the caller's
+     * `deferUpstreamStatusCodes` set. The caller is now responsible for
+     * EITHER retrying with a fresh upstream URL OR responding to the client.
+     *
+     * This is the stale-signed-URL signal: YouTube googlevideo URLs carry an
+     * `expire` parameter and SoundCloud progressive URLs carry a CloudFront
+     * `Policy` signature that both expire long before the proxies' URL
+     * caches would naturally evict them — an upstream 403/404/410 on a
+     * previously-working URL means "re-resolve me".
+     */
+    data class UpstreamRejected(val statusCode: Int) : ForwardOutcome
+}
+
+/**
  * Streams an upstream HTTP audio response straight to a Ktor response,
  * chunk-by-chunk, without ever buffering the entire body in memory.
  *
@@ -104,12 +136,20 @@ object CloudStreamForwarder {
      * @param client The streaming OkHttpClient.
      * @param upstreamRequest A fully-built OkHttp Request for the upstream
      *        audio URL (including Range header if the client requested one).
+     * @param deferUpstreamStatusCodes Upstream status codes for which this
+     *        function must NOT send any downstream response. When the
+     *        upstream answers with one of these codes, the call returns
+     *        [ForwardOutcome.UpstreamRejected] instead, and the caller
+     *        decides whether to retry with a re-resolved URL or to answer
+     *        the client itself. Used by the proxies for stale signed-URL
+     *        self-healing (403/404/410).
      */
     suspend fun forwardStream(
         call: ApplicationCall,
         client: OkHttpClient,
-        upstreamRequest: Request
-    ) {
+        upstreamRequest: Request,
+        deferUpstreamStatusCodes: Set<Int> = emptySet()
+    ): ForwardOutcome {
         // 1. Open the upstream connection on Dispatchers.IO. This is the
         //    only network call; the returned Response body is NOT yet read.
         //    We must close it ourselves in a finally block.
@@ -118,7 +158,11 @@ object CloudStreamForwarder {
         }
 
         try {
-            forwardOpenedStream(call, upstream)
+            return forwardOpenedStream(
+                call = call,
+                upstream = upstream,
+                deferUpstreamStatusCodes = deferUpstreamStatusCodes
+            )
         } catch (e: Exception) {
             // Only log if this is NOT a client-disconnect (those are normal —
             // ExoPlayer tears down the connection on every seek / pause).
@@ -131,6 +175,10 @@ object CloudStreamForwarder {
             ) {
                 Timber.e(e, "CloudStreamForwarder: error forwarding upstream stream")
             }
+            // The client connection is in an unknown state after a failed
+            // stream — treat the call as handled; Ktor will terminate the
+            // response when the handler coroutine completes.
+            return ForwardOutcome.Handled
         } finally {
             // Closing the OkHttp Response also closes the body InputStream,
             // which releases the underlying socket back to the connection pool
@@ -149,18 +197,28 @@ object CloudStreamForwarder {
      */
     suspend fun forwardOpenedStream(
         call: ApplicationCall,
-        upstream: okhttp3.Response
-    ) {
+        upstream: okhttp3.Response,
+        deferUpstreamStatusCodes: Set<Int> = emptySet()
+    ): ForwardOutcome {
         val upstreamCode = upstream.code
         val upstreamHeaders = upstream.headers
 
         // 2. Validate upstream status code.
         if (upstreamCode != 200 && upstreamCode != 206) {
+            // FIX(cloud-streaming-speed): stale-signed-URL deferral. When the
+            // caller asked to defer this status code, do NOT respond to the
+            // downstream client — return the code so the proxy can re-resolve
+            // the stream URL and forward once more (an expired googlevideo
+            // `expire` / SoundCloud CloudFront `Policy` signature is exactly
+            // this case: the URL worked minutes ago, now it is rejected).
+            if (upstreamCode in deferUpstreamStatusCodes) {
+                return ForwardOutcome.UpstreamRejected(upstreamCode)
+            }
             call.respond(
                 CloudStreamSecurity.mapUpstreamStatusToProxyStatus(upstreamCode),
                 "Upstream stream request failed (code=$upstreamCode)"
             )
-            return
+            return ForwardOutcome.Handled
         }
 
         val contentTypeHeader = upstreamHeaders["Content-Type"]
@@ -169,7 +227,7 @@ object CloudStreamForwarder {
                 HttpStatusCode.BadGateway,
                 "Unsupported stream content type: $contentTypeHeader"
             )
-            return
+            return ForwardOutcome.Handled
         }
 
         val contentLength = upstreamHeaders["Content-Length"]
@@ -178,7 +236,7 @@ object CloudStreamForwarder {
                 HttpStatusCode(413, "Payload Too Large"),
                 "Stream content too large"
             )
-            return
+            return ForwardOutcome.Handled
         }
 
         val contentRange = upstreamHeaders["Content-Range"]
@@ -211,9 +269,22 @@ object CloudStreamForwarder {
         //    reads + OutputStream writes on the request handler's coroutine
         //    is safe (and is in fact what TelegramStreamProxy already does
         //    with respondBytesWriter + writeFully for local files).
-        call.respondOutputStream(contentType = responseContentType) {
+        //
+        //    FIX(cloud-streaming-speed): pass the upstream Content-Length so
+        //    Ktor sends a fixed-length response instead of chunked transfer
+        //    encoding — ExoPlayer's DefaultHttpDataSource then knows the
+        //    exact byte count up front (for a 206, Content-Length is the
+        //    REMAINING byte count, which is exactly what the header means
+        //    downstream too). For a 200 with a Range request the range was
+        //    simply not honored upstream, exactly as before.
+        val responseContentLength = contentLength?.toLongOrNull()
+        call.respondOutputStream(
+            contentType = responseContentType,
+            contentLength = responseContentLength
+        ) {
             streamBody(upstream, this)
         }
+        return ForwardOutcome.Handled
     }
 
     /**

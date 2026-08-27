@@ -26,6 +26,7 @@ import com.theveloper.pixeltune.data.database.TransitionDao
 import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
 import com.theveloper.pixeltune.data.preferences.dataStore
 import com.theveloper.pixeltune.data.media.SongMetadataEditor
+import com.theveloper.pixeltune.data.network.PreferIpv4Dns
 import com.theveloper.pixeltune.data.network.deezer.DeezerApiService
 import com.theveloper.pixeltune.data.network.netease.NeteaseApiService
 import com.theveloper.pixeltune.data.network.lyrics.LrcLibApiService
@@ -184,6 +185,27 @@ object AppModule {
         @ApplicationContext context: Context
     ): ImageLoader {
         return ImageLoader.Builder(context)
+            // FIX(cloud-streaming-speed): dedicated network client for album
+            // artwork (ytimg / sndcdn / deezer CDN images).
+            //
+            // Previously Coil silently built its OWN default OkHttpClient,
+            // which — like every OkHttp client — tries DNS routes in OS order
+            // (IPv6 first on dual-stack carriers). On carriers with a broken
+            // IPv6 route to the CDN, every artwork request burned its whole
+            // 10 s connect timeout on the blackholed AAAA route before
+            // falling back to IPv4: album art loaded with multi-second delays
+            // or timed out entirely ("sometimes it doesn't even show up").
+            //
+            // Sharing the IPv4-first resolver (see [PreferIpv4Dns]) makes the
+            // first connection attempt the working one. No logging
+            // interceptor here: image bytes never belong in logcat.
+            .callFactory(
+                OkHttpClient.Builder()
+                    .dns(PreferIpv4Dns)
+                    .connectTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+            )
             .dispatcher(Dispatchers.Default) // Use CPU-bound dispatcher for decoding
             .allowHardware(true) // Re-enable hardware bitmaps for better performance
             .memoryCache {
@@ -338,9 +360,26 @@ object AppModule {
 
         return OkHttpClient.Builder()
             .connectionPool(connectionPool)
-            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            // FIX(cloud-streaming-speed): IPv4-first route ordering. On
+            // dual-stack carriers with a broken IPv6 route, OkHttp's first
+            // connect attempt (AAAA, tried first in OS resolver order) hangs
+            // for the FULL connect timeout before falling back to IPv4 —
+            // which matched the reported "more than 15 seconds" search /
+            // playback-start latency exactly. See [PreferIpv4Dns] for the
+            // full analysis and the IPv6-only-network safety argument.
+            .dns(PreferIpv4Dns)
+            // FIX(cloud-streaming-speed): 6s connect timeout (was 15s).
+            // connectTimeout is the per-route budget OkHttp spends before
+            // trying the next route, so it directly bounds the worst-case
+            // penalty of a dead route. Healthy TCP+TLS handshakes complete
+            // in well under 2s even on slow mobile links; 6s only ever gets
+            // spent on broken routes, where failing over faster is strictly
+            // better than hanging.
+            .connectTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+            // 30s read timeout kept: NewPipe pages can be several MB
+            // (sw.js, watch/search HTML) on genuinely slow networks.
             .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-            .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .addInterceptor(loggingInterceptor)
             .build()
@@ -371,6 +410,11 @@ object AppModule {
         
         return OkHttpClient.Builder()
             .connectionPool(connectionPool)
+            // FIX(cloud-streaming-speed): IPv4-first route ordering for the
+            // app-wide client too (Retrofit APIs: lyrics, Deezer, Netease,
+            // GDrive) — same rationale as the NewPipe / streaming / artwork
+            // clients; see [PreferIpv4Dns].
+            .dns(PreferIpv4Dns)
             .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
@@ -433,12 +477,22 @@ object AppModule {
 
         return OkHttpClient.Builder()
             .connectionPool(connectionPool)
-            // Generous connect timeout for slow DNS / TLS handshake.
-            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            // FIX(cloud-streaming-speed): IPv4-first route ordering — same
+            // rationale as the NewPipe client above. This is the client the
+            // stream proxies use for googlevideo / sndcdn media fetches;
+            // EVERY seek opens a fresh upstream connection through it (the
+            // previous connection is discarded when ExoPlayer tears down
+            // the previous ranged read), so a blackholed IPv6 route added
+            // the whole connect timeout to EVERY seek — the reported
+            // "extremely long time to play from a forwarded position".
+            .dns(PreferIpv4Dns)
+            // 10s connect timeout (was 30s): bounds the dead-route penalty
+            // while leaving generous headroom for slow TLS handshakes.
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
             // 0 = no read timeout. REQUIRED for YouTube's adaptive throttling:
             // the gap between upstream chunks can exceed the app's default 8s.
             .readTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
-            .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             // 0 = no overall call timeout. The call ends when the upstream body
             // is fully consumed (or the client disconnects).
             .callTimeout(0, java.util.concurrent.TimeUnit.SECONDS)

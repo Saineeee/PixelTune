@@ -177,6 +177,42 @@ class SearchStateHolder @Inject constructor(
                         if (_searchResults.value != immutableResults) {
                             _searchResults.value = immutableResults
                         }
+
+                        // FIX(cloud-streaming-speed): warm the resolved stream
+                        // URL for the TOP search result in the background.
+                        //
+                        // The stream proxies resolve a song's real streaming
+                        // URL lazily — the first ExoPlayer request for a tapped
+                        // song pays the full NewPipe extraction on the playback
+                        // critical path. The MusicService prefetch already warms
+                        // the NEXT queued song on every transition, but the FIRST
+                        // tap of a fresh search had nothing warmed. The top result
+                        // is by far the most likely tap target, so resolving its
+                        // URL while the user scans the list makes that tap start
+                        // playback from an already-cached URL.
+                        //
+                        // Cheap and safe by construction:
+                        //  - the proxies' prefetch() validates the URL is one of
+                        //    their own loopback URLs and silently ignores anything
+                        //    else (empty strings when the proxy was not started,
+                        //    local-library results, etc.);
+                        //  - an in-flight guard dedupes concurrent prefetches and
+                        //    fresh cache entries are skipped, so repeated searches
+                        //    for the same query never re-extract;
+                        //  - it runs on the proxies' own IO scope and never blocks
+                        //    publishing the results above.
+                        if (request.isOnline) {
+                            (resultsList.firstOrNull() as? SearchResultItem.SongItem)
+                                ?.song?.contentUriString
+                                ?.takeIf { it.startsWith("http") }
+                                ?.let { proxyUrl ->
+                                    if (_currentProvider.value == OnlineProvider.YOUTUBE) {
+                                        youTubeStreamProxy.prefetch(proxyUrl)
+                                    } else {
+                                        soundCloudStreamProxy.prefetch(proxyUrl)
+                                    }
+                                }
+                        }
                     } catch (_: CancellationException) {
                         // Superseded by a newer query; ignore.
                     } catch (e: Exception) {
