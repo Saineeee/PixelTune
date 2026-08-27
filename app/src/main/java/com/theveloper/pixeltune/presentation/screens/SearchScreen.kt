@@ -357,7 +357,7 @@ fun SearchScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 8.dp)
+                    .padding(horizontal = 24.dp, vertical = 8.dp)
                     .height(48.dp),
                 horizontalArrangement = Arrangement.Center
             ) {
