@@ -609,6 +609,14 @@ class DualPlayerEngine @Inject constructor(
      * Resolves a `soundcloud://<encoded>` URI to the current session's SoundCloud
      * proxy HTTP URL. Mirrors [resolveYouTubeUriAsync] — see that function's docs
      * for why we cannot persist the proxy URL directly.
+     *
+     * The proxy's resolver handles BOTH payload encodings SoundCloud scheme URIs
+     * are persisted in: the URL-encoded token (single opaque segment) and the
+     * decoded track URL that [CloudUriUtils.normalizeCloudUriForStorage] writes
+     * (it decodes via Uri.pathSegments). The decoded form is re-encoded by the
+     * proxy so the rebuilt proxy URL always matches the single-segment Ktor
+     * route — without it, restored sessions answered 404 and the previously
+     * playing song could not be replayed after an app restart.
      */
     private suspend fun resolveSoundCloudUriAsync(uriString: String): Uri? {
         Timber.tag("DualPlayerEngine").d("Async resolving SoundCloud URI: $uriString")
@@ -627,13 +635,6 @@ class DualPlayerEngine @Inject constructor(
             return Uri.parse(proxyUrl)
         }
 
-        // SoundCloud's resolveSoundCloudUri currently always returns null (it's
-        // a stub — the SoundCloud proxy stores encoded URLs in the path segment
-        // of its HTTP proxy URL, not as a host in a scheme URI). For the
-        // favorites-from-Liked-tab flow, the URI persisted at favorite time was
-        // already the HTTP proxy URL (SoundCloud search results store the proxy
-        // URL directly in song.contentUriString), so this code path is rarely
-        // hit. We still log to make any future regression diagnosable.
         Timber.tag("DualPlayerEngine").w("Failed to resolve SoundCloud URI: $uriString")
         return null
     }

@@ -130,7 +130,18 @@ class SoundCloudRepository @Inject constructor() {
                 .takeIf { it.startsWith("soundcloud://", ignoreCase = true) }
                 ?.substringAfter("soundcloud://")
                 ?.let { encoded ->
-                    runCatching { java.net.URLDecoder.decode(encoded, "UTF-8") }.getOrNull()
+                    // FIX(soundcloud-playback-restore): the persisted payload may
+                    // be the URL-ENCODED token (single opaque segment — the
+                    // documented scheme form) or the DECODED track URL that
+                    // CloudUriUtils.normalizeCloudUriForStorage writes (it
+                    // decodes via Uri.pathSegments). A decoded payload always
+                    // contains the literal "://" of its inner https URL, an
+                    // encoded token never does — decode only when needed so a
+                    // restored seed is never double-decoded (which could mangle
+                    // percent sequences) nor left encoded (which NewPipe cannot
+                    // fetch).
+                    if (encoded.contains("://")) encoded
+                    else runCatching { java.net.URLDecoder.decode(encoded, "UTF-8") }.getOrNull()
                 }
                 ?: return@withContext emptyList()
 

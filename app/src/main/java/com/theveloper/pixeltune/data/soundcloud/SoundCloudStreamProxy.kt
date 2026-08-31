@@ -25,6 +25,7 @@ import okhttp3.Request
 import timber.log.Timber
 import java.net.ServerSocket
 import java.net.URLDecoder
+import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -133,14 +134,39 @@ class SoundCloudStreamProxy @Inject constructor(
         // opaque token after "soundcloud://". Work on the RAW string — never
         // on Uri.getHost(), which may return a decoded/normalized form and
         // would double-decode on the proxy side.
-        val encodedUrl = uriString.substringAfter("soundcloud://", "")
+        val rawPayload = uriString.substringAfter("soundcloud://", "")
             .trim()
             .takeIf { it.isNotEmpty() } ?: return null
         if (actualPort == 0) {
             Timber.w("SoundCloudStreamProxy: resolveSoundCloudUri called but proxy not started yet")
             return null
         }
-        return getProxyUrl(encodedUrl)
+        // FIX(soundcloud-playback-restore): the payload may be persisted in
+        // EITHER encoding. The intended form is the URL-ENCODED track URL
+        // (single opaque token), but [CloudUriUtils.normalizeCloudUriForStorage]
+        // — used by the last-playback snapshot, favorites and the downloads
+        // index — extracts the payload via Uri.pathSegments, which DECODES
+        // %2F/%3A. A decoded payload rebuilt into the proxy URL verbatim
+        // produced
+        //   http://127.0.0.1:<port>/soundcloud/https://soundcloud.com/a/t
+        // — a MULTI-SEGMENT path that the single-segment Ktor route
+        // "/soundcloud/{url}" never matches, so the proxy answered 404 and
+        // the previously-playing SoundCloud song failed to replay after the
+        // app was closed and reopened (YouTube was unaffected: its payload
+        // is a slash-free 11-char video id).
+        //
+        // A decoded payload always contains the literal "://" of its inner
+        // https URL, while a correctly-encoded token never does (":" and "/"
+        // are %3A/%2F) — so that distinguishes the two forms unambiguously.
+        // Re-encode decoded payloads with the same URLEncoder the live search
+        // path uses, restoring the exact single-segment token the route (and
+        // the proxy's URLDecoder) expect; encoded payloads pass through.
+        val routePayload = if (rawPayload.contains("://")) {
+            runCatching { URLEncoder.encode(rawPayload, "UTF-8") }.getOrDefault(rawPayload)
+        } else {
+            rawPayload
+        }
+        return getProxyUrl(routePayload)
     }
 
     /**

@@ -27,6 +27,7 @@ import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
 import com.theveloper.pixeltune.data.preferences.dataStore
 import com.theveloper.pixeltune.data.media.SongMetadataEditor
 import com.theveloper.pixeltune.data.network.PreferIpv4Dns
+import com.theveloper.pixeltune.data.network.YtimgArtworkFallbackInterceptor
 import com.theveloper.pixeltune.data.network.deezer.DeezerApiService
 import com.theveloper.pixeltune.data.network.netease.NeteaseApiService
 import com.theveloper.pixeltune.data.network.lyrics.LrcLibApiService
@@ -199,9 +200,18 @@ object AppModule {
             // Sharing the IPv4-first resolver (see [PreferIpv4Dns]) makes the
             // first connection attempt the working one. No logging
             // interceptor here: image bytes never belong in logcat.
+            //
+            // FIX(youtube-art-quality): the artwork URLs are upgraded to the
+            // highest-resolution form at the data layer (maxresdefault.jpg /
+            // 1080px googleusercontent tokens — see CloudArtworkHelper). For
+            // the rare video without maxres artwork, this client's
+            // [YtimgArtworkFallbackInterceptor] retries hq720.jpg and then
+            // hqdefault.jpg (the floor every video has) on 404/410, so an
+            // upgrade can never surface as a missing album-art placeholder.
             .callFactory(
                 OkHttpClient.Builder()
                     .dns(PreferIpv4Dns)
+                    .addInterceptor(YtimgArtworkFallbackInterceptor())
                     .connectTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
                     .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
                     .build()

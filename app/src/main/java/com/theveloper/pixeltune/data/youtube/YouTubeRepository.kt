@@ -362,15 +362,23 @@ class YouTubeRepository @Inject constructor() {
      *
      *  1. Pick the highest-resolution entry from the list
      *     (see [CloudArtworkHelper.bestArtworkUrl]).
-     *  2. When the list is empty, synthesize the deterministic YouTube
-     *     thumbnail URL for the video id — `hqdefault.jpg` (480x360) is
-     *     generated for EVERY valid video and never 404s, so artwork always
-     *     has something to load.
+     *  2. FIX(youtube-art-quality): [CloudArtworkHelper.bestArtworkUrl] now
+     *     also rewrites the chosen URL to its high-resolution equivalent
+     *     (Google image CDN size token -> 1080px, i.ytimg.com ->
+     *     maxresdefault.jpg) — NewPipe's YouTube Music song items only
+     *     expose 60x60/120x120 covers, which the player upscaled ~9x.
+     *  3. When the list is empty, synthesize the deterministic YouTube
+     *     thumbnail URL for the video id and upgrade it the same way
+     *     (`maxresdefault.jpg`, 1280x720). The artwork client's
+     *     [com.theveloper.pixeltune.data.network.YtimgArtworkFallbackInterceptor]
+     *     guarantees the chain `maxresdefault -> hq720 -> hqdefault` (the
+     *     latter exists for EVERY valid video) still loads when a video has
+     *     no maxres artwork, so artwork always has something to show.
      */
     private fun bestArtworkUrl(item: StreamInfoItem, videoId: String?): String? {
         CloudArtworkHelper.bestArtworkUrl(item)?.let { return it }
         return videoId?.takeIf { it.isNotEmpty() }
-            ?.let { "https://i.ytimg.com/vi/$it/hqdefault.jpg" }
+            ?.let { CloudArtworkHelper.upgradeToHighRes("https://i.ytimg.com/vi/$it/hqdefault.jpg") }
     }
 
     suspend fun getAutoplayRecommendation(
