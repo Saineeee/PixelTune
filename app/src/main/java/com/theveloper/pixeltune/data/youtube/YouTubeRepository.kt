@@ -1,14 +1,18 @@
 package com.theveloper.pixeltune.data.youtube
 
-import com.theveloper.pixeltune.data.model.Album
-import com.theveloper.pixeltune.data.model.Artist
-import com.theveloper.pixeltune.data.model.Playlist
+import com.theveloper.pixeltune.data.model.CloudArtist
+import com.theveloper.pixeltune.data.model.CloudPlaylist
+import com.theveloper.pixeltune.data.model.CloudStreamProvider
+import com.theveloper.pixeltune.data.model.CloudTracksPage
 import com.theveloper.pixeltune.data.model.SearchResultItem
 import com.theveloper.pixeltune.data.model.SearchFilterType
 import com.theveloper.pixeltune.data.model.Song
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
+import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
+import org.schabi.newpipe.extractor.channel.tabs.ChannelTabs
+import org.schabi.newpipe.extractor.linkhandler.ListLinkHandler
 import org.schabi.newpipe.extractor.search.SearchExtractor
 import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory
 import org.schabi.newpipe.extractor.stream.AudioStream
@@ -191,12 +195,22 @@ class YouTubeRepository @Inject constructor() {
         // user explicitly does not want; the YT Music songs index guarantees
         // real songs. The "All" tab maps to the same music-songs filter so
         // ONLY music shows up everywhere (search, tap-to-play, queue refill).
+        //
+        // FIX(online-filter-chips): the Albums / Artists / Playlists chips now
+        // map to the matching YouTube MUSIC indexes (MUSIC_ALBUMS /
+        // MUSIC_ARTISTS / MUSIC_PLAYLISTS) instead of the generic
+        // "playlists"/"channels" filters. NewPipe's YoutubeMusicSearchExtractor
+        // fully supports all of them (its params switch selects the YT Music
+        // tab and commits dedicated item extractors — albums & playlists yield
+        // PlaylistInfoItems, artists yield ChannelInfoItems), and every result
+        // carries the rich metadata (artwork, uploader, counts) the cloud
+        // result rows and the CloudCatalog detail screen render.
         val searchFilter = when (filter) {
             SearchFilterType.ALL -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
             SearchFilterType.SONGS -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
-            SearchFilterType.ALBUMS -> "playlists" // YouTube doesn't map albums cleanly, but NewPipe handles it
-            SearchFilterType.ARTISTS -> "channels"
-            SearchFilterType.PLAYLISTS -> "playlists"
+            SearchFilterType.ALBUMS -> YoutubeSearchQueryHandlerFactory.MUSIC_ALBUMS
+            SearchFilterType.ARTISTS -> YoutubeSearchQueryHandlerFactory.MUSIC_ARTISTS
+            SearchFilterType.PLAYLISTS -> YoutubeSearchQueryHandlerFactory.MUSIC_PLAYLISTS
         }
 
         // Tier 1: the YouTube Music songs index.
@@ -311,25 +325,55 @@ class YouTubeRepository @Inject constructor() {
                 }
                     is PlaylistInfoItem -> {
                         if (filter == SearchFilterType.ALL || filter == SearchFilterType.PLAYLISTS || filter == SearchFilterType.ALBUMS) {
-                            val playlistId = extractPlaylistId(item.url) ?: item.url
-                            val playlist = Playlist(
-                                id = playlistId,
-                                name = item.name ?: "Unknown Playlist",
-                                songIds = emptyList() // We don't fetch songs right now
+                            // FIX(online-filter-chips): keep the provider's own
+                            // metadata (uploader, track count, artwork) on a
+                            // dedicated cloud model instead of squeezing the
+                            // item into the LOCAL Playlist shape (which always
+                            // rendered "0 songs" with a placeholder cover and
+                            // opened the local PlaylistDetail screen that can
+                            // never resolve it).
+                            val playlistUrl = normalizePlaylistUrl(item.url)
+                            results.add(
+                                SearchResultItem.CloudPlaylistItem(
+                                    CloudPlaylist(
+                                        id = playlistUrl.hashCode().toString(),
+                                        url = playlistUrl,
+                                        name = item.name ?: "Unknown Playlist",
+                                        uploaderName = runCatching { item.uploaderName }.getOrNull(),
+                                        trackCount = runCatching { item.streamCount }.getOrDefault(-1L),
+                                        artworkUrl = CloudArtworkHelper.bestArtworkUrl(
+                                            runCatching { item.thumbnails }.getOrDefault(emptyList())
+                                        ),
+                                        isAlbum = filter == SearchFilterType.ALBUMS,
+                                        provider = com.theveloper.pixeltune.data.model.CloudStreamProvider.YOUTUBE
+                                    )
+                                )
                             )
-                            results.add(SearchResultItem.PlaylistItem(playlist))
                         }
                     }
                     is ChannelInfoItem -> {
                         if (filter == SearchFilterType.ALL || filter == SearchFilterType.ARTISTS) {
-                            val channelId = extractChannelId(item.url) ?: item.url
-                            val artist = Artist(
-                                id = channelId.hashCode().toLong(),
-                                name = item.name ?: "Unknown Artist",
-                                songCount = item.subscriberCount.toInt(),
-                                // NewPipe ChannelInfoItem doesn't directly expose imageUrl
+                            // FIX(online-filter-chips): same treatment for
+                            // artists — keep the channel avatar + subscriber
+                            // count NewPipe extracted (the LOCAL Artist mapping
+                            // dropped the avatar and mislabeled subscribers as
+                            // "X Songs"), and keep the channel URL the detail
+                            // screen extracts the artist's tracks from.
+                            results.add(
+                                SearchResultItem.CloudArtistItem(
+                                    CloudArtist(
+                                        id = item.url.hashCode().toString(),
+                                        url = item.url,
+                                        name = item.name ?: "Unknown Artist",
+                                        subscriberCount = runCatching { item.subscriberCount }.getOrDefault(-1L),
+                                        artworkUrl = CloudArtworkHelper.bestArtworkUrl(
+                                            runCatching { item.thumbnails }.getOrDefault(emptyList())
+                                        ),
+                                        isVerified = runCatching { item.isVerified }.getOrDefault(false),
+                                        provider = com.theveloper.pixeltune.data.model.CloudStreamProvider.YOUTUBE
+                                    )
+                                )
                             )
-                            results.add(SearchResultItem.ArtistItem(artist))
                         }
                     }
                 }
@@ -343,13 +387,17 @@ class YouTubeRepository @Inject constructor() {
         return regex.find(url)?.groupValues?.get(1) ?: url.substringAfterLast("/").substringBefore("?")
     }
 
-    private fun extractPlaylistId(url: String): String? {
-        val regex = Regex("list=([a-zA-Z0-9_-]+)")
-        return regex.find(url)?.groupValues?.get(1)
-    }
-
-    private fun extractChannelId(url: String): String? {
-        return url.substringAfterLast("/")
+    /**
+     * FIX(online-filter-chips): canonical playlist URL for extraction.
+     *
+     * YouTube Music search results link to `music.youtube.com/playlist?list=X`;
+     * the extractor accepts both hosts (it resolves purely by the `list` id),
+     * but the app's other playlist paths (import, radio mixes) normalize to
+     * `www.youtube.com` — keep every stored cloud playlist URL on that same
+     * canonical form so persisted entries behave identically everywhere.
+     */
+    private fun normalizePlaylistUrl(url: String): String {
+        return url.replace("music.youtube.com", "www.youtube.com")
     }
 
     /**
@@ -616,6 +664,349 @@ class YouTubeRepository @Inject constructor() {
         val durationSeconds = item.duration
         if (durationSeconds <= 0) return false
         return durationSeconds <= MAX_RADIO_CANDIDATE_DURATION_SECONDS
+    }
+
+    /**
+     * FIX(online-filter-chips): extracts the FIRST page of playable tracks of
+     * a YouTube (Music) playlist or album found by the online search.
+     *
+     * The playlist extractor resolves purely by the `list` id, so albums
+     * (OLAK5uy_…), YT Music playlists (RDCLAK5uy_…) and plain user playlists
+     * all flow through the same path. Every returned [Song] is built exactly
+     * like an online search result (same id scheme, same proxy URL, same
+     * high-res artwork upgrade), so it is immediately playable, persistable
+     * when liked, and identical to what the user would have gotten by finding
+     * the track through search.
+     */
+    suspend fun getCloudPlaylistTracks(
+        playlist: CloudPlaylist,
+        proxyUrlProvider: (String) -> String
+    ): Result<CloudTracksPage> = withContext(Dispatchers.IO) {
+        try {
+            val extractor = ServiceList.YouTube.getPlaylistExtractor(
+                normalizePlaylistUrl(playlist.url)
+            )
+            extractor.fetchPage()
+            val page = extractor.initialPage
+            val songs = playlistStreamItemsToSongs(
+                items = page.items.filterIsInstance<StreamInfoItem>(),
+                proxyUrlProvider = proxyUrlProvider,
+                contextTitle = playlist.name
+            )
+            val uploader = runCatching { extractor.uploaderName }.getOrNull()
+            val trackCount = runCatching { extractor.streamCount }.getOrDefault(-1L)
+            Result.success(
+                CloudTracksPage(
+                    songs = songs,
+                    refreshedTitle = runCatching { extractor.name }.getOrNull(),
+                    refreshedTrackCount = trackCount.takeIf { it >= 0 },
+                    refreshedSubtitle = uploader?.takeIf { it.isNotBlank() },
+                    hasMore = page.nextPage != null,
+                    continuation = page.nextPage
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Error extracting YouTube playlist tracks for %s", playlist.url)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * FIX(online-filter-chips): continues a [getCloudPlaylistTracks] listing
+     * (the "Load more" action of the cloud playlist detail screen). The
+     * [page] parameter is the previous result — its continuation token is the
+     * opaque NewPipe `Page` this repository produced.
+     */
+    suspend fun getMoreCloudPlaylistTracks(
+        playlist: CloudPlaylist,
+        page: CloudTracksPage,
+        proxyUrlProvider: (String) -> String
+    ): Result<CloudTracksPage> = withContext(Dispatchers.IO) {
+        val continuation = page.continuation as? org.schabi.newpipe.extractor.Page
+            ?: return@withContext Result.failure(
+                IllegalArgumentException("No continuation for YouTube playlist ${playlist.url}")
+            )
+        try {
+            val extractor = ServiceList.YouTube.getPlaylistExtractor(
+                normalizePlaylistUrl(playlist.url)
+            )
+            extractor.fetchPage()
+            val next = extractor.getPage(continuation)
+            val songs = playlistStreamItemsToSongs(
+                items = next.items.filterIsInstance<StreamInfoItem>(),
+                proxyUrlProvider = proxyUrlProvider,
+                contextTitle = playlist.name
+            )
+            Result.success(
+                CloudTracksPage(
+                    songs = songs,
+                    hasMore = next.nextPage != null,
+                    continuation = next.nextPage
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Error paging YouTube playlist tracks for %s", playlist.url)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * FIX(online-filter-chips): extracts the FIRST page of a YouTube artist's
+     * playable tracks, in two tiers (verified live against the real
+     * extractor):
+     *
+     *  1. **Channel "videos" tab** — works for every REGULAR channel; the tab
+     *     framework resolves it and pages through the uploads.
+     *
+     *  2. **YouTube Music songs search for the artist name** — the fallback
+     *     for the "- Topic" auto-generated channels the YT Music artists index
+     *     returns for essentially every music artist: those channels expose NO
+     *     channel tabs at all (live-verified: `getTabs()` is empty and direct
+     *     tab URLs throw), so the only reliable track source is a
+     *     `MUSIC_SONGS` search. Results are kept when the song's uploader
+     *     matches the artist name (live-verified: 12/12 top results matched),
+     *     deduped by video id, and paginated through the search continuation.
+     */
+    suspend fun getCloudArtistTracks(
+        artist: CloudArtist,
+        proxyUrlProvider: (String) -> String
+    ): Result<CloudTracksPage> = withContext(Dispatchers.IO) {
+        // Tier 1: the channel's videos tab (regular channels).
+        try {
+            val channel = ServiceList.YouTube.getChannelExtractor(
+                normalizeChannelUrl(artist.url)
+            )
+            channel.fetchPage()
+            val videosTab = channel.tabs.firstOrNull { tab ->
+                tab.contentFilters.contains(ChannelTabs.VIDEOS)
+            }
+            if (videosTab != null) {
+                val tabInfo = ChannelTabInfo.getInfo(ServiceList.YouTube, videosTab)
+                val songs = dedupeBySongId(
+                    playlistStreamItemsToSongs(
+                        items = tabInfo.relatedItems.filterIsInstance<StreamInfoItem>(),
+                        proxyUrlProvider = proxyUrlProvider,
+                        contextTitle = artist.name
+                    )
+                )
+                return@withContext Result.success(
+                    CloudTracksPage(
+                        songs = songs,
+                        refreshedTitle = runCatching { channel.name }.getOrNull(),
+                        refreshedSubtitle = formatSubscriberCount(
+                            runCatching { channel.subscriberCount }.getOrDefault(-1L)
+                        ),
+                        hasMore = tabInfo.nextPage != null,
+                        continuation = tabInfo.nextPage?.let {
+                            ChannelTabContinuation(videosTab, it)
+                        }
+                    )
+                )
+            }
+            Timber.d(
+                "Channel %s exposes no videos tab (likely a Topic channel) — " +
+                    "falling back to the YT Music songs search for '%s'",
+                artist.url, artist.name
+            )
+        } catch (e: Exception) {
+            Timber.w(
+                e,
+                "Channel extraction failed for %s — falling back to the YT Music " +
+                    "songs search for '%s'",
+                artist.url, artist.name
+            )
+        }
+
+        // Tier 2: the YT Music songs index for the artist name.
+        searchArtistSongs(artist, proxyUrlProvider, null)
+    }
+
+    /**
+     * FIX(online-filter-chips): continues a [getCloudArtistTracks] listing
+     * (the "Load more" action of the cloud artist detail screen) — follows
+     * whichever tier produced the previous page, using the tagged
+     * continuation this repository stored on it.
+     */
+    suspend fun getMoreCloudArtistTracks(
+        artist: CloudArtist,
+        page: CloudTracksPage,
+        proxyUrlProvider: (String) -> String
+    ): Result<CloudTracksPage> = withContext(Dispatchers.IO) {
+        when (val continuation = page.continuation) {
+            is ChannelTabContinuation -> {
+                try {
+                    val next = ChannelTabInfo.getMoreItems(
+                        ServiceList.YouTube, continuation.tab, continuation.page
+                    )
+                    val songs = dedupeBySongId(
+                        playlistStreamItemsToSongs(
+                            items = next.items.filterIsInstance<StreamInfoItem>(),
+                            proxyUrlProvider = proxyUrlProvider,
+                            contextTitle = artist.name
+                        )
+                    )
+                    Result.success(
+                        CloudTracksPage(
+                            songs = songs,
+                            hasMore = next.nextPage != null,
+                            continuation = next.nextPage?.let {
+                                ChannelTabContinuation(continuation.tab, it)
+                            }
+                        )
+                    )
+                } catch (e: Exception) {
+                    Timber.e(e, "Error paging YouTube artist tracks for %s", artist.url)
+                    Result.failure(e)
+                }
+            }
+            is ArtistSearchContinuation ->
+                searchArtistSongs(artist, proxyUrlProvider, continuation.page)
+            else -> Result.failure(
+                IllegalArgumentException("No continuation for YouTube artist ${artist.url}")
+            )
+        }
+    }
+
+    /**
+     * FIX(online-filter-chips): one page of the Tier-2 artist listing — the
+     * YT Music songs search for the artist's name, filtered to songs whose
+     * uploader matches the artist (Topic-channel tracks report the plain
+     * artist name), deduped by video id. [continuation] is null for the
+     * first page and the previous search `Page` for "Load more".
+     */
+    private fun searchArtistSongs(
+        artist: CloudArtist,
+        proxyUrlProvider: (String) -> String,
+        continuation: org.schabi.newpipe.extractor.Page?
+    ): Result<CloudTracksPage> {
+        return try {
+            val searchExtractor = ServiceList.YouTube.getSearchExtractor(
+                artist.name,
+                listOf(YoutubeSearchQueryHandlerFactory.MUSIC_SONGS),
+                ""
+            )
+            searchExtractor.fetchPage()
+            val resultPage = if (continuation != null) {
+                searchExtractor.getPage(continuation)
+            } else {
+                searchExtractor.initialPage
+            }
+            val items = resultPage.items.filterIsInstance<StreamInfoItem>()
+            val artistKey = artist.name.trim().lowercase()
+            val matching = items.filter { item ->
+                val uploader = item.uploaderName?.trim()?.lowercase().orEmpty()
+                uploader.isNotEmpty() && (uploader.contains(artistKey) || artistKey.contains(uploader))
+            }
+            // Keep matched songs; only when nothing matched (odd provider
+            // naming) keep the raw results so the screen is never empty.
+            val chosen = if (matching.isNotEmpty()) matching else items
+            val songs = dedupeBySongId(
+                playlistStreamItemsToSongs(
+                    items = chosen,
+                    proxyUrlProvider = proxyUrlProvider,
+                    contextTitle = artist.name
+                )
+            )
+            Result.success(
+                CloudTracksPage(
+                    songs = songs,
+                    hasMore = resultPage.nextPage != null,
+                    continuation = resultPage.nextPage?.let {
+                        ArtistSearchContinuation(it)
+                    }
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "YT Music songs search for artist '%s' failed", artist.name)
+            Result.failure(e)
+        }
+    }
+
+    /** Continuation tag for the channel-tab tier of the artist listing. */
+    private class ChannelTabContinuation(
+        val tab: ListLinkHandler,
+        val page: org.schabi.newpipe.extractor.Page
+    )
+
+    /** Continuation tag for the songs-search tier of the artist listing. */
+    private class ArtistSearchContinuation(
+        val page: org.schabi.newpipe.extractor.Page
+    )
+
+    /**
+     * FIX(online-filter-chips): drops later entries whose song id already
+     * appeared (YouTube allows the same video twice in a playlist, and the
+     * songs-search tier frequently repeats a track across pages).
+     */
+    private fun dedupeBySongId(songs: List<Song>): List<Song> {
+        val seen = HashSet<String>(songs.size)
+        return songs.filter { seen.add(it.id) }
+    }
+
+    /**
+     * FIX(online-filter-chips): canonical channel URL for extraction.
+     *
+     * YT Music artist results link to `music.youtube.com/channel/UC…`; the
+     * channel link handler accepts that host, but the canonical
+     * `www.youtube.com` form is what the app's other channel paths use, and
+     * it sidesteps any music-host edge case in future extractor versions.
+     */
+    private fun normalizeChannelUrl(url: String): String {
+        return url.replace("music.youtube.com", "www.youtube.com")
+    }
+
+    /**
+     * FIX(online-filter-chips): "1.2M subscribers" style subtitle for the
+     * cloud artist header. Returns null when the count is unknown.
+     */
+    private fun formatSubscriberCount(count: Long): String? {
+        if (count < 0) return null
+        return when {
+            count >= 1_000_000L -> {
+                val v = count / 1_000_000L
+                val frac = (count % 1_000_000L) / 100_000L
+                if (frac > 0) "$v.${frac}M subscribers" else "$v M subscribers"
+            }
+            count >= 1_000L -> "${count / 1_000L}K subscribers"
+            else -> "$count subscribers"
+        }
+    }
+
+    /**
+     * FIX(online-filter-chips): maps playlist/channel-tab [StreamInfoItem]s to
+     * immediately-playable [Song]s — identical construction to the online
+     * search results (id = video id, proxy URL per video, high-res artwork),
+     * so the queue, favorites and downloads treat them uniformly.
+     *
+     * Unplayable entries (live streams, missing ids) are skipped instead of
+     * aborting the whole listing — an album with one unavailable video still
+     * lists the rest.
+     */
+    private fun playlistStreamItemsToSongs(
+        items: List<StreamInfoItem>,
+        proxyUrlProvider: (String) -> String,
+        contextTitle: String
+    ): List<Song> {
+        val songs = ArrayList<Song>(items.size)
+        for (item in items) {
+            val videoId = extractVideoId(item.url) ?: continue
+            val durationMs = if (item.duration > 0) item.duration * 1000L else 0L
+            songs += Song.emptySong().copy(
+                id = videoId,
+                title = item.name ?: "Unknown",
+                artist = item.uploaderName ?: "Unknown",
+                artistId = -1L,
+                album = contextTitle,
+                albumId = -1L,
+                path = item.url,
+                contentUriString = proxyUrlProvider(videoId),
+                albumArtUriString = bestArtworkUrl(item, videoId),
+                duration = durationMs,
+                mimeType = "audio/mp4",
+                youtubeId = videoId
+            )
+        }
+        return songs
     }
 
     companion object {

@@ -74,6 +74,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.theveloper.pixeltune.data.model.Album
 import com.theveloper.pixeltune.data.model.Artist
+import com.theveloper.pixeltune.data.model.CloudArtist
+import com.theveloper.pixeltune.data.model.CloudPlaylist
 import com.theveloper.pixeltune.data.model.Playlist
 import com.theveloper.pixeltune.data.model.SearchFilterType
 import com.theveloper.pixeltune.data.model.SearchHistoryItem
@@ -948,6 +950,12 @@ fun SearchResultsList(
             is SearchResultItem.AlbumItem -> SearchFilterType.ALBUMS
             is SearchResultItem.ArtistItem -> SearchFilterType.ARTISTS
             is SearchResultItem.PlaylistItem -> SearchFilterType.PLAYLISTS
+            // FIX(online-filter-chips): cloud catalog entries join the
+            // matching section — albums from the YT Music albums index group
+            // under Albums, playlists under Playlists, artists under Artists.
+            is SearchResultItem.CloudPlaylistItem ->
+                if (item.playlist.isAlbum) SearchFilterType.ALBUMS else SearchFilterType.PLAYLISTS
+            is SearchResultItem.CloudArtistItem -> SearchFilterType.ARTISTS
         }
     }
 
@@ -993,6 +1001,8 @@ fun SearchResultsList(
                             is SearchResultItem.AlbumItem -> "album_${item.album.id}"
                             is SearchResultItem.ArtistItem -> "artist_${item.artist.id}"
                             is SearchResultItem.PlaylistItem -> "playlist_${item.playlist.id}_${index}"
+                            is SearchResultItem.CloudPlaylistItem -> "cloud_playlist_${item.playlist.id}_${index}"
+                            is SearchResultItem.CloudArtistItem -> "cloud_artist_${item.artist.id}_${index}"
                         }
                     }
                 ) { index ->
@@ -1100,6 +1110,67 @@ fun SearchResultsList(
                                     playlistSongs = playlistSongs,
                                     onPlayClick = onPlayClick,
                                     onOpenClick = onOpenClick
+                                )
+                            }
+
+                            // FIX(online-filter-chips): ONLINE search results —
+                            // tapping the row opens the CloudCatalog detail
+                            // screen (which extracts the playlist's REAL
+                            // tracks), and the play button opens it with
+                            // autoplay so playback starts as soon as the
+                            // tracks are loaded. Never routed to the LOCAL
+                            // detail screens, which cannot resolve cloud ids.
+                            is SearchResultItem.CloudPlaylistItem -> {
+                                val onOpenClick = remember(item.playlist, onItemSelected) {
+                                    {
+                                        navController.navigateSafely(
+                                            Screen.CloudCatalog.createRoute(item.playlist)
+                                        )
+                                        onItemSelected()
+                                    }
+                                }
+                                val onPlayClick = remember(item.playlist, onItemSelected) {
+                                    {
+                                        navController.navigateSafely(
+                                            Screen.CloudCatalog.createRoute(
+                                                item.playlist,
+                                                autoPlay = true
+                                            )
+                                        )
+                                        onItemSelected()
+                                    }
+                                }
+                                SearchResultCloudPlaylistItem(
+                                    playlist = item.playlist,
+                                    onOpenClick = onOpenClick,
+                                    onPlayClick = onPlayClick
+                                )
+                            }
+
+                            is SearchResultItem.CloudArtistItem -> {
+                                val onOpenClick = remember(item.artist, onItemSelected) {
+                                    {
+                                        navController.navigateSafely(
+                                            Screen.CloudCatalog.createRoute(item.artist)
+                                        )
+                                        onItemSelected()
+                                    }
+                                }
+                                val onPlayClick = remember(item.artist, onItemSelected) {
+                                    {
+                                        navController.navigateSafely(
+                                            Screen.CloudCatalog.createRoute(
+                                                item.artist,
+                                                autoPlay = true
+                                            )
+                                        )
+                                        onItemSelected()
+                                    }
+                                }
+                                SearchResultCloudArtistItem(
+                                    artist = item.artist,
+                                    onOpenClick = onOpenClick,
+                                    onPlayClick = onPlayClick
                                 )
                             }
                         }
@@ -1336,6 +1407,246 @@ fun SearchResultPlaylistItem(
                 Icon(Icons.Rounded.PlayArrow, contentDescription = "Play Playlist", modifier = Modifier.size(24.dp))
             }
         }
+    }
+}
+
+/**
+ * FIX(online-filter-chips): an ONLINE-search playlist / album row (YouTube
+ * Music / SoundCloud).
+ *
+ * Styled 1:1 after the app's existing M3 expressive result cards
+ * (AbsoluteSmoothCornerShape, surfaceContainerLow, 56dp artwork, circular
+ * filled play button) — but now renders the provider's REAL metadata:
+ * high-res artwork, uploader name and true track count (the old mapping
+ * showed a placeholder cover with "0 songs").
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SearchResultCloudPlaylistItem(
+    playlist: CloudPlaylist,
+    onOpenClick: () -> Unit,
+    onPlayClick: () -> Unit
+) {
+    val itemShape = remember {
+        AbsoluteSmoothCornerShape(
+            cornerRadiusTL = 26.dp,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusTR = 26.dp,
+            smoothnessAsPercentBR = 60,
+            cornerRadiusBR = 26.dp,
+            smoothnessAsPercentBL = 60,
+            cornerRadiusBL = 26.dp,
+            smoothnessAsPercentTL = 60
+        )
+    }
+
+    val coverShape = remember {
+        AbsoluteSmoothCornerShape(
+            cornerRadiusTL = 14.dp,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusTR = 14.dp,
+            smoothnessAsPercentBR = 60,
+            cornerRadiusBR = 14.dp,
+            smoothnessAsPercentBL = 60,
+            cornerRadiusBL = 14.dp,
+            smoothnessAsPercentTL = 60
+        )
+    }
+
+    Card(
+        onClick = onOpenClick,
+        shape = itemShape,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (playlist.artworkUrl != null) {
+                SmartImage(
+                    model = playlist.artworkUrl,
+                    contentDescription = "Cover of ${playlist.name}",
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(coverShape)
+                )
+            } else {
+                Icon(
+                    painter = painterResource(id = R.drawable.rounded_library_music_24),
+                    contentDescription = "Playlist",
+                    modifier = Modifier
+                        .size(56.dp)
+                        .background(
+                            MaterialTheme.colorScheme.primaryContainer,
+                            coverShape
+                        )
+                        .padding(12.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = playlist.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = cloudPlaylistSubtitle(playlist),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            FilledIconButton(
+                onClick = onPlayClick,
+                modifier = Modifier.size(40.dp),
+                shape = CircleShape,
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = (if (playlist.isAlbum) {
+                        MaterialTheme.colorScheme.secondary
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    }).copy(alpha = 0.8f),
+                    contentColor = if (playlist.isAlbum) {
+                        MaterialTheme.colorScheme.onSecondary
+                    } else {
+                        MaterialTheme.colorScheme.onPrimary
+                    }
+                )
+            ) {
+                Icon(Icons.Rounded.PlayArrow, contentDescription = "Play", modifier = Modifier.size(24.dp))
+            }
+        }
+    }
+}
+
+/**
+ * FIX(online-filter-chips): an ONLINE-search artist row (YouTube Music /
+ * SoundCloud) — renders the channel avatar + real follower count the old
+ * mapping threw away, and opens the cloud artist's own track listing.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SearchResultCloudArtistItem(
+    artist: CloudArtist,
+    onOpenClick: () -> Unit,
+    onPlayClick: () -> Unit
+) {
+    val itemShape = remember {
+        AbsoluteSmoothCornerShape(
+            cornerRadiusTL = 26.dp,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusTR = 26.dp,
+            smoothnessAsPercentBR = 60,
+            cornerRadiusBR = 26.dp,
+            smoothnessAsPercentBL = 60,
+            cornerRadiusBL = 26.dp,
+            smoothnessAsPercentTL = 60
+        )
+    }
+
+    Card(
+        onClick = onOpenClick,
+        shape = itemShape,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (artist.artworkUrl != null) {
+                SmartImage(
+                    model = artist.artworkUrl,
+                    contentDescription = "Artist: ${artist.name}",
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(CircleShape)
+                )
+            } else {
+                Icon(
+                    painter = painterResource(id = R.drawable.rounded_artist_24),
+                    contentDescription = "Artist",
+                    modifier = Modifier
+                        .size(56.dp)
+                        .background(MaterialTheme.colorScheme.tertiaryContainer, CircleShape)
+                        .padding(12.dp),
+                    tint = MaterialTheme.colorScheme.onTertiaryContainer
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = artist.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = cloudArtistSubtitle(artist),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            FilledIconButton(
+                onClick = onPlayClick,
+                modifier = Modifier.size(40.dp),
+                shape = CircleShape,
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.8f),
+                    contentColor = MaterialTheme.colorScheme.onTertiary
+                )
+            ) {
+                Icon(Icons.Rounded.PlayArrow, contentDescription = "Play", modifier = Modifier.size(24.dp))
+            }
+        }
+    }
+}
+
+/** "Uploader • 12 tracks" subtitle for a cloud playlist row. */
+private fun cloudPlaylistSubtitle(playlist: CloudPlaylist): String {
+    val uploader = playlist.uploaderName?.takeIf { it.isNotBlank() }
+        ?: (if (playlist.isAlbum) "Album" else "Playlist")
+    val countLabel = when (playlist.trackCount) {
+        -1L -> null
+        1L -> "1 track"
+        else -> "${playlist.trackCount} tracks"
+    }
+    return listOfNotNull(uploader, countLabel).joinToString(" • ")
+}
+
+/** "1.2M followers" subtitle for a cloud artist row. */
+private fun cloudArtistSubtitle(artist: CloudArtist): String {
+    if (artist.subscriberCount < 0) return "Artist"
+    val unit = if (artist.provider == com.theveloper.pixeltune.data.model.CloudStreamProvider.YOUTUBE) {
+        "subscribers"
+    } else {
+        "followers"
+    }
+    return when {
+        artist.subscriberCount >= 1_000_000L -> {
+            val v = artist.subscriberCount / 1_000_000L
+            val frac = (artist.subscriberCount % 1_000_000L) / 100_000L
+            if (frac > 0) "$v.${frac}M $unit" else "$v M $unit"
+        }
+        artist.subscriberCount >= 1_000L -> "${artist.subscriberCount / 1_000L}K $unit"
+        else -> "${artist.subscriberCount} $unit"
     }
 }
 

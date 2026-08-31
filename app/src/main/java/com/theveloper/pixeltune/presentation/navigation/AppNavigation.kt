@@ -34,6 +34,7 @@ import com.theveloper.pixeltune.presentation.screens.AlbumDetailScreen
 import com.theveloper.pixeltune.presentation.screens.AccountsScreen
 import com.theveloper.pixeltune.presentation.screens.ArtistDetailScreen
 import com.theveloper.pixeltune.presentation.screens.ArtistSettingsScreen
+import com.theveloper.pixeltune.presentation.screens.CloudCatalogScreen
 import com.theveloper.pixeltune.presentation.screens.DailyMixScreen
 import com.theveloper.pixeltune.presentation.screens.EditTransitionScreen
 import com.theveloper.pixeltune.presentation.screens.ExperimentalSettingsScreen
@@ -355,6 +356,35 @@ fun AppNavigation(
                             navController = navController
                         )
                     }
+                }
+            }
+
+            // FIX(online-filter-chips): the ONLINE-search catalog detail
+            // screen — cloud playlists / albums / artists found through the
+            // YouTube / SoundCloud online search. `entry` is the URL-encoded
+            // JSON of the tapped result (decoded by CloudCatalogViewModel via
+            // SavedStateHandle); `type` selects playlist vs artist; `autoplay`
+            // is set when the row's PLAY button opened the screen.
+            composable(
+                route = Screen.CloudCatalog.route,
+                arguments = listOf(
+                    navArgument("type") { type = NavType.StringType },
+                    navArgument("entry") { type = NavType.StringType },
+                    navArgument("autoplay") {
+                        type = NavType.StringType
+                        defaultValue = "false"
+                    }
+                ),
+                enterTransition = { enterTransition() },
+                exitTransition = { exitTransition() },
+                popEnterTransition = { popEnterTransition() },
+                popExitTransition = { popExitTransition() },
+            ) {
+                ScreenWrapper(navController = navController, playerViewModel = playerViewModel) {
+                    CloudCatalogScreen(
+                        navController = navController,
+                        playerViewModel = playerViewModel
+                    )
                 }
             }
 

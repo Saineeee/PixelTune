@@ -1,6 +1,10 @@
 package com.theveloper.pixeltune.presentation.navigation
 
 import androidx.compose.runtime.Immutable
+import com.theveloper.pixeltune.data.model.CloudArtist
+import com.theveloper.pixeltune.data.model.CloudPlaylist
+import kotlinx.serialization.json.Json
+import java.net.URLEncoder
 
 
 @Immutable
@@ -18,6 +22,38 @@ sealed class Screen(val route: String) {
     object NavBarCrRad : Screen("nav_bar_corner_radius")
     object PlaylistDetail : Screen("playlist_detail/{playlistId}") {
         fun createRoute(playlistId: String) = "playlist_detail/$playlistId"
+    }
+
+    /**
+     * FIX(online-filter-chips): the ONLINE-search catalog detail screen —
+     * cloud playlists / albums / artists (YouTube Music, SoundCloud).
+     *
+     * The entry travels as URL-encoded JSON in the `entry` query argument;
+     * `type` ("playlist" / "artist") selects the concrete class to decode
+     * (both classes' required fields overlap, so the type must be explicit);
+     * `autoplay` is set when the row's PLAY button (not the row body) opened
+     * the screen, so playback starts as soon as the real tracks are loaded.
+     */
+    object CloudCatalog : Screen("cloud_catalog/{type}?entry={entry}&autoplay={autoplay}") {
+        fun createRoute(playlist: CloudPlaylist, autoPlay: Boolean = false): String {
+            val encoded = encodeEntry(Json.encodeToString(playlist))
+            return "cloud_catalog/playlist?entry=$encoded&autoplay=${if (autoPlay) "true" else "false"}"
+        }
+
+        fun createRoute(artist: CloudArtist, autoPlay: Boolean = false): String {
+            val encoded = encodeEntry(Json.encodeToString(artist))
+            return "cloud_catalog/artist?entry=$encoded&autoplay=${if (autoPlay) "true" else "false"}"
+        }
+
+        /**
+         * Percent-encodes the entry JSON for safe travel through a nav route
+         * argument. `+` is normalized to `%20` because URLEncoder emits it for
+         * spaces (form encoding) — keeping it would make the value ambiguous
+         * against query-string decoding; `%20` decodes correctly under every
+         * decoding behavior.
+         */
+        private fun encodeEntry(json: String): String =
+            URLEncoder.encode(json, "UTF-8").replace("+", "%20")
     }
 
     object  DailyMixScreen : Screen("daily_mix")

@@ -1,8 +1,9 @@
 package com.theveloper.pixeltune.data.soundcloud
 
-import com.theveloper.pixeltune.data.model.Album
-import com.theveloper.pixeltune.data.model.Artist
-import com.theveloper.pixeltune.data.model.Playlist
+import com.theveloper.pixeltune.data.model.CloudArtist
+import com.theveloper.pixeltune.data.model.CloudPlaylist
+import com.theveloper.pixeltune.data.model.CloudStreamProvider
+import com.theveloper.pixeltune.data.model.CloudTracksPage
 import com.theveloper.pixeltune.data.model.SearchResultItem
 import com.theveloper.pixeltune.data.model.SearchFilterType
 import com.theveloper.pixeltune.data.model.Song
@@ -11,6 +12,8 @@ import com.theveloper.pixeltune.data.stream.CloudArtworkHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
+import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
+import org.schabi.newpipe.extractor.channel.tabs.ChannelTabs
 import org.schabi.newpipe.extractor.search.SearchExtractor
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
@@ -266,22 +269,58 @@ class SoundCloudRepository @Inject constructor() {
                     }
                     is PlaylistInfoItem -> {
                         if (filter == SearchFilterType.ALL || filter == SearchFilterType.PLAYLISTS || filter == SearchFilterType.ALBUMS) {
-                            val playlist = Playlist(
-                                id = item.url.hashCode().toString(),
-                                name = item.name ?: "Unknown Playlist",
-                                songIds = emptyList() // We don't fetch songs right now
+                            // FIX(online-filter-chips): keep the provider's own
+                            // metadata (uploader, track count, artwork) on a
+                            // dedicated cloud model instead of squeezing the
+                            // item into the LOCAL Playlist shape (which always
+                            // rendered "0 songs" with a placeholder cover and
+                            // opened the local PlaylistDetail screen that can
+                            // never resolve it). SoundCloud search surfaces both
+                            // playlists and albums under the "playlists"
+                            // content filter — they are marked playlists here
+                            // and all play identically.
+                            val playlistUrl = item.url ?: ""
+                            results.add(
+                                SearchResultItem.CloudPlaylistItem(
+                                    CloudPlaylist(
+                                        id = playlistUrl.hashCode().toString(),
+                                        url = playlistUrl,
+                                        name = item.name ?: "Unknown Playlist",
+                                        uploaderName = runCatching { item.uploaderName }.getOrNull(),
+                                        trackCount = runCatching { item.streamCount }.getOrDefault(-1L),
+                                        artworkUrl = CloudArtworkHelper.bestArtworkUrl(
+                                            runCatching { item.thumbnails }.getOrDefault(emptyList())
+                                        ),
+                                        isAlbum = false,
+                                        provider = CloudStreamProvider.SOUNDCLOUD
+                                    )
+                                )
                             )
-                            results.add(SearchResultItem.PlaylistItem(playlist))
                         }
                     }
                     is ChannelInfoItem -> {
                         if (filter == SearchFilterType.ALL || filter == SearchFilterType.ARTISTS) {
-                            val artist = Artist(
-                                id = item.url.hashCode().toLong(),
-                                name = item.name ?: "Unknown Artist",
-                                songCount = item.subscriberCount.toInt(),
+                            // FIX(online-filter-chips): same treatment for
+                            // artists — keep the avatar + follower count NewPipe
+                            // extracted (the LOCAL Artist mapping dropped the
+                            // avatar and mislabeled followers as "X Songs"), and
+                            // keep the profile URL the detail screen extracts
+                            // the artist's tracks from.
+                            results.add(
+                                SearchResultItem.CloudArtistItem(
+                                    CloudArtist(
+                                        id = (item.url ?: "").hashCode().toString(),
+                                        url = item.url ?: "",
+                                        name = item.name ?: "Unknown Artist",
+                                        subscriberCount = runCatching { item.subscriberCount }.getOrDefault(-1L),
+                                        artworkUrl = CloudArtworkHelper.bestArtworkUrl(
+                                            runCatching { item.thumbnails }.getOrDefault(emptyList())
+                                        ),
+                                        isVerified = runCatching { item.isVerified }.getOrDefault(false),
+                                        provider = CloudStreamProvider.SOUNDCLOUD
+                                    )
+                                )
                             )
-                            results.add(SearchResultItem.ArtistItem(artist))
                         }
                     }
                 }
@@ -291,5 +330,220 @@ class SoundCloudRepository @Inject constructor() {
             Timber.e(e, "Error searching SoundCloud for query: $query")
             emptyList()
         }
+    }
+
+    /**
+     * FIX(online-filter-chips): extracts the FIRST page of playable tracks of
+     * a SoundCloud playlist or album found by the online search
+     * (`soundcloud.com/<user>/sets/<set>`).
+     *
+     * Every returned [Song] is built exactly like an online search result
+     * (id = URL-encoded track URL hashcode, proxy URL over the encoded URL,
+     * t500x500 artwork via CloudArtworkHelper), so it is immediately
+     * playable and behaves like any other SoundCloud song in the app
+     * (queue refill, favorites, downloads).
+     */
+    suspend fun getCloudPlaylistTracks(
+        playlist: CloudPlaylist,
+        proxyUrlProvider: (String) -> String
+    ): Result<CloudTracksPage> = withContext(Dispatchers.IO) {
+        try {
+            val extractor = ServiceList.SoundCloud.getPlaylistExtractor(playlist.url)
+            extractor.fetchPage()
+            val page = extractor.initialPage
+            val songs = streamItemsToSongs(
+                items = page.items.filterIsInstance<StreamInfoItem>(),
+                proxyUrlProvider = proxyUrlProvider,
+                contextTitle = playlist.name
+            )
+            val uploader = runCatching { extractor.uploaderName }.getOrNull()
+            val trackCount = runCatching { extractor.streamCount }.getOrDefault(-1L)
+            Result.success(
+                CloudTracksPage(
+                    songs = songs,
+                    refreshedTitle = runCatching { extractor.name }.getOrNull(),
+                    refreshedTrackCount = trackCount.takeIf { it >= 0 },
+                    refreshedSubtitle = uploader?.takeIf { it.isNotBlank() },
+                    hasMore = page.nextPage != null,
+                    continuation = page.nextPage
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Error extracting SoundCloud playlist tracks for %s", playlist.url)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * FIX(online-filter-chips): continues a [getCloudPlaylistTracks] listing
+     * (the "Load more" action of the cloud playlist detail screen). The
+     * [page] parameter is the previous result — its continuation token is the
+     * opaque NewPipe `Page` this repository produced.
+     */
+    suspend fun getMoreCloudPlaylistTracks(
+        playlist: CloudPlaylist,
+        page: CloudTracksPage,
+        proxyUrlProvider: (String) -> String
+    ): Result<CloudTracksPage> = withContext(Dispatchers.IO) {
+        val continuation = page.continuation as? org.schabi.newpipe.extractor.Page
+            ?: return@withContext Result.failure(
+                IllegalArgumentException("No continuation for SoundCloud playlist ${playlist.url}")
+            )
+        try {
+            val extractor = ServiceList.SoundCloud.getPlaylistExtractor(playlist.url)
+            extractor.fetchPage()
+            val next = extractor.getPage(continuation)
+            val songs = streamItemsToSongs(
+                items = next.items.filterIsInstance<StreamInfoItem>(),
+                proxyUrlProvider = proxyUrlProvider,
+                contextTitle = playlist.name
+            )
+            Result.success(
+                CloudTracksPage(
+                    songs = songs,
+                    hasMore = next.nextPage != null,
+                    continuation = next.nextPage
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Error paging SoundCloud playlist tracks for %s", playlist.url)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * FIX(online-filter-chips): extracts the FIRST page of a SoundCloud
+     * artist's tracks — the user's Tracks tab
+     * (`soundcloud.com/<user>/tracks`), resolved from the profile URL the
+     * search returned.
+     */
+    suspend fun getCloudArtistTracks(
+        artist: CloudArtist,
+        proxyUrlProvider: (String) -> String
+    ): Result<CloudTracksPage> = withContext(Dispatchers.IO) {
+        try {
+            val channel = ServiceList.SoundCloud.getChannelExtractor(artist.url)
+            channel.fetchPage()
+            val tracksTab = channel.tabs.firstOrNull { tab ->
+                tab.contentFilters.contains(ChannelTabs.TRACKS)
+            } ?: return@withContext Result.failure(
+                IllegalStateException("User ${artist.url} exposes no tracks tab")
+            )
+            val tabInfo = ChannelTabInfo.getInfo(ServiceList.SoundCloud, tracksTab)
+            val songs = streamItemsToSongs(
+                items = tabInfo.relatedItems.filterIsInstance<StreamInfoItem>(),
+                proxyUrlProvider = proxyUrlProvider,
+                contextTitle = artist.name
+            )
+            Result.success(
+                CloudTracksPage(
+                    songs = songs,
+                    refreshedTitle = runCatching { channel.name }.getOrNull(),
+                    refreshedSubtitle = formatFollowerCount(
+                        runCatching { channel.subscriberCount }.getOrDefault(-1L)
+                    ),
+                    hasMore = tabInfo.nextPage != null,
+                    continuation = tabInfo.nextPage
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Error extracting SoundCloud artist tracks for %s", artist.url)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * FIX(online-filter-chips): continues a [getCloudArtistTracks] listing
+     * (the "Load more" action of the cloud artist detail screen).
+     */
+    suspend fun getMoreCloudArtistTracks(
+        artist: CloudArtist,
+        page: CloudTracksPage,
+        proxyUrlProvider: (String) -> String
+    ): Result<CloudTracksPage> = withContext(Dispatchers.IO) {
+        val continuation = page.continuation as? org.schabi.newpipe.extractor.Page
+            ?: return@withContext Result.failure(
+                IllegalArgumentException("No continuation for SoundCloud artist ${artist.url}")
+            )
+        try {
+            val channel = ServiceList.SoundCloud.getChannelExtractor(artist.url)
+            channel.fetchPage()
+            val tracksTab = channel.tabs.firstOrNull { tab ->
+                tab.contentFilters.contains(ChannelTabs.TRACKS)
+            } ?: return@withContext Result.failure(
+                IllegalStateException("User ${artist.url} exposes no tracks tab")
+            )
+            val next = ChannelTabInfo.getMoreItems(ServiceList.SoundCloud, tracksTab, continuation)
+            val songs = streamItemsToSongs(
+                items = next.items.filterIsInstance<StreamInfoItem>(),
+                proxyUrlProvider = proxyUrlProvider,
+                contextTitle = artist.name
+            )
+            Result.success(
+                CloudTracksPage(
+                    songs = songs,
+                    hasMore = next.nextPage != null,
+                    continuation = next.nextPage
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Error paging SoundCloud artist tracks for %s", artist.url)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * FIX(online-filter-chips): "1.2M followers" style subtitle for the cloud
+     * artist header. Returns null when the count is unknown.
+     */
+    private fun formatFollowerCount(count: Long): String? {
+        if (count < 0) return null
+        return when {
+            count >= 1_000_000L -> {
+                val v = count / 1_000_000L
+                val frac = (count % 1_000_000L) / 100_000L
+                if (frac > 0) "$v.${frac}M followers" else "$v M followers"
+            }
+            count >= 1_000L -> "${count / 1_000L}K followers"
+            else -> "$count followers"
+        }
+    }
+
+    /**
+     * FIX(online-filter-chips): maps playlist/channel-tab [StreamInfoItem]s to
+     * immediately-playable [Song]s — identical construction to the online
+     * search results (id = encoded URL hashcode, proxy URL over the encoded
+     * URL, t500x500 artwork), so the queue, favorites and downloads treat
+     * them uniformly.
+     *
+     * Unplayable entries (missing URLs) are skipped instead of aborting the
+     * whole listing — a playlist with one unavailable track still lists the
+     * rest.
+     */
+    private fun streamItemsToSongs(
+        items: List<StreamInfoItem>,
+        proxyUrlProvider: (String) -> String,
+        contextTitle: String
+    ): List<Song> {
+        val songs = ArrayList<Song>(items.size)
+        for (item in items) {
+            val trackUrl = item.url ?: continue
+            val encodedUrl = URLEncoder.encode(trackUrl, "UTF-8")
+            val durationMs = if (item.duration > 0) item.duration * 1000L else 0L
+            songs += Song.emptySong().copy(
+                id = encodedUrl.hashCode().toString(),
+                title = item.name ?: "Unknown",
+                artist = item.uploaderName ?: "Unknown",
+                artistId = -1L,
+                album = contextTitle,
+                albumId = -1L,
+                path = trackUrl,
+                contentUriString = proxyUrlProvider(encodedUrl),
+                albumArtUriString = CloudArtworkHelper.bestArtworkUrl(item),
+                duration = durationMs,
+                mimeType = "audio/mpeg"
+            )
+        }
+        return songs
     }
 }
