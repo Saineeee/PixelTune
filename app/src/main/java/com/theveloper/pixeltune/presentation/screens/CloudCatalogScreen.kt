@@ -177,14 +177,14 @@ fun CloudCatalogScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     ContainedLoadingIndicator()
-                    SpacerHeight(20)
+                    SpacerHeight(20.dp)
                     Text(
                         text = "Loading tracks…",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    SpacerHeight(4)
+                    SpacerHeight(4.dp)
                     Text(
                         text = "Fetching \"${uiState.headerTitle}\" from the streaming service",
                         style = MaterialTheme.typography.bodyMedium,
@@ -223,7 +223,7 @@ fun CloudCatalogScreen(
                         modifier = Modifier.size(72.dp),
                         tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                     )
-                    SpacerHeight(16)
+                    SpacerHeight(16.dp)
                     Text(
                         text = uiState.error ?: "Something went wrong",
                         style = MaterialTheme.typography.titleMedium,
@@ -231,7 +231,7 @@ fun CloudCatalogScreen(
                         color = MaterialTheme.colorScheme.onSurface,
                         textAlign = TextAlign.Center
                     )
-                    SpacerHeight(8)
+                    SpacerHeight(8.dp)
                     FilledTonalButton(onClick = { viewModel.retry() }) {
                         Text("Retry")
                     }
@@ -362,14 +362,14 @@ fun CloudCatalogScreen(
                                     modifier = Modifier.size(64.dp),
                                     tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                                 )
-                                SpacerHeight(12)
+                                SpacerHeight(12.dp)
                                 Text(
                                     text = "No tracks available for this item",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
-                                SpacerHeight(4)
+                                SpacerHeight(4.dp)
                                 Text(
                                     text = "The provider may have restricted or removed it.",
                                     style = MaterialTheme.typography.bodyMedium,
