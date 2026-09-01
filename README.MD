@@ -69,15 +69,7 @@ home-screen widgets.
   YouTube using fuzzy title/artist matching (Jaccard-based scoring). A preview
   screen lists every candidate match with a *reason chip*, so you can swap or
   drop mismatches **before** anything is committed to your library.
-- 🕘 **Listening history** — a dedicated, searchable screen for everything
-  you've played, separate from stats.
-- 🎚️ **Streaming quality preferences** — choose your preferred audio quality
-  for online playback; paired with a redesigned in-player volume control.
-- 🧩 **Rebuilt Glance home-screen widgets** — compact bar, 2×2 grid and 4×2
-  control layouts with full playback actions, rebuilt on Jetpack Glance.
-- 🌐 **Network hardening** — IPv4-preferred DNS resolution for flaky IPv6
-  networks, a YouTube artwork fallback interceptor, and smarter cloud artwork
-  caching.
+- And many more minor improvements throughout the app.
 
 ### Core features (inherited from the PixelPlayer base)
 
