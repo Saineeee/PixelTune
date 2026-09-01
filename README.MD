@@ -11,11 +11,9 @@ streaming catalogs, in one expressive player for Android.**
 [![Built with](https://img.shields.io/badge/Built%20with-Kotlin%20%2B%20Compose-7f52ff?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-4c1.svg)](./CONTRIBUTING.md)
 
-<!-- Screenshot note: replace the images below with fresh PixelTune captures
-     before release if assets/ still shows the original PixelPlay branding. -->
 | Home | Player | Cloud Catalog | Library |
 |:---:|:---:|:---:|:---:|
-| ![](assets/Home.png) | ![](assets/Player.png) | ![](assets/Cloud.png) | ![](assets/screenshot4.jpg) |
+| ![](assets/Home.png) | ![](assets/Player.png) | ![](assets/Cloud.png) | ![](assets/Library.png) |
 
 **[Download](#-download--install) · [Features](#-features) · [Build from source](#️-building-from-source) · [FAQ](#-faq--troubleshooting) · [Contributing](#-contributing)**
 
