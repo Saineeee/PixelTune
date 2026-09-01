@@ -481,6 +481,16 @@ class MainActivity : ComponentActivity() {
     private fun MainAppContent(playerViewModel: PlayerViewModel, mainViewModel: MainViewModel) {
         Trace.beginSection("MainActivity.MainAppContent")
         val navController = rememberNavController()
+
+        // Debug-only per-screen frame-timing monitor: labels the histograms
+        // with navigation routes. Constant-false in release builds, so R8
+        // removes the branch and the monitor code entirely.
+        if (BuildConfig.DEBUG) {
+            LaunchedEffect(navController) {
+                com.theveloper.pixeltune.utils.debug.FrameJankLogger.attachNavController(navController)
+            }
+        }
+
         val isSyncing by mainViewModel.isSyncing.collectAsStateWithLifecycle()
         val isLibraryEmpty by mainViewModel.isLibraryEmpty.collectAsStateWithLifecycle()
         val hasCompletedInitialSync by mainViewModel.hasCompletedInitialSync.collectAsStateWithLifecycle()

@@ -75,6 +75,10 @@ class PixelTuneApplication : Application(), ImageLoaderFactory, Configuration.Pr
 
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
+            // Debug-only frame-timing histograms per screen (JankStats).
+            // Constant-false in release, so R8 removes this and the
+            // androidx.metrics dependency from release builds.
+            com.theveloper.pixeltune.utils.debug.FrameJankLogger.install(this)
         } else {
             // Release tree: only WARN/ERROR/WTF - no DEBUG/VERBOSE/INFO
             Timber.plant(ReleaseTree())
