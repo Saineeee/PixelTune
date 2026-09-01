@@ -635,7 +635,19 @@ class MainActivity : ComponentActivity() {
                 Screen.DelimiterConfig.route,
                 Screen.PaletteStyle.route,
                 Screen.RecentlyPlayed.route,
-                Screen.DeviceCapabilities.route
+                Screen.DeviceCapabilities.route,
+                // FIX(cloud-catalog-load-more): the cloud catalog detail screen
+                // (online-search playlists / albums / artists) kept the bottom
+                // navigation bar visible while its list padding only cleared
+                // the miniplayer — the "Load more tracks" row at the end of the
+                // list sat behind the navbar + miniplayer and could not be
+                // tapped. Every other detail screen (AlbumDetail /
+                // ArtistDetail / PlaylistDetail) hides the navbar so the
+                // miniplayer re-anchors to the screen bottom (the
+                // isNavBarHidden plumbing in UnifiedPlayerSheet(V2) handles the
+                // re-anchoring); the CloudCatalog UI is a 1:1 adaptation of
+                // AlbumDetailScreen, so it follows the exact same pattern.
+                Screen.CloudCatalog.route
             )
         }
         val shouldHideNavigationBar by remember(currentRoute, isSearchBarActive) {

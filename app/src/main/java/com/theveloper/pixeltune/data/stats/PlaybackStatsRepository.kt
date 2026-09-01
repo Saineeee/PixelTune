@@ -57,7 +57,19 @@ class PlaybackStatsRepository @Inject constructor(
         val albumArtUri: String? = null,
         val contentUri: String? = null,
         val songDurationMs: Long? = null
-    )
+    ) {
+        /**
+         * IMPROVE(cloud-listening-stats): whether this event carries a usable
+         * metadata snapshot — the fallback [loadSummary] resolves cloud-streamed
+         * plays (not present in the local library) from, so online listening
+         * shows up in the top songs / artists / albums stats.
+         */
+        fun hasMetadataSnapshot(): Boolean = !title.isNullOrBlank() ||
+            !artist.isNullOrBlank() ||
+            !album.isNullOrBlank() ||
+            !albumArtUri.isNullOrBlank() ||
+            (songDurationMs != null && songDurationMs > 0L)
+    }
 
     data class PlaybackHistoryEntry(
         val songId: String,
@@ -252,8 +264,31 @@ class PlaybackStatsRepository @Inject constructor(
         }
 
         val songMap = songs.associateBy { it.id }
+
+        // IMPROVE(cloud-listening-stats): cloud-streamed plays (YouTube /
+        // SoundCloud online search) are NOT part of the local MediaStore-backed
+        // library, so resolving every event's song through `songMap` dropped
+        // them from the top songs / artists / albums breakdowns — only the
+        // total time & play count included them, which is why the Home stats
+        // card showed no top track while listening online. Since the
+        // FIX(listening-history-cloud) change, every recorded event carries a
+        // metadata snapshot (title / artist / album / artwork / track
+        // duration) taken at play time — resolve songs from the LIBRARY when
+        // available and fall back to that snapshot otherwise, so online
+        // listening counts everywhere the stats UIs report it.
+        val snapshotBySongId = filteredEvents
+            .groupBy { it.songId }
+            .mapValues { (_, eventsForSong) ->
+                eventsForSong
+                    .filter { it.hasMetadataSnapshot() }
+                    .maxByOrNull { it.endMillis() }
+                    ?: eventsForSong.maxByOrNull { it.endMillis() }
+            }
+
         val normalizedEvents = filteredEvents.map { event ->
-            normalizeEventDuration(event, songMap[event.songId])
+            val trackDurationHint = songMap[event.songId]?.duration?.takeIf { it > 0L }
+                ?: snapshotBySongId[event.songId]?.songDurationMs?.takeIf { it > 0L }
+            normalizeEventDuration(event, trackDurationHint)
         }
 
         val segmentsBySong = normalizedEvents
@@ -274,15 +309,27 @@ class PlaybackStatsRepository @Inject constructor(
 
         val allSongs = segmentsBySong
             .mapNotNull { (songId, segmentsForSong) ->
-                val song = songMap[songId] ?: return@mapNotNull null
-                val title = song.title.takeIf { it.isNotBlank() }
-                    ?: song.path.substringAfterLast('/').ifBlank { return@mapNotNull null }
-                val artist = song.displayArtist.takeIf { it.isNotBlank() } ?: "Unknown Artist"
+                val song = songMap[songId]
+                val snapshot = snapshotBySongId[songId]
+                // IMPROVE(cloud-listening-stats): prefer the library row
+                // (richest metadata); fall back to the event's persisted
+                // metadata snapshot for cloud-streamed songs, which is what
+                // the stats rows render for them. Entries resolvable neither
+                // way can't be displayed meaningfully — skipped as before.
+                val title = song?.title?.takeIf { it.isNotBlank() }
+                    ?: snapshot?.title?.takeIf { it.isNotBlank() }
+                    ?: song?.path?.takeIf { it.isNotBlank() }?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                val artist = song?.displayArtist?.takeIf { it.isNotBlank() }
+                    ?: snapshot?.artist?.takeIf { it.isNotBlank() }
+                    ?: "Unknown Artist"
+                val artwork = song?.albumArtUriString?.takeIf { it.isNotBlank() }
+                    ?: snapshot?.albumArtUri?.takeIf { it.isNotBlank() }
                 SongPlaybackSummary(
                     songId = songId,
                     title = title,
                     artist = artist,
-                    albumArtUri = song.albumArtUriString,
+                    albumArtUri = artwork,
                     totalDurationMs = segmentsForSong.sumOf { it.durationMs },
                     playCount = segmentsForSong.size
                 )
@@ -368,7 +415,12 @@ class PlaybackStatsRepository @Inject constructor(
 
         val topArtists = segmentsBySong.entries
             .groupBy { (songId, _) ->
-                songMap[songId]?.artist?.takeIf { it.isNotBlank() } ?: "Unknown Artist"
+                // IMPROVE(cloud-listening-stats): artist comes from the library
+                // row, or from the event's metadata snapshot for cloud plays
+                // (previously every online play landed in "Unknown Artist").
+                songMap[songId]?.artist?.takeIf { it.isNotBlank() }
+                    ?: snapshotBySongId[songId]?.artist?.takeIf { it.isNotBlank() }
+                    ?: "Unknown Artist"
             }
             .map { (artist, groupedSongs) ->
                 val flattened = groupedSongs.flatMap { it.value }
@@ -388,8 +440,12 @@ class PlaybackStatsRepository @Inject constructor(
 
         val topAlbums = segmentsBySong.entries
             .groupBy { (songId, _) ->
-                val song = songMap[songId]
-                song?.album?.takeIf { it.isNotBlank() } ?: "Unknown Album"
+                // IMPROVE(cloud-listening-stats): album comes from the library
+                // row, or from the event's metadata snapshot for cloud plays
+                // (previously every online play landed in "Unknown Album").
+                songMap[songId]?.album?.takeIf { it.isNotBlank() }
+                    ?: snapshotBySongId[songId]?.album?.takeIf { it.isNotBlank() }
+                    ?: "Unknown Album"
             }
             .map { (album, groupedSongs) ->
                 val flattened = groupedSongs.flatMap { it.value }
@@ -398,9 +454,14 @@ class PlaybackStatsRepository @Inject constructor(
                     .asSequence()
                     .mapNotNull { songMap[it.key] }
                     .firstOrNull()
+                val albumArt = firstSong?.albumArtUriString?.takeIf { it.isNotBlank() }
+                    ?: groupedSongs
+                        .asSequence()
+                        .mapNotNull { snapshotBySongId[it.key]?.albumArtUri?.takeIf { art -> art.isNotBlank() } }
+                        .firstOrNull()
                 AlbumPlaybackSummary(
                     album = album,
-                    albumArtUri = firstSong?.albumArtUriString,
+                    albumArtUri = albumArt,
                     totalDurationMs = flattened.sumOf { it.durationMs },
                     playCount = flattened.size,
                     uniqueSongs = uniqueSongCount
@@ -590,10 +651,10 @@ class PlaybackStatsRepository @Inject constructor(
 
     private fun normalizeEventDuration(
         event: PlaybackEvent,
-        song: Song?
+        trackDurationMs: Long?
     ): PlaybackEvent {
         val safeEnd = event.endMillis()
-        val trackDuration = song?.duration?.takeIf { it > 0L }
+        val trackDuration = trackDurationMs?.takeIf { it > 0L }
         val boundedDuration = event.durationMs
             .coerceAtLeast(0L)
             .let { duration ->

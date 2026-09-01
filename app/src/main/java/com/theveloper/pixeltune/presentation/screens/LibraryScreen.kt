@@ -1030,7 +1030,43 @@ fun LibraryScreen(
                                         }
                                     }
                                 } else null,
-                                sourceToggleContent = if (isFoldersTab && ENABLE_FOLDERS_SOURCE_TOGGLE) {
+                                sourceToggleContent = if (currentTabId == LibraryTabId.PLAYLISTS) {
+                                    // IMPROVE(playlist-source-filter): Local /
+                                    // Cloud filter of the Library Playlists
+                                    // tab — rendered inside the SAME sort
+                                    // bottom sheet the other library tabs use
+                                    // (pattern of the Folders tab's
+                                    // Internal/SD source toggle). Cloud keeps
+                                    // every non-local source (YouTube /
+                                    // SoundCloud imports, Netease, Telegram)
+                                    // in one place.
+                                    {
+                                        val playlistSourceFilter by playlistViewModel.playlistSourceFilter
+                                            .collectAsStateWithLifecycle()
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(48.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            PlaylistViewModel.PlaylistSourceFilter.entries.forEach { filter ->
+                                                ToggleSegmentButton(
+                                                    modifier = Modifier.weight(1f),
+                                                    active = playlistSourceFilter == filter,
+                                                    activeColor = MaterialTheme.colorScheme.primary,
+                                                    inactiveColor = MaterialTheme.colorScheme.surfaceVariant,
+                                                    activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                                                    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    activeCornerRadius = 32.dp,
+                                                    onClick = {
+                                                        playlistViewModel.setPlaylistSourceFilter(filter)
+                                                    },
+                                                    text = filter.displayName
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else if (isFoldersTab && ENABLE_FOLDERS_SOURCE_TOGGLE) {
                                     {
                                         Row(
                                             modifier = Modifier.fillMaxWidth().height(48.dp),

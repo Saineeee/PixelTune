@@ -6,12 +6,17 @@ import android.content.Intent
 import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.theveloper.pixeltune.data.model.CloudPlaylist
+import com.theveloper.pixeltune.data.model.CloudStreamProvider
 import com.theveloper.pixeltune.data.model.Playlist
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.model.SortOption
 import com.theveloper.pixeltune.data.playlist.M3uManager
+import com.theveloper.pixeltune.data.playlist.PlaylistImportManager
 import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
 import com.theveloper.pixeltune.data.repository.MusicRepository
+import com.theveloper.pixeltune.data.soundcloud.SoundCloudRepository
+import com.theveloper.pixeltune.data.youtube.YouTubeRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -72,6 +77,9 @@ class PlaylistViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val aiPlaylistGenerator: com.theveloper.pixeltune.data.ai.AiPlaylistGenerator,
     private val m3uManager: M3uManager,
+    private val playlistImportManager: PlaylistImportManager,
+    private val youTubeRepository: YouTubeRepository,
+    private val soundCloudRepository: SoundCloudRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -89,6 +97,91 @@ class PlaylistViewModel @Inject constructor(
             100 // Cargar 100 canciones a la vez para el selector
         const val FOLDER_PLAYLIST_PREFIX = "folder_playlist:"
         private const val MANUAL_ORDER_MODE = "manual"
+
+        // IMPROVE(cloud-playlist-import): safety caps for the "Add to library"
+        // fetch-all loop — the provider's pagination is followed until the
+        // playlist is complete, but never unboundedly (huge channels
+        // playlists must not hammer the network for minutes).
+        private const val MAX_CLOUD_IMPORT_TRACKS = 300
+        private const val MAX_CLOUD_IMPORT_PAGES = 25
+    }
+
+    // IMPROVE(cloud-playlist-import): per-cloud-playlist import state for the
+    // "Add to library" buttons on the online search result rows and the
+    // cloud playlist detail screen. Keys are
+    // [PlaylistImportManager.cloudImportKey]s.
+    private val _importingCloudPlaylistKeys = MutableStateFlow<Set<String>>(emptySet())
+    val importingCloudPlaylistKeys: StateFlow<Set<String>> =
+        _importingCloudPlaylistKeys.asStateFlow()
+
+    private val _importedCloudPlaylistKeys = MutableStateFlow<Set<String>>(emptySet())
+    val importedCloudPlaylistKeys: StateFlow<Set<String>> =
+        _importedCloudPlaylistKeys.asStateFlow()
+
+    /** One-shot import result messages (surfaced as Material 3 snackbars). */
+    private val _cloudImportEvents = MutableSharedFlow<String>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+    )
+    val cloudImportEvents: SharedFlow<String> = _cloudImportEvents.asSharedFlow()
+
+    // IMPROVE(playlist-source-filter): Local/Cloud filter of the Library
+    // Playlists tab (selected in the sort bottom sheet, next to the sort
+    // options — the same pattern the Artists/Albums tabs use for their sort
+    // settings). CLOUD keeps every non-local source (YouTube, SoundCloud,
+    // Netease, Telegram, …) visible in one place.
+    private val _playlistSourceFilter = MutableStateFlow(PlaylistSourceFilter.ALL)
+    val playlistSourceFilter: StateFlow<PlaylistSourceFilter> =
+        _playlistSourceFilter.asStateFlow()
+
+    /** Filter criteria of the Library Playlists tab. */
+    enum class PlaylistSourceFilter(val displayName: String) {
+        ALL("All"),
+        LOCAL("Local"),
+        CLOUD("Cloud")
+    }
+
+    /** Applies the Local/Cloud filter of the Library Playlists tab. */
+    fun setPlaylistSourceFilter(filter: PlaylistSourceFilter) {
+        if (_playlistSourceFilter.value == filter) return
+        _playlistSourceFilter.value = filter
+        reapplyPlaylistFilterAndSort()
+    }
+
+    /** True when the playlist originates from an online streaming provider. */
+    private fun isCloudSourcedPlaylist(playlist: Playlist): Boolean {
+        val source = playlist.source.uppercase()
+        return source == PlaylistImportManager.CLOUD_IMPORT_SOURCE_YOUTUBE ||
+            source == PlaylistImportManager.CLOUD_IMPORT_SOURCE_SOUNDCLOUD ||
+            source == "NETEASE" ||
+            source == "TELEGRAM"
+    }
+
+    /** Re-applies the source filter + current sort on the live playlist list. */
+    private fun reapplyPlaylistFilterAndSort() {
+        val filter = _playlistSourceFilter.value
+        val allPlaylists = _allPlaylistsForFiltering.value
+        val visible = when (filter) {
+            PlaylistSourceFilter.ALL -> allPlaylists
+            PlaylistSourceFilter.LOCAL -> allPlaylists.filterNot { isCloudSourcedPlaylist(it) }
+            PlaylistSourceFilter.CLOUD -> allPlaylists.filter { isCloudSourcedPlaylist(it) }
+        }
+        val sorted = sortPlaylistList(visible, _uiState.value.currentPlaylistSortOption)
+        _uiState.update { it.copy(playlists = sorted) }
+    }
+
+    /** Unfiltered mirror of the stored playlists (filter input). */
+    private val _allPlaylistsForFiltering = MutableStateFlow<List<Playlist>>(emptyList())
+
+    /** Sorts an arbitrary playlist list with the given option (shared by the flow collector, sortPlaylists and the filter). */
+    private fun sortPlaylistList(
+        playlists: List<Playlist>,
+        sortOption: SortOption
+    ): List<Playlist> = when (sortOption) {
+        SortOption.PlaylistNameAZ -> playlists.sortedBy { it.name.lowercase() }
+        SortOption.PlaylistNameZA -> playlists.sortedByDescending { it.name.lowercase() }
+        SortOption.PlaylistDateCreated -> playlists.sortedByDescending { it.lastModified }
+        else -> playlists.sortedBy { it.name.lowercase() }
     }
 
     // Helper function to resolve stored playlist sort keys
@@ -104,6 +197,27 @@ class PlaylistViewModel @Inject constructor(
         loadPlaylistsAndInitialSortOption()
         loadMoreSongsForSelection(isInitialLoad = true)
         observePlaylistOrderModes()
+        observeImportedCloudPlaylists()
+    }
+
+    /**
+     * IMPROVE(cloud-playlist-import): rebuilds the "already imported" state
+     * of the Add-to-library buttons from the persisted playlists — imported
+     * playlists carry the deterministic
+     * [PlaylistImportManager.CLOUD_IMPORT_CUSTOM_ID_PREFIX] id, so the state
+     * survives app restarts without extra bookkeeping.
+     */
+    private fun observeImportedCloudPlaylists() {
+        viewModelScope.launch {
+            userPreferencesRepository.userPlaylistsFlow.collect { playlists ->
+                _importedCloudPlaylistKeys.value = playlists
+                    .asSequence()
+                    .map { it.id }
+                    .filter { it.startsWith(PlaylistImportManager.CLOUD_IMPORT_CUSTOM_ID_PREFIX) }
+                    .map { it.removePrefix(PlaylistImportManager.CLOUD_IMPORT_CUSTOM_ID_PREFIX) }
+                    .toSet()
+            }
+        }
     }
 
     private fun observePlaylistOrderModes() {
@@ -126,14 +240,19 @@ class PlaylistViewModel @Inject constructor(
 
             // Then, collect playlists and apply the sort option
             userPreferencesRepository.userPlaylistsFlow.collect { playlists ->
+                // IMPROVE(playlist-source-filter): keep the unfiltered mirror
+                // for the Local/Cloud filter of the Playlists tab, then publish
+                // the filtered + sorted view the tab renders.
+                _allPlaylistsForFiltering.value = playlists
                 val currentSortOption =
                     _uiState.value.currentPlaylistSortOption // Use the most up-to-date sort option
-                val sortedPlaylists = when (currentSortOption) {
-                    SortOption.PlaylistNameAZ -> playlists.sortedBy { it.name.lowercase() }
-                    SortOption.PlaylistNameZA -> playlists.sortedByDescending { it.name.lowercase() }
-                    SortOption.PlaylistDateCreated -> playlists.sortedByDescending { it.lastModified }
-                    else -> playlists.sortedBy { it.name.lowercase() } // Default to NameAZ
+                val filter = _playlistSourceFilter.value
+                val visiblePlaylists = when (filter) {
+                    PlaylistSourceFilter.ALL -> playlists
+                    PlaylistSourceFilter.LOCAL -> playlists.filterNot { isCloudSourcedPlaylist(it) }
+                    PlaylistSourceFilter.CLOUD -> playlists.filter { isCloudSourcedPlaylist(it) }
                 }
+                val sortedPlaylists = sortPlaylistList(visiblePlaylists, currentSortOption)
                 _uiState.update { it.copy(playlists = sortedPlaylists) }
             }
         }
@@ -694,13 +813,17 @@ class PlaylistViewModel @Inject constructor(
     fun sortPlaylists(sortOption: SortOption) {
         _uiState.update { it.copy(currentPlaylistSortOption = sortOption) }
 
-        val currentPlaylists = _uiState.value.playlists
-        val sortedPlaylists = when (sortOption) {
-            SortOption.PlaylistNameAZ -> currentPlaylists.sortedBy { it.name.lowercase() }
-            SortOption.PlaylistNameZA -> currentPlaylists.sortedByDescending { it.name.lowercase() }
-            SortOption.PlaylistDateCreated -> currentPlaylists.sortedByDescending { it.lastModified }
-            else -> currentPlaylists
-        }.toList()
+        // IMPROVE(playlist-source-filter): sort the FILTERED view (never the
+        // raw list), so the Local/Cloud selection survives re-sorting.
+        val filter = _playlistSourceFilter.value
+        val currentPlaylists = when (filter) {
+            PlaylistSourceFilter.ALL -> _allPlaylistsForFiltering.value
+            PlaylistSourceFilter.LOCAL -> _allPlaylistsForFiltering.value
+                .filterNot { isCloudSourcedPlaylist(it) }
+            PlaylistSourceFilter.CLOUD -> _allPlaylistsForFiltering.value
+                .filter { isCloudSourcedPlaylist(it) }
+        }
+        val sortedPlaylists = sortPlaylistList(currentPlaylists, sortOption)
 
         _uiState.update { it.copy(playlists = sortedPlaylists) }
 
@@ -709,9 +832,136 @@ class PlaylistViewModel @Inject constructor(
         }
     }
 
+    /**
+     * IMPROVE(cloud-playlist-import): "Add to library" action behind the
+     * button on the online-search playlist result rows and the cloud
+     * playlist detail screen.
+     *
+     * Fetches the playlist's REAL tracks from its provider (all pages, capped
+     * by [MAX_CLOUD_IMPORT_TRACKS] / [MAX_CLOUD_IMPORT_PAGES]), hands them to
+     * [PlaylistImportManager.importCloudPlaylist] for the proven M3U-style
+     * persistence, and reports the outcome through [cloudImportEvents] (the
+     * screens surface it as a Material 3 snackbar). Importing the same cloud
+     * playlist twice refreshes its library entry in place — never duplicates.
+     */
+    fun importCloudPlaylistToLibrary(playlist: CloudPlaylist) {
+        val importKey = PlaylistImportManager.cloudImportKey(playlist)
+        if (_importingCloudPlaylistKeys.value.contains(importKey)) return
+
+        _importingCloudPlaylistKeys.update { it + importKey }
+        viewModelScope.launch {
+            try {
+                val songsResult = fetchAllCloudPlaylistSongs(playlist)
+                songsResult
+                    .onSuccess { songs ->
+                        playlistImportManager.importCloudPlaylist(playlist, songs)
+                            .onSuccess { importResult ->
+                                _importedCloudPlaylistKeys.update { it + importKey }
+                                val verb = if (importResult.wasUpdated) "refreshed in" else "added to"
+                                _cloudImportEvents.emit(
+                                    "\"${playlist.name}\" $verb your Library (${importResult.trackCount} tracks)"
+                                )
+                            }
+                            .onFailure { e ->
+                                Log.e("PlaylistVM", "Cloud playlist import failed", e)
+                                _cloudImportEvents.emit(
+                                    "Couldn't add \"${playlist.name}\": ${friendlyImportError(e)}"
+                                )
+                            }
+                    }
+                    .onFailure { e ->
+                        Log.e("PlaylistVM", "Cloud playlist track fetch failed", e)
+                        _cloudImportEvents.emit(
+                            "Couldn't load \"${playlist.name}\" tracks: ${friendlyImportError(e)}"
+                        )
+                    }
+            } finally {
+                _importingCloudPlaylistKeys.update { it - importKey }
+            }
+        }
+    }
+
+    /** Neat one-line error text for the import snackbar (no stack noise). */
+    private fun friendlyImportError(e: Throwable): String {
+        val message = e.message?.trim().orEmpty()
+        return if (message.isNotEmpty()) message else "check your connection and try again"
+    }
+
+    /**
+     * IMPROVE(cloud-playlist-import): extracts every page of a cloud
+     * playlist's tracks with the provider's own pagination, exactly like the
+     * cloud catalog detail screen's "Load more" loop, but with
+     * restart-safe scheme URIs (`youtube://<id>` / `soundcloud://<encoded>`)
+     * instead of live proxy URLs — the same trick the M3U import's YouTube
+     * matching uses — so persisted rows never depend on this session's proxy
+     * port. Pagination stops at the caps, on provider error (keeps the pages
+     * already fetched) or when the provider reports no more items.
+     */
+    private suspend fun fetchAllCloudPlaylistSongs(
+        playlist: CloudPlaylist
+    ): Result<List<Song>> = withContext(Dispatchers.IO) {
+        val firstPageResult = when (playlist.provider) {
+            CloudStreamProvider.YOUTUBE ->
+                youTubeRepository.getCloudPlaylistTracks(playlist) { id -> "youtube://$id" }
+            CloudStreamProvider.SOUNDCLOUD ->
+                soundCloudRepository.getCloudPlaylistTracks(playlist) { encoded ->
+                    "soundcloud://$encoded"
+                }
+        }
+        val firstPage = firstPageResult.getOrElse { e ->
+            return@withContext Result.failure(e)
+        }
+
+        // Order-preserving dedupe (providers repeat items on page boundaries).
+        val collected = LinkedHashMap<String, Song>(firstPage.songs.size)
+        firstPage.songs.forEach { song -> if (!collected.containsKey(song.id)) collected[song.id] = song }
+
+        var lastPage = firstPage
+        var pageCount = 1
+        var pagingFailed = false
+        while (
+            !pagingFailed &&
+            lastPage.hasMore &&
+            collected.size < MAX_CLOUD_IMPORT_TRACKS &&
+            pageCount < MAX_CLOUD_IMPORT_PAGES
+        ) {
+            val nextPageResult = when (playlist.provider) {
+                CloudStreamProvider.YOUTUBE ->
+                    youTubeRepository.getMoreCloudPlaylistTracks(playlist, lastPage) { id ->
+                        "youtube://$id"
+                    }
+                CloudStreamProvider.SOUNDCLOUD ->
+                    soundCloudRepository.getMoreCloudPlaylistTracks(playlist, lastPage) { encoded ->
+                        "soundcloud://$encoded"
+                    }
+            }
+            // A failed continuation keeps everything fetched so far — importing
+            // the first N tracks is strictly better than failing outright.
+            val nextPage = nextPageResult.getOrNull()
+            if (nextPage == null) {
+                pagingFailed = true
+            } else {
+                if (nextPage.songs.isEmpty() && !nextPage.hasMore) {
+                    break
+                }
+                nextPage.songs.forEach { song ->
+                    if (!collected.containsKey(song.id)) collected[song.id] = song
+                }
+                lastPage = nextPage
+                pageCount++
+            }
+        }
+
+        if (collected.isEmpty()) {
+            Result.failure(IllegalStateException("This playlist has no playable tracks"))
+        } else {
+            Result.success(collected.values.toList())
+        }
+    }
+
     fun sortPlaylistSongs(sortOption: SortOption) {
         val playlistId = _uiState.value.currentPlaylistDetails?.id
-        
+
         // If SongDefaultOrder is selected, reload the playlist to get original order
         if (sortOption == SortOption.SongDefaultOrder) {
             if (playlistId != null) {

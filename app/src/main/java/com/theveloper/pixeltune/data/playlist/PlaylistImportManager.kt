@@ -4,12 +4,16 @@ import com.theveloper.pixeltune.data.database.AlbumEntity
 import com.theveloper.pixeltune.data.database.ArtistEntity
 import com.theveloper.pixeltune.data.database.MusicDao
 import com.theveloper.pixeltune.data.database.SongEntity
+import com.theveloper.pixeltune.data.model.CloudPlaylist
+import com.theveloper.pixeltune.data.model.CloudStreamProvider
 import com.theveloper.pixeltune.data.model.SearchFilterType
 import com.theveloper.pixeltune.data.model.SearchResultItem
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
 import com.theveloper.pixeltune.data.youtube.YouTubeRepository
+import com.theveloper.pixeltune.utils.CloudUriUtils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -183,6 +187,159 @@ class PlaylistImportManager @Inject constructor(
         // no-match entries is already done inside [resolveTrackToMatch]).
         val selected = matches.map { it.copy(isSelected = it.matchedSong != null) }
         commitPreview(playlistName, selected)
+    }
+
+    /**
+     * IMPROVE(cloud-playlist-import): outcome of a successful
+     * [importCloudPlaylist] call — the library playlist id it lives under,
+     * how many playable tracks were stored, and whether an earlier import of
+     * the same cloud playlist was refreshed in place (re-tapping "Add to
+     * library" never duplicates the playlist).
+     */
+    data class CloudPlaylistImportResult(
+        val playlistId: String,
+        val trackCount: Int,
+        val wasUpdated: Boolean
+    )
+
+    /**
+     * IMPROVE(cloud-playlist-import): imports a playlist found through the
+     * ONLINE search (YouTube Music / SoundCloud) into the app's Library
+     * "Playlists" tab so it can be opened, played, shuffled and managed
+     * exactly like a local playlist — the "add to your playlist" button on
+     * both the search result rows and the cloud playlist detail screen.
+     *
+     * Mirrors the proven persistence recipe of [commitPreview] (the M3U /
+     * Spotify / Apple Music import path):
+     *  - every track becomes a `SongEntity` row with the stable Long id
+     *    derived from its cloud id, its restart-safe scheme URI
+     *    (`youtube://…` / `soundcloud://…`, via
+     *    [CloudUriUtils.normalizeCloudUriForStorage]) and the
+     *    "imported_playlists" pseudo-folder, so playback works across app
+     *    restarts through the service's scheme-URI translation;
+     *  - artist / album rows are upserted (synthetic ids from names so every
+     *    imported artist gets its own row instead of collapsing into one);
+     *  - the playlist itself is stored with a DETERMINISTIC custom id
+     *    ("cloudimport_<provider>_<cloud id>") — importing the same cloud
+     *    playlist again refreshes its songs in place instead of duplicating
+     *    it — and a `source` tag ("YOUTUBE" / "SOUNDCLOUD") the Library
+     *    playlist rows and detail screen display as the provider badge.
+     *
+     * The provider's remote artwork URL is kept as the cover (PlaylistCover
+     * renders it through Coil's AsyncImage, which loads http(s) models).
+     *
+     * [songs] must already carry the scheme form or the live proxy URLs of
+     * the current session — both are normalized here. The caller fetches all
+     * pages of the playlist (see PlaylistViewModel.importCloudPlaylistToLibrary).
+     */
+    suspend fun importCloudPlaylist(
+        playlist: CloudPlaylist,
+        songs: List<Song>
+    ): Result<CloudPlaylistImportResult> = withContext(Dispatchers.IO) {
+        try {
+            val usableSongs = songs.filter { song ->
+                song.id.isNotBlank() && song.contentUriString.isNotBlank()
+            }
+            if (usableSongs.isEmpty()) {
+                throw Exception("This playlist has no playable tracks.")
+            }
+
+            val sourceLabel = if (playlist.provider == CloudStreamProvider.YOUTUBE) {
+                CLOUD_IMPORT_SOURCE_YOUTUBE
+            } else {
+                CLOUD_IMPORT_SOURCE_SOUNDCLOUD
+            }
+            val customId = cloudImportCustomId(playlist)
+            val importedAt = System.currentTimeMillis()
+
+            val songEntities = usableSongs
+                .map { song ->
+                    val storageUri = CloudUriUtils.normalizeCloudUriForStorage(song.contentUriString)
+                    val artistName = song.artist.ifBlank { "Unknown Artist" }
+                    val albumName = song.album.ifBlank { playlist.name }
+                    SongEntity(
+                        id = CloudUriUtils.stableLongIdFromString(song.youtubeId ?: song.id),
+                        title = song.title,
+                        artistName = artistName,
+                        artistId = CloudUriUtils.stableSyntheticIdFromName(artistName),
+                        albumName = albumName,
+                        albumId = CloudUriUtils.stableSyntheticIdFromName(albumName),
+                        contentUriString = storageUri,
+                        albumArtUriString = song.albumArtUriString,
+                        duration = song.duration,
+                        genre = song.genre,
+                        filePath = storageUri,
+                        parentDirectoryPath = CLOUD_IMPORT_PARENT_DIRECTORY,
+                        isFavorite = false,
+                        dateAdded = importedAt,
+                        mimeType = song.mimeType
+                    )
+                }
+                .distinctBy { it.id }
+
+            if (songEntities.isEmpty()) {
+                throw Exception("Could not persist any track of this playlist.")
+            }
+
+            val newArtists = songEntities.map {
+                ArtistEntity(
+                    id = it.artistId,
+                    name = it.artistName,
+                    trackCount = 0
+                )
+            }.distinctBy { it.id }
+
+            val newAlbums = songEntities.map {
+                AlbumEntity(
+                    id = it.albumId,
+                    title = it.albumName,
+                    artistName = it.artistName,
+                    artistId = it.artistId,
+                    albumArtUriString = it.albumArtUriString,
+                    songCount = 0,
+                    year = 0
+                )
+            }.distinctBy { it.id }
+
+            musicDao.insertArtistsIgnoreConflicts(newArtists)
+            musicDao.insertAlbumsIgnoreConflicts(newAlbums)
+            musicDao.insertSongsIgnoreConflicts(songEntities)
+
+            val songIds = songEntities.map { it.id.toString() }
+            val existing = userPreferencesRepository.userPlaylistsFlow.first()
+                .firstOrNull { it.id == customId }
+
+            if (existing != null) {
+                // Refresh-in-place: same cloud playlist imported again — keep
+                // the library entry (and its id, so any pins/references stay
+                // valid) and swap its contents for the freshly fetched tracks.
+                userPreferencesRepository.updatePlaylist(
+                    existing.copy(
+                        name = playlist.name.ifBlank { existing.name },
+                        songIds = songIds,
+                        coverImageUri = existing.coverImageUri ?: playlist.artworkUrl,
+                        lastModified = System.currentTimeMillis()
+                    )
+                )
+                Result.success(
+                    CloudPlaylistImportResult(existing.id, songIds.size, wasUpdated = true)
+                )
+            } else {
+                val created = userPreferencesRepository.createPlaylist(
+                    name = playlist.name.ifBlank { "Imported Playlist" },
+                    songIds = songIds,
+                    coverImageUri = playlist.artworkUrl,
+                    customId = customId,
+                    source = sourceLabel
+                )
+                Result.success(
+                    CloudPlaylistImportResult(created.id, songIds.size, wasUpdated = false)
+                )
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Cloud playlist import failed for %s", playlist.url)
+            Result.failure(e)
+        }
     }
 
     /**
@@ -563,7 +720,46 @@ class PlaylistImportManager @Inject constructor(
         return Pair(playlistName, tracks)
     }
 
-    private companion object {
+    companion object {
+        /**
+         * Prefix of the deterministic custom id every cloud-imported playlist
+         * gets (see [cloudImportCustomId]) — recognizable in the playlist id
+         * itself, so the "already imported" state can be rebuilt after an app
+         * restart without extra bookkeeping.
+         */
+        const val CLOUD_IMPORT_CUSTOM_ID_PREFIX = "cloudimport_"
+
+        /**
+         * [Playlist.source] tag for playlists imported from the YouTube Music
+         * online search (drives the provider badge in the Library and the
+         * Local/Cloud filter of the playlists sort sheet).
+         */
+        const val CLOUD_IMPORT_SOURCE_YOUTUBE = "YOUTUBE"
+
+        /** [Playlist.source] tag for SoundCloud-imported playlists. */
+        const val CLOUD_IMPORT_SOURCE_SOUNDCLOUD = "SOUNDCLOUD"
+
+        /**
+         * Stable identity of a cloud playlist across imports — the same cloud
+         * playlist always maps to the same key, regardless of which surface
+         * (search result row / detail screen) triggered the import.
+         */
+        fun cloudImportKey(playlist: CloudPlaylist): String {
+            val provider = if (playlist.provider == CloudStreamProvider.YOUTUBE) "youtube" else "soundcloud"
+            return "${provider}_${playlist.id}"
+        }
+
+        /** Deterministic library custom id for a cloud playlist import. */
+        fun cloudImportCustomId(playlist: CloudPlaylist): String =
+            CLOUD_IMPORT_CUSTOM_ID_PREFIX + cloudImportKey(playlist)
+
+        /**
+         * Pseudo parent directory applied to imported cloud tracks — the SAME
+         * marker [commitPreview] uses, so cloud-imported and M3U-imported
+         * songs behave identically in every library surface.
+         */
+        const val CLOUD_IMPORT_PARENT_DIRECTORY = "imported_playlists"
+
         /**
          * Minimum combined Jaccard similarity score for a YouTube search result
          * to be considered a "match" for a scraped Spotify/Apple track. Below

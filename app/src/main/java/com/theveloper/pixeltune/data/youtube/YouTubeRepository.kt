@@ -359,6 +359,17 @@ class YouTubeRepository @Inject constructor() {
                             // dropped the avatar and mislabeled subscribers as
                             // "X Songs"), and keep the channel URL the detail
                             // screen extracts the artist's tracks from.
+                            //
+                            // FIX(yt-artist-monthly-audience): YT Music's artist
+                            // rows no longer report subscriber counts — the
+                            // metadata line reads "278M monthly audience" and
+                            // NewPipe maps that number into subscriberCount.
+                            // Flag the figure so every subtitle renders it as
+                            // "monthly listeners" (what YouTube itself shows)
+                            // instead of the wrong "278M subscribers" label.
+                            // The channel-page refresh in
+                            // [getCloudArtistTracks] still returns the REAL
+                            // subscriber count for the detail header.
                             results.add(
                                 SearchResultItem.CloudArtistItem(
                                     CloudArtist(
@@ -366,6 +377,7 @@ class YouTubeRepository @Inject constructor() {
                                         url = item.url,
                                         name = item.name ?: "Unknown Artist",
                                         subscriberCount = runCatching { item.subscriberCount }.getOrDefault(-1L),
+                                        isMonthlyAudience = true,
                                         artworkUrl = CloudArtworkHelper.bestArtworkUrl(
                                             runCatching { item.thumbnails }.getOrDefault(emptyList())
                                         ),

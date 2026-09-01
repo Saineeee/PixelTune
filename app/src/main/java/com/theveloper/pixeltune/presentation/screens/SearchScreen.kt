@@ -34,16 +34,20 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -108,6 +112,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.media3.common.util.UnstableApi
 import androidx.navigation.NavHostController
 import com.theveloper.pixeltune.R
+import com.theveloper.pixeltune.data.playlist.PlaylistImportManager
 import com.theveloper.pixeltune.data.repository.MusicRepository
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
 import com.theveloper.pixeltune.presentation.components.NavBarContentHeight
@@ -519,6 +524,7 @@ fun SearchScreen(
                                     SearchResultsViewState.RESULTS -> SearchResultsList(
                                         results = searchResults,
                                         playerViewModel = playerViewModel,
+                                        playlistViewModel = playlistViewModel,
                                         onItemSelected = {
                                             if (searchQuery.isNotBlank()) {
                                                 playerViewModel.onSearchQuerySubmitted(searchQuery)
@@ -922,6 +928,7 @@ fun EmptySearchResults(searchQuery: String, colorScheme: ColorScheme) {
 fun SearchResultsList(
     results: List<SearchResultItem>,
     playerViewModel: PlayerViewModel,
+    playlistViewModel: PlaylistViewModel = hiltViewModel(),
     onItemSelected: () -> Unit,
     currentPlayingSongId: String?,
     isPlaying: Boolean,
@@ -931,6 +938,17 @@ fun SearchResultsList(
     val localDensity = LocalDensity.current
     val playerStableState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
     val allSongs by playerViewModel.allSongsFlow.collectAsStateWithLifecycle()
+
+    // IMPROVE(cloud-playlist-import): live import state of the "Add to
+    // library" buttons on the online playlist result rows + result
+    // snackbars (surfaced through the app's Material 3 snackbar host).
+    val importingCloudPlaylistKeys by playlistViewModel.importingCloudPlaylistKeys.collectAsStateWithLifecycle()
+    val importedCloudPlaylistKeys by playlistViewModel.importedCloudPlaylistKeys.collectAsStateWithLifecycle()
+    LaunchedEffect(playlistViewModel, playerViewModel) {
+        playlistViewModel.cloudImportEvents.collect { message ->
+            playerViewModel.sendToast(message)
+        }
+    }
 
     if (results.isEmpty()) {
         Box(
@@ -1140,8 +1158,22 @@ fun SearchResultsList(
                                         onItemSelected()
                                     }
                                 }
+                                // IMPROVE(cloud-playlist-import): "Add to your
+                                // playlist" button on every ONLINE PLAYLIST
+                                // result row — taps fetch the playlist's real
+                                // tracks from the provider and import them
+                                // into the Library's Playlists tab (playable
+                                // from there like any local playlist).
+                                val cloudPlaylistKey = remember(item.playlist) {
+                                    PlaylistImportManager.cloudImportKey(item.playlist)
+                                }
                                 SearchResultCloudPlaylistItem(
                                     playlist = item.playlist,
+                                    isImporting = importingCloudPlaylistKeys.contains(cloudPlaylistKey),
+                                    isImported = importedCloudPlaylistKeys.contains(cloudPlaylistKey),
+                                    onAddToLibraryClick = {
+                                        playlistViewModel.importCloudPlaylistToLibrary(item.playlist)
+                                    },
                                     onOpenClick = onOpenClick,
                                     onPlayClick = onPlayClick
                                 )
@@ -1419,11 +1451,21 @@ fun SearchResultPlaylistItem(
  * filled play button) — but now renders the provider's REAL metadata:
  * high-res artwork, uploader name and true track count (the old mapping
  * showed a placeholder cover with "0 songs").
+ *
+ * IMPROVE(cloud-playlist-import): playlist rows (not albums) also carry an
+ * "Add to your playlist" tonal icon button next to the play button. Tapping
+ * it imports that exact playlist into the app's Library Playlists tab: the
+ * button morphs into an expressive progress indicator while the tracks are
+ * fetched, and into a check once the playlist is available in the Library.
+ * Re-tapping a checked playlist refreshes its tracks in place.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchResultCloudPlaylistItem(
     playlist: CloudPlaylist,
+    isImporting: Boolean = false,
+    isImported: Boolean = false,
+    onAddToLibraryClick: () -> Unit = {},
     onOpenClick: () -> Unit,
     onPlayClick: () -> Unit
 ) {
@@ -1505,6 +1547,53 @@ fun SearchResultCloudPlaylistItem(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+
+            // IMPROVE(cloud-playlist-import): "Add to your playlist" button on
+            // ONLINE PLAYLIST rows (albums keep the single play action). M3
+            // expressive tonal style so it reads as a secondary action next to
+            // the filled play button; Crossfade morphs it between
+            // add → progress → added states.
+            if (!playlist.isAlbum) {
+                Spacer(Modifier.width(8.dp))
+                FilledTonalIconButton(
+                    onClick = onAddToLibraryClick,
+                    enabled = !isImporting,
+                    modifier = Modifier.size(40.dp),
+                    shape = CircleShape,
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                ) {
+                    Crossfade(
+                        targetState = when {
+                            isImporting -> "importing"
+                            isImported -> "imported"
+                            else -> "idle"
+                        },
+                        animationSpec = tween(durationMillis = 190),
+                        label = "cloudPlaylistImportState"
+                    ) { state ->
+                        when (state) {
+                            "importing" -> CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.5.dp,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            "imported" -> Icon(
+                                imageVector = Icons.Rounded.Check,
+                                contentDescription = "Added to Library",
+                                modifier = Modifier.size(22.dp)
+                            )
+                            else -> Icon(
+                                imageVector = Icons.Rounded.PlaylistAdd,
+                                contentDescription = "Add to your Library",
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                }
             }
             FilledIconButton(
                 onClick = onPlayClick,
@@ -1631,11 +1720,21 @@ private fun cloudPlaylistSubtitle(playlist: CloudPlaylist): String {
     return listOfNotNull(uploader, countLabel).joinToString(" • ")
 }
 
-/** "1.2M followers" subtitle for a cloud artist row. */
+/**
+ * "1.2M followers" subtitle for a cloud artist row.
+ *
+ * FIX(yt-artist-monthly-audience): YouTube Music artist rows report the
+ * provider's "monthly audience" figure (NewPipe delivers it through
+ * subscriberCount), NOT a subscriber count — rendering it as "120M
+ * subscribers" produced the unnaturally-high counts users reported. YouTube
+ * artists with a parsed figure are therefore labelled "monthly listeners"
+ * (the same metric YouTube Music itself displays on artist rows), while
+ * SoundCloud keeps its true "followers" label.
+ */
 private fun cloudArtistSubtitle(artist: CloudArtist): String {
     if (artist.subscriberCount < 0) return "Artist"
     val unit = if (artist.provider == com.theveloper.pixeltune.data.model.CloudStreamProvider.YOUTUBE) {
-        "subscribers"
+        if (artist.isMonthlyAudience) "monthly listeners" else "subscribers"
     } else {
         "followers"
     }

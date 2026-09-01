@@ -127,6 +127,7 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
 import com.theveloper.pixeltune.presentation.components.LibrarySortBottomSheet
 import com.theveloper.pixeltune.data.model.SortOption
 import com.theveloper.pixeltune.data.model.PlaylistShapeType
+import com.theveloper.pixeltune.data.playlist.PlaylistImportManager
 import kotlinx.coroutines.launch
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -242,11 +243,15 @@ fun PlaylistDetailScreen(
                 subtitle = {
                     Text(
                         modifier = Modifier.padding(start = 8.dp),
-                        text = "${songsInPlaylist.size} songs • ${
-                            formatTotalDuration(
-                                songsInPlaylist
-                            )
-                        }",
+                        // IMPROVE(cloud-playlist-import): playlists imported
+                        // from the online search name their cloud streaming
+                        // provider (YouTube / SoundCloud) right in the header,
+                        // so it is always clear where the playlist came from.
+                        text = listOfNotNull(
+                            cloudProviderLabel(currentPlaylist?.source),
+                            "${songsInPlaylist.size} songs",
+                            formatTotalDuration(songsInPlaylist)
+                        ).joinToString(" • "),
                         style = MaterialTheme.typography.labelMedium.copy(fontFamily = GoogleSansRounded),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -999,4 +1004,16 @@ fun RenamePlaylistDialog(currentName: String, onDismiss: () -> Unit, onRename: (
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+}
+
+/**
+ * IMPROVE(cloud-playlist-import): display name of the cloud streaming
+ * provider a playlist was imported from ("YouTube" / "SoundCloud"), or null
+ * for local playlists — prefixed into the header subtitle of the playlist
+ * detail screen.
+ */
+private fun cloudProviderLabel(source: String?): String? = when (source?.uppercase()) {
+    PlaylistImportManager.CLOUD_IMPORT_SOURCE_YOUTUBE -> "YouTube"
+    PlaylistImportManager.CLOUD_IMPORT_SOURCE_SOUNDCLOUD -> "SoundCloud"
+    else -> null
 }

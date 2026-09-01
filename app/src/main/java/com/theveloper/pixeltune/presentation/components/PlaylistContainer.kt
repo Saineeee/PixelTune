@@ -31,6 +31,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CloudQueue
+import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -74,6 +76,7 @@ import androidx.navigation.NavController
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.model.Playlist
 import com.theveloper.pixeltune.data.model.Song
+import com.theveloper.pixeltune.data.playlist.PlaylistImportManager
 import com.theveloper.pixeltune.presentation.components.subcomps.SineWaveLine
 import com.theveloper.pixeltune.presentation.navigation.Screen
 import com.theveloper.pixeltune.presentation.screens.PlayerSheetCollapsedCornerRadius
@@ -426,9 +429,33 @@ fun PlaylistItem(
                             modifier = Modifier.size(18.dp)
                         )
                     }
+                    // IMPROVE(cloud-playlist-import): provider badge for
+                    // playlists imported from the ONLINE search — YouTube
+                    // (PlayCircle, same icon the streaming-provider sheet
+                    // uses) and SoundCloud (CloudQueue). The song-count line
+                    // below also names the provider explicitly, so it is
+                    // always clear WHERE an imported playlist came from.
+                    if (playlist.source == PlaylistImportManager.CLOUD_IMPORT_SOURCE_YOUTUBE) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.Rounded.PlayCircle,
+                            contentDescription = "Imported from YouTube",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    if (playlist.source == PlaylistImportManager.CLOUD_IMPORT_SOURCE_SOUNDCLOUD) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.Rounded.CloudQueue,
+                            contentDescription = "Imported from SoundCloud",
+                            tint = SoundCloudBadgeColor,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
                 Text(
-                    text = "${playlist.songIds.size} Songs",
+                    text = buildPlaylistSongCountLabel(playlist),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -575,4 +602,27 @@ fun CreatePlaylistDialogRedesigned(
             }
         }
     }
+}
+
+/**
+ * IMPROVE(cloud-playlist-import): SoundCloud provider identity color — the
+ * same value the streaming-provider sheet uses for its SoundCloud card, so
+ * the badge stays recognizable across surfaces.
+ */
+private val SoundCloudBadgeColor = Color(0xFFCC5500)
+
+/**
+ * IMPROVE(cloud-playlist-import): "12 Songs" line of a Library playlist row,
+ * prefixed with the cloud streaming provider an imported playlist came from
+ * (e.g. "YouTube • 12 Songs") — the provider an "Add to your playlist" import
+ * used is always spelled out, next to the icon badge in the title row.
+ */
+private fun buildPlaylistSongCountLabel(playlist: Playlist): String {
+    val providerLabel = when (playlist.source) {
+        PlaylistImportManager.CLOUD_IMPORT_SOURCE_YOUTUBE -> "YouTube"
+        PlaylistImportManager.CLOUD_IMPORT_SOURCE_SOUNDCLOUD -> "SoundCloud"
+        else -> null
+    }
+    val count = "${playlist.songIds.size} Songs"
+    return if (providerLabel != null) "$providerLabel • $count" else count
 }

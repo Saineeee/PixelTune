@@ -218,6 +218,17 @@ fun HomeScreen(
 
     val weeklyStats by statsViewModel.weeklyOverview.collectAsStateWithLifecycle()
 
+    // IMPROVE(cloud-listening-stats): the weekly overview was only loaded
+    // once per ViewModel lifetime — plays finished afterwards (local OR
+    // cloud-streamed) never showed up on the Home card until the whole app
+    // restarted. Re-aggregate every time Home becomes visible (returning
+    // from playback, from the player sheet, or from another tab) so the
+    // Listening stats card always reflects what was actually listened to,
+    // including online streaming plays.
+    LaunchedEffect(statsViewModel) {
+        statsViewModel.refreshWeeklyOverview()
+    }
+
     // Drawer state for sidebar
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
 

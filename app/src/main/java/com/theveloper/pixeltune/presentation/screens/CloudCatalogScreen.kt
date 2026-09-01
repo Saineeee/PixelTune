@@ -2,10 +2,12 @@
 
 package com.theveloper.pixeltune.presentation.screens
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,7 +30,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ContainedLoadingIndicator
@@ -36,6 +40,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LargeExtendedFloatingActionButton
@@ -83,6 +88,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
 import androidx.navigation.NavController
 import coil.size.Size
+import com.theveloper.pixeltune.data.playlist.PlaylistImportManager
 import com.theveloper.pixeltune.presentation.components.ExpressiveScrollBar
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
 import com.theveloper.pixeltune.presentation.components.NavBarContentHeight
@@ -132,6 +138,24 @@ fun CloudCatalogScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val stablePlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
     val favoriteIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle()
+
+    // IMPROVE(cloud-playlist-import): "Add to your playlist" state for the
+    // header button of an opened ONLINE PLAYLIST — imports the whole playlist
+    // into the Library's Playlists tab, where it plays like any local
+    // playlist. Result messages surface as Material 3 snackbars through the
+    // app's shared snackbar host.
+    val importingCloudPlaylistKeys by playlistViewModel.importingCloudPlaylistKeys.collectAsStateWithLifecycle()
+    val importedCloudPlaylistKeys by playlistViewModel.importedCloudPlaylistKeys.collectAsStateWithLifecycle()
+    LaunchedEffect(playlistViewModel, playerViewModel) {
+        playlistViewModel.cloudImportEvents.collect { message ->
+            playerViewModel.sendToast(message)
+        }
+    }
+    val openedCloudPlaylist = uiState.playlist
+    val showAddToLibraryButton = openedCloudPlaylist != null && !openedCloudPlaylist.isAlbum
+    val cloudImportKey = remember(openedCloudPlaylist) {
+        openedCloudPlaylist?.let { PlaylistImportManager.cloudImportKey(it) }
+    }
 
     val isDarkTheme = LocalPixelTuneDarkTheme.current
     val density = LocalDensity.current
@@ -454,6 +478,16 @@ fun CloudCatalogScreen(
                             )
                         }
                     },
+                    // IMPROVE(cloud-playlist-import): import button on the
+                    // opened playlist's header (above the shuffle FAB).
+                    showAddToLibrary = showAddToLibraryButton,
+                    isImporting = cloudImportKey != null &&
+                        importingCloudPlaylistKeys.contains(cloudImportKey),
+                    isImported = cloudImportKey != null &&
+                        importedCloudPlaylistKeys.contains(cloudImportKey),
+                    onAddToLibraryClick = {
+                        openedCloudPlaylist?.let { playlistViewModel.importCloudPlaylistToLibrary(it) }
+                    },
                     isDarkTheme = isDarkTheme
                 )
             }
@@ -609,6 +643,10 @@ private fun CollapsingCloudCatalogTopBar(
     headerHeight: Dp,
     onBackPressed: () -> Unit,
     onShuffleClick: () -> Unit,
+    showAddToLibrary: Boolean = false,
+    isImporting: Boolean = false,
+    isImported: Boolean = false,
+    onAddToLibraryClick: () -> Unit = {},
     isDarkTheme: Boolean
 ) {
     val surfaceColor = MaterialTheme.colorScheme.surface
@@ -795,9 +833,12 @@ private fun CollapsingCloudCatalogTopBar(
                     }
                 }
 
-                LargeExtendedFloatingActionButton(
-                    onClick = onShuffleClick,
-                    shape = RoundedStarShape(sides = 8, curve = 0.05, rotation = 0f),
+                // IMPROVE(cloud-playlist-import): "Add to your playlist"
+                // button stacked above the shuffle FAB — same star shape,
+                // tonal M3 container and collapse-driven scale/alpha so the
+                // header's action pair reads as one expressive group. Morphs
+                // add → progress → added while the import runs.
+                Column(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(16.dp)
@@ -805,9 +846,57 @@ private fun CollapsingCloudCatalogTopBar(
                             scaleX = fabScale
                             scaleY = fabScale
                             alpha = fabScale
-                        }
+                        },
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.End
                 ) {
-                    Icon(Icons.Rounded.Shuffle, contentDescription = "Shuffle play")
+                    if (showAddToLibrary) {
+                        FilledTonalIconButton(
+                            onClick = onAddToLibraryClick,
+                            enabled = !isImporting,
+                            modifier = Modifier.size(56.dp),
+                            shape = RoundedStarShape(sides = 8, curve = 0.05, rotation = 0f),
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        ) {
+                            Crossfade(
+                                targetState = when {
+                                    isImporting -> "importing"
+                                    isImported -> "imported"
+                                    else -> "idle"
+                                },
+                                animationSpec = tween(durationMillis = 190),
+                                label = "cloudHeaderImportState"
+                            ) { state ->
+                                when (state) {
+                                    "importing" -> CircularProgressIndicator(
+                                        modifier = Modifier.size(22.dp),
+                                        strokeWidth = 2.5.dp,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                    "imported" -> Icon(
+                                        imageVector = Icons.Rounded.Check,
+                                        contentDescription = "Added to Library",
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                    else -> Icon(
+                                        imageVector = Icons.Rounded.PlaylistAdd,
+                                        contentDescription = "Add to your Library",
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    LargeExtendedFloatingActionButton(
+                        onClick = onShuffleClick,
+                        shape = RoundedStarShape(sides = 8, curve = 0.05, rotation = 0f)
+                    ) {
+                        Icon(Icons.Rounded.Shuffle, contentDescription = "Shuffle play")
+                    }
                 }
             }
         }

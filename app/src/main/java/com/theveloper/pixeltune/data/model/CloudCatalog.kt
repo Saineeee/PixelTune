@@ -90,6 +90,23 @@ data class CloudArtist(
     val name: String,
     /** Follower/subscriber count as reported by the provider; -1 unknown. */
     val subscriberCount: Long = -1L,
+    /**
+     * FIX(yt-artist-monthly-audience): YouTube Music artist search rows no
+     * longer carry a subscriber count — the metadata column now reads e.g.
+     * "278M monthly audience", and NewPipe's YT-Music artist extractor maps
+     * that figure into [subscriberCount]. Rendering it as "278M subscribers"
+     * produced the unnaturally-high counts users reported (a real channel
+     * usually has ~3x fewer subscribers than its monthly audience).
+     *
+     * When true, [subscriberCount] holds the provider's MONTHLY AUDIENCE /
+     * monthly-listeners metric, so every subtitle rendering labels it as
+     * "monthly listeners" instead of "subscribers". The cloud catalog detail
+     * screen still refreshes the header with the channel page's REAL
+     * subscriber count wherever the channel exposes tabs (Tier 1 extraction).
+     *
+     * SoundCloud rows keep false — their count really is a follower count.
+     */
+    val isMonthlyAudience: Boolean = false,
     /** Highest-resolution avatar URL (upgraded by CloudArtworkHelper). */
     val artworkUrl: String? = null,
     val isVerified: Boolean = false,

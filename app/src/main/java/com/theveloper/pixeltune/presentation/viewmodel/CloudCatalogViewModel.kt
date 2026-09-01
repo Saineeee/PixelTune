@@ -302,7 +302,7 @@ class CloudCatalogViewModel @Inject constructor(
                 val provider = providerLabel(current.artist.provider)
                 val followers = refreshed ?: formatCount(
                     current.artist.subscriberCount,
-                    followerUnitFor(current.artist.provider)
+                    followerUnitFor(current.artist)
                 )
                 return if (followers != null) "$provider • $followers" else provider
             }
@@ -318,15 +318,29 @@ class CloudCatalogViewModel @Inject constructor(
 
     private fun buildArtistSubtitle(artist: CloudArtist): String {
         val provider = providerLabel(artist.provider)
-        val followers = formatCount(artist.subscriberCount, followerUnitFor(artist.provider))
+        val followers = formatCount(artist.subscriberCount, followerUnitFor(artist))
         return if (followers != null) "$provider • $followers" else provider
     }
 
     private fun providerLabel(provider: CloudStreamProvider): String =
         if (provider == CloudStreamProvider.YOUTUBE) "YouTube" else "SoundCloud"
 
-    private fun followerUnitFor(provider: CloudStreamProvider): String =
-        if (provider == CloudStreamProvider.YOUTUBE) "subscribers" else "followers"
+    /**
+     * FIX(yt-artist-monthly-audience): the figure carried by a YouTube
+     * artist's [CloudArtist.subscriberCount] is the provider's "monthly
+     * audience" metric (what YouTube Music itself shows on artist rows),
+     * not a subscriber count — label it "monthly listeners". SoundCloud's
+     * figure is a true follower count. The refreshed Tier-1 subtitle (real
+     * subscriber count from the channel page) keeps its own "subscribers"
+     * label because it comes from [CloudTracksPage.refreshedSubtitle].
+     */
+    private fun followerUnitFor(artist: CloudArtist): String =
+        when {
+            artist.provider == CloudStreamProvider.YOUTUBE && artist.isMonthlyAudience ->
+                "monthly listeners"
+            artist.provider == CloudStreamProvider.YOUTUBE -> "subscribers"
+            else -> "followers"
+        }
 
     private fun formatCount(count: Long, unit: String): String? {
         if (count < 0) return null
