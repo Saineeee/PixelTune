@@ -150,6 +150,7 @@ import com.theveloper.pixeltune.presentation.viewmodel.StablePlayerState
 import com.theveloper.pixeltune.presentation.viewmodel.PlaylistUiState
 import com.theveloper.pixeltune.presentation.viewmodel.PlaylistViewModel
 import com.theveloper.pixeltune.data.model.LibraryTabId
+import com.theveloper.pixeltune.data.model.PlaylistSourceFilter
 import com.theveloper.pixeltune.data.model.toLibraryTabIdOrNull
 import com.theveloper.pixeltune.data.preferences.LibraryNavigationMode
 import com.theveloper.pixeltune.data.worker.SyncProgress
@@ -1030,7 +1031,57 @@ fun LibraryScreen(
                                         }
                                     }
                                 } else null,
-                                sourceToggleContent = if (isFoldersTab && ENABLE_FOLDERS_SOURCE_TOGGLE) {
+                                sourceToggleContent = when {
+                                    // IMPROVE(playlist-source-filter): the
+                                    // Playlists tab's Local/Cloud filter — a
+                                    // Material 3 segmented row in the same sort
+                                    // sheet the other tabs use (mirrors the
+                                    // Folders tab's Internal/SD segments).
+                                    currentTabId == LibraryTabId.PLAYLISTS -> {
+                                        {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth().height(48.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                val currentSourceFilter =
+                                                    playlistUiState.currentPlaylistSourceFilter
+                                                ToggleSegmentButton(
+                                                    modifier = Modifier.weight(1f),
+                                                    active = currentSourceFilter == PlaylistSourceFilter.ALL,
+                                                    activeColor = MaterialTheme.colorScheme.primary,
+                                                    inactiveColor = MaterialTheme.colorScheme.surfaceVariant,
+                                                    activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                                                    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    activeCornerRadius = 32.dp,
+                                                    onClick = { playlistViewModel.setPlaylistSourceFilter(PlaylistSourceFilter.ALL) },
+                                                    text = "All"
+                                                )
+                                                ToggleSegmentButton(
+                                                    modifier = Modifier.weight(1f),
+                                                    active = currentSourceFilter == PlaylistSourceFilter.LOCAL,
+                                                    activeColor = MaterialTheme.colorScheme.primary,
+                                                    inactiveColor = MaterialTheme.colorScheme.surfaceVariant,
+                                                    activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                                                    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    activeCornerRadius = 32.dp,
+                                                    onClick = { playlistViewModel.setPlaylistSourceFilter(PlaylistSourceFilter.LOCAL) },
+                                                    text = "Local"
+                                                )
+                                                ToggleSegmentButton(
+                                                    modifier = Modifier.weight(1f),
+                                                    active = currentSourceFilter == PlaylistSourceFilter.CLOUD,
+                                                    activeColor = MaterialTheme.colorScheme.primary,
+                                                    inactiveColor = MaterialTheme.colorScheme.surfaceVariant,
+                                                    activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                                                    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    activeCornerRadius = 32.dp,
+                                                    onClick = { playlistViewModel.setPlaylistSourceFilter(PlaylistSourceFilter.CLOUD) },
+                                                    text = "Cloud"
+                                                )
+                                            }
+                                        }
+                                    }
+                                    isFoldersTab && ENABLE_FOLDERS_SOURCE_TOGGLE -> {
                                     {
                                         Row(
                                             modifier = Modifier.fillMaxWidth().height(48.dp),
@@ -1075,7 +1126,9 @@ fun LibraryScreen(
                                             )
                                         }
                                     }
-                                } else null
+                                    }
+                                    else -> null
+                                }
                             )
                         }
 

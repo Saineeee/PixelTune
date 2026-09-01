@@ -95,6 +95,10 @@ constructor(
         val FOLDERS_SORT_OPTION = stringPreferencesKey("folders_sort_option")
         val LIKED_SONGS_SORT_OPTION = stringPreferencesKey("liked_songs_sort_option")
 
+        // IMPROVE(playlist-source-filter): Local/Cloud filter of the Library's
+        // Playlists tab ("all" / "local" / "cloud").
+        val PLAYLISTS_SOURCE_FILTER = stringPreferencesKey("playlists_source_filter")
+
         // UI State Keys
         val LAST_LIBRARY_TAB_INDEX =
                 intPreferencesKey("last_library_tab_index") // Corrected: Add intPreferencesKey here
@@ -1313,6 +1317,17 @@ constructor(
                         .storageKey
             }
 
+    /**
+     * IMPROVE(playlist-source-filter): persisted Local/Cloud filter of the
+     * Playlists tab — "all" / "local" / "cloud" (see [PlaylistSourceFilter]).
+     */
+    val playlistsSourceFilterFlow: Flow<com.theveloper.pixeltune.data.model.PlaylistSourceFilter> =
+            dataStore.data.map { preferences ->
+                com.theveloper.pixeltune.data.model.PlaylistSourceFilter.fromStorageKey(
+                        preferences[PreferencesKeys.PLAYLISTS_SOURCE_FILTER]
+                )
+            }
+
     val foldersSortOptionFlow: Flow<String> =
             dataStore.data.map { preferences ->
                 SortOption.fromStorageKey(
@@ -1356,6 +1371,13 @@ constructor(
     suspend fun setPlaylistsSortOption(optionKey: String) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.PLAYLISTS_SORT_OPTION] = optionKey
+        }
+    }
+
+    /** IMPROVE(playlist-source-filter): persists the Local/Cloud filter of the Playlists tab. */
+    suspend fun setPlaylistsSourceFilter(filterKey: String) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYLISTS_SOURCE_FILTER] = filterKey
         }
     }
 

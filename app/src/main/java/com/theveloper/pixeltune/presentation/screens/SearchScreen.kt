@@ -6,9 +6,13 @@ import com.theveloper.pixeltune.presentation.components.ToggleSegmentButton
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
@@ -34,12 +38,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -519,6 +526,7 @@ fun SearchScreen(
                                     SearchResultsViewState.RESULTS -> SearchResultsList(
                                         results = searchResults,
                                         playerViewModel = playerViewModel,
+                                        playlistViewModel = playlistViewModel,
                                         onItemSelected = {
                                             if (searchQuery.isNotBlank()) {
                                                 playerViewModel.onSearchQuerySubmitted(searchQuery)
@@ -922,6 +930,7 @@ fun EmptySearchResults(searchQuery: String, colorScheme: ColorScheme) {
 fun SearchResultsList(
     results: List<SearchResultItem>,
     playerViewModel: PlayerViewModel,
+    playlistViewModel: PlaylistViewModel,
     onItemSelected: () -> Unit,
     currentPlayingSongId: String?,
     isPlaying: Boolean,
@@ -931,6 +940,33 @@ fun SearchResultsList(
     val localDensity = LocalDensity.current
     val playerStableState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
     val allSongs by playerViewModel.allSongsFlow.collectAsStateWithLifecycle()
+
+    // IMPROVE(add-cloud-playlist-to-library): import progress + outcome state
+    // for the ONLINE playlists' "Add to library" buttons, plus the one-shot
+    // events surfaced as toasts.
+    val playlistUiState by playlistViewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(playlistViewModel) {
+        playlistViewModel.cloudImportEvents.collect { event ->
+            when (event) {
+                is com.theveloper.pixeltune.presentation.viewmodel.CloudPlaylistImportEvent.Success -> {
+                    if (event.alreadyInLibrary) {
+                        playerViewModel.sendToast(
+                            "Updated \"${event.playlistName}\" in your library (${event.trackCount} tracks)"
+                        )
+                    } else {
+                        playerViewModel.sendToast(
+                            "Added \"${event.playlistName}\" to your library (${event.trackCount} tracks)"
+                        )
+                    }
+                }
+                is com.theveloper.pixeltune.presentation.viewmodel.CloudPlaylistImportEvent.Failure -> {
+                    playerViewModel.sendToast(
+                        "Couldn't add \"${event.playlistName}\": ${event.message}"
+                    )
+                }
+            }
+        }
+    }
 
     if (results.isEmpty()) {
         Box(
@@ -1140,10 +1176,30 @@ fun SearchResultsList(
                                         onItemSelected()
                                     }
                                 }
+                                // IMPROVE(add-cloud-playlist-to-library): the
+                                // add button imports the WHOLE playlist into
+                                // the library's Playlists tab (all pages,
+                                // provider-tagged, immediately playable there).
+                                val stableLibraryId = remember(item.playlist) {
+                                    com.theveloper.pixeltune.data.playlist.CloudPlaylistImportManager
+                                        .stableLibraryIdFor(item.playlist)
+                                }
+                                val isImportingThis =
+                                    playlistUiState.cloudImportingPlaylistId == stableLibraryId
+                                val isImportedThis =
+                                    playlistUiState.importedCloudPlaylistIds.contains(stableLibraryId)
+                                val onAddToLibraryClick = remember(item.playlist, playlistViewModel) {
+                                    {
+                                        playlistViewModel.importCloudPlaylistToLibrary(item.playlist)
+                                    }
+                                }
                                 SearchResultCloudPlaylistItem(
                                     playlist = item.playlist,
                                     onOpenClick = onOpenClick,
-                                    onPlayClick = onPlayClick
+                                    onPlayClick = onPlayClick,
+                                    onAddToLibraryClick = onAddToLibraryClick,
+                                    isImporting = isImportingThis,
+                                    isImported = isImportedThis
                                 )
                             }
 
@@ -1425,7 +1481,10 @@ fun SearchResultPlaylistItem(
 fun SearchResultCloudPlaylistItem(
     playlist: CloudPlaylist,
     onOpenClick: () -> Unit,
-    onPlayClick: () -> Unit
+    onPlayClick: () -> Unit,
+    onAddToLibraryClick: (() -> Unit)? = null,
+    isImporting: Boolean = false,
+    isImported: Boolean = false
 ) {
     val itemShape = remember {
         AbsoluteSmoothCornerShape(
@@ -1505,6 +1564,61 @@ fun SearchResultCloudPlaylistItem(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+            // IMPROVE(add-cloud-playlist-to-library): a tonal "Add to library"
+            // action ahead of the play button — Material 3's secondary-action
+            // treatment (secondaryContainer vs the play button's primary),
+            // with an expressive AnimatedContent icon transition
+            // add -> progress -> check.
+            if (onAddToLibraryClick != null) {
+                Spacer(Modifier.width(8.dp))
+                FilledIconButton(
+                    onClick = onAddToLibraryClick,
+                    modifier = Modifier.size(40.dp),
+                    shape = CircleShape,
+                    enabled = !isImporting,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.9f),
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                ) {
+                    val importState = when {
+                        isImporting -> 1
+                        isImported -> 2
+                        else -> 0
+                    }
+                    AnimatedContent(
+                        targetState = importState,
+                        transitionSpec = {
+                            (scaleIn(
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessMedium
+                                )
+                            ) + fadeIn(animationSpec = tween(180))) togetherWith
+                                (scaleOut(animationSpec = tween(120)) + fadeOut(animationSpec = tween(120)))
+                        },
+                        label = "cloudPlaylistImportState"
+                    ) { state ->
+                        when (state) {
+                            1 -> CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            2 -> Icon(
+                                Icons.Rounded.CheckCircle,
+                                contentDescription = "Added to library",
+                                modifier = Modifier.size(22.dp)
+                            )
+                            else -> Icon(
+                                Icons.AutoMirrored.Rounded.PlaylistAdd,
+                                contentDescription = "Add playlist to your library",
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                }
             }
             FilledIconButton(
                 onClick = onPlayClick,
@@ -1643,9 +1757,13 @@ private fun cloudArtistSubtitle(artist: CloudArtist): String {
         artist.subscriberCount >= 1_000_000L -> {
             val v = artist.subscriberCount / 1_000_000L
             val frac = (artist.subscriberCount % 1_000_000L) / 100_000L
-            if (frac > 0) "$v.${frac}M $unit" else "$v M $unit"
+            if (frac > 0) "$v.${frac}M $unit" else "${v}M $unit"
         }
-        artist.subscriberCount >= 1_000L -> "${artist.subscriberCount / 1_000L}K $unit"
+        artist.subscriberCount >= 1_000L -> {
+            val v = artist.subscriberCount / 1_000L
+            val frac = (artist.subscriberCount % 1_000L) / 100L
+            if (frac > 0) "$v.${frac}K $unit" else "${v}K $unit"
+        }
         else -> "${artist.subscriberCount} $unit"
     }
 }

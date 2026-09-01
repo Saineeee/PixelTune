@@ -155,7 +155,16 @@ class PlaylistImportManager @Inject constructor(
 
             val newSongIds = songEntities.map { it.id.toString() }
             val finalName = playlistName.ifBlank { "Imported Playlist" }
-            userPreferencesRepository.createPlaylist(finalName, newSongIds)
+            // IMPROVE(playlist-provider-badges): imported playlists are tagged
+            // with the streaming provider that actually serves their tracks —
+            // every track of this flow resolves to a YouTube stream, so the
+            // playlist shows the YouTube badge (and counts as a cloud playlist
+            // in the Playlists tab's new Local/Cloud source filter).
+            userPreferencesRepository.createPlaylist(
+                finalName,
+                newSongIds,
+                source = com.theveloper.pixeltune.data.playlist.CloudPlaylistImportManager.SOURCE_YOUTUBE
+            )
 
             Result.success("Imported $finalName with ${newSongIds.size} matching tracks!")
         } catch (e: Exception) {

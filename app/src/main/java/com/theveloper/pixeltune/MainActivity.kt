@@ -635,7 +635,17 @@ class MainActivity : ComponentActivity() {
                 Screen.DelimiterConfig.route,
                 Screen.PaletteStyle.route,
                 Screen.RecentlyPlayed.route,
-                Screen.DeviceCapabilities.route
+                Screen.DeviceCapabilities.route,
+                // FIX(load-more-visibility): the cloud catalog detail screen is
+                // a full-bleed detail page (collapsing header + back button +
+                // star FAB) exactly like AlbumDetail / ArtistDetail /
+                // PlaylistDetail — all of which hide the bottom navigation
+                // bar. CloudCatalog was missing from this list, so the bar (+
+                // the miniplayer above it) stayed on screen and covered the
+                // "Load more tracks" button at the very bottom of the list,
+                // making it impossible to tap. Hiding the bar here gives the
+                // list the same clearance the other detail screens rely on.
+                Screen.CloudCatalog.route
             )
         }
         val shouldHideNavigationBar by remember(currentRoute, isSearchBarActive) {

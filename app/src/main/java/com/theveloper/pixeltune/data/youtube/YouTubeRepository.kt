@@ -196,20 +196,30 @@ class YouTubeRepository @Inject constructor() {
         // real songs. The "All" tab maps to the same music-songs filter so
         // ONLY music shows up everywhere (search, tap-to-play, queue refill).
         //
-        // FIX(online-filter-chips): the Albums / Artists / Playlists chips now
-        // map to the matching YouTube MUSIC indexes (MUSIC_ALBUMS /
-        // MUSIC_ARTISTS / MUSIC_PLAYLISTS) instead of the generic
-        // "playlists"/"channels" filters. NewPipe's YoutubeMusicSearchExtractor
-        // fully supports all of them (its params switch selects the YT Music
-        // tab and commits dedicated item extractors — albums & playlists yield
-        // PlaylistInfoItems, artists yield ChannelInfoItems), and every result
-        // carries the rich metadata (artwork, uploader, counts) the cloud
-        // result rows and the CloudCatalog detail screen render.
+        // FIX(online-filter-chips): the Albums / Artists / Playlists chips map
+        // to the matching YouTube MUSIC indexes (MUSIC_ALBUMS /
+        // MUSIC_PLAYLISTS) so those rows carry the rich metadata (artwork,
+        // uploader, counts) the cloud result rows and the CloudCatalog detail
+        // screen render.
+        //
+        // FIX(artist-subscriber-count): the ARTISTS chip maps to the generic
+        // YouTube CHANNELS index instead of MUSIC_ARTISTS. The YT Music
+        // artists index reports an artist's "monthly audience" figure (e.g.
+        // "320m monthly audience" for Coldplay — an audience-across-surfaces
+        // metric roughly 10x the subscriber count) in the same text slot
+        // NewPipe parses as the subscriber count, so the app displayed
+        // absurd values like "320M subscribers" (the reported bug). The
+        // generic CHANNELS index returns the artists' real channels with
+        // their TRUE subscriber counts (live-verified: Coldplay 28.6M,
+        // ImagineDragons 33.3M, Drake 32.9M — official channel first, with
+        // the verified badge), and `getCloudArtistTracks` already extracts
+        // tracks from regular channels' videos tab (Tier 1), so opening an
+        // artist keeps working exactly as before.
         val searchFilter = when (filter) {
             SearchFilterType.ALL -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
             SearchFilterType.SONGS -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
             SearchFilterType.ALBUMS -> YoutubeSearchQueryHandlerFactory.MUSIC_ALBUMS
-            SearchFilterType.ARTISTS -> YoutubeSearchQueryHandlerFactory.MUSIC_ARTISTS
+            SearchFilterType.ARTISTS -> YoutubeSearchQueryHandlerFactory.CHANNELS
             SearchFilterType.PLAYLISTS -> YoutubeSearchQueryHandlerFactory.MUSIC_PLAYLISTS
         }
 
@@ -965,9 +975,13 @@ class YouTubeRepository @Inject constructor() {
             count >= 1_000_000L -> {
                 val v = count / 1_000_000L
                 val frac = (count % 1_000_000L) / 100_000L
-                if (frac > 0) "$v.${frac}M subscribers" else "$v M subscribers"
+                if (frac > 0) "$v.${frac}M subscribers" else "${v}M subscribers"
             }
-            count >= 1_000L -> "${count / 1_000L}K subscribers"
+            count >= 1_000L -> {
+                val v = count / 1_000L
+                val frac = (count % 1_000L) / 100L
+                if (frac > 0) "$v.${frac}K subscribers" else "${v}K subscribers"
+            }
             else -> "$count subscribers"
         }
     }

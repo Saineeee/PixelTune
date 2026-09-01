@@ -426,6 +426,28 @@ fun PlaylistItem(
                             modifier = Modifier.size(18.dp)
                         )
                     }
+                    // IMPROVE(playlist-provider-badges): playlists imported from
+                    // the ONLINE search (YouTube / SoundCloud "Add to library")
+                    // carry their provider so the user can always tell where a
+                    // playlist's streams come from.
+                    if (playlist.source == "YOUTUBE") {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            painter = painterResource(R.drawable.youtube_logo),
+                            contentDescription = "Imported from YouTube",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    if (playlist.source == "SOUNDCLOUD") {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            painter = painterResource(R.drawable.soundcloud_logo),
+                            contentDescription = "Imported from SoundCloud",
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
                 Text(
                     text = "${playlist.songIds.size} Songs",

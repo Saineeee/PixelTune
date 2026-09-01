@@ -31,6 +31,10 @@ import android.graphics.ImageDecoder
 import android.os.Build
 import android.provider.MediaStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.theveloper.pixeltune.data.model.CloudPlaylist
+import com.theveloper.pixeltune.data.model.PlaylistSourceFilter
+import com.theveloper.pixeltune.data.model.isCloudSourced
+import com.theveloper.pixeltune.data.playlist.CloudPlaylistImportManager
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -55,7 +59,17 @@ data class PlaylistUiState(
     val currentPlaylistSongsSortOption: SortOption = SortOption.SongTitleAZ,
     val playlistSongsOrderMode: PlaylistSongsOrderMode = PlaylistSongsOrderMode.Sorted(SortOption.SongTitleAZ),
     val playlistOrderModes: Map<String, PlaylistSongsOrderMode> = emptyMap(),
-    
+
+    // IMPROVE(playlist-source-filter): Local/Cloud filter of the Playlists tab,
+    // applied on top of the sort option (persisted in DataStore).
+    val currentPlaylistSourceFilter: PlaylistSourceFilter = PlaylistSourceFilter.ALL,
+
+    // IMPROVE(add-cloud-playlist-to-library): one import runs at a time; the
+    // importing playlist's stable id drives the row button's loading state and
+    // the completed ids keep the check state after a successful import.
+    val cloudImportingPlaylistId: String? = null,
+    val importedCloudPlaylistIds: Set<String> = emptySet(),
+
     // AI Generation State
     val isAiGenerating: Boolean = false,
     val aiGenerationError: String? = null
@@ -66,12 +80,31 @@ sealed class PlaylistSongsOrderMode {
     data class Sorted(val option: SortOption) : PlaylistSongsOrderMode()
 }
 
+/**
+ * IMPROVE(add-cloud-playlist-to-library): one-shot events emitted when an
+ * ONLINE-search playlist import into the library finishes. The screens
+ * (Search, CloudCatalog) collect these and surface them as toasts.
+ */
+sealed class CloudPlaylistImportEvent {
+    data class Success(
+        val playlistName: String,
+        val trackCount: Int,
+        val alreadyInLibrary: Boolean
+    ) : CloudPlaylistImportEvent()
+
+    data class Failure(
+        val playlistName: String,
+        val message: String
+    ) : CloudPlaylistImportEvent()
+}
+
 @HiltViewModel
 class PlaylistViewModel @Inject constructor(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val musicRepository: MusicRepository,
     private val aiPlaylistGenerator: com.theveloper.pixeltune.data.ai.AiPlaylistGenerator,
     private val m3uManager: M3uManager,
+    private val cloudPlaylistImportManager: CloudPlaylistImportManager,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -83,6 +116,16 @@ class PlaylistViewModel @Inject constructor(
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
     )
     val playlistCreationEvent: SharedFlow<Boolean> = _playlistCreationEvent.asSharedFlow()
+
+    /**
+     * IMPROVE(add-cloud-playlist-to-library): one-shot import events, collected
+     * by the Search / CloudCatalog screens and surfaced as toasts.
+     */
+    private val _cloudImportEvents = MutableSharedFlow<CloudPlaylistImportEvent>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+    )
+    val cloudImportEvents: SharedFlow<CloudPlaylistImportEvent> = _cloudImportEvents.asSharedFlow()
 
     companion object {
         private const val SONG_SELECTION_PAGE_SIZE =
@@ -119,20 +162,28 @@ class PlaylistViewModel @Inject constructor(
 
     private fun loadPlaylistsAndInitialSortOption() {
         viewModelScope.launch {
-            // First, get the initial sort option
+            // First, get the initial sort option + source filter
             val initialSortOptionName = userPreferencesRepository.playlistsSortOptionFlow.first()
             val initialSortOption = resolvePlaylistSortOption(initialSortOptionName)
-            _uiState.update { it.copy(currentPlaylistSortOption = initialSortOption) }
+            val initialSourceFilter = userPreferencesRepository.playlistsSourceFilterFlow.first()
+            _uiState.update {
+                it.copy(
+                    currentPlaylistSortOption = initialSortOption,
+                    currentPlaylistSourceFilter = initialSourceFilter
+                )
+            }
 
-            // Then, collect playlists and apply the sort option
+            // Then, collect playlists and apply the sort option + source filter
             userPreferencesRepository.userPlaylistsFlow.collect { playlists ->
                 val currentSortOption =
                     _uiState.value.currentPlaylistSortOption // Use the most up-to-date sort option
+                val sourceFilter = _uiState.value.currentPlaylistSourceFilter
+                val filteredPlaylists = playlists.filterBySource(sourceFilter)
                 val sortedPlaylists = when (currentSortOption) {
-                    SortOption.PlaylistNameAZ -> playlists.sortedBy { it.name.lowercase() }
-                    SortOption.PlaylistNameZA -> playlists.sortedByDescending { it.name.lowercase() }
-                    SortOption.PlaylistDateCreated -> playlists.sortedByDescending { it.lastModified }
-                    else -> playlists.sortedBy { it.name.lowercase() } // Default to NameAZ
+                    SortOption.PlaylistNameAZ -> filteredPlaylists.sortedBy { it.name.lowercase() }
+                    SortOption.PlaylistNameZA -> filteredPlaylists.sortedByDescending { it.name.lowercase() }
+                    SortOption.PlaylistDateCreated -> filteredPlaylists.sortedByDescending { it.lastModified }
+                    else -> filteredPlaylists.sortedBy { it.name.lowercase() } // Default to NameAZ
                 }
                 _uiState.update { it.copy(playlists = sortedPlaylists) }
             }
@@ -144,6 +195,16 @@ class PlaylistViewModel @Inject constructor(
                 if (_uiState.value.currentPlaylistSortOption != newSortOption) {
                     // If the option from preferences is different, re-sort the current list
                     sortPlaylists(newSortOption)
+                }
+            }
+        }
+        // IMPROVE(playlist-source-filter): collect subsequent changes to the
+        // Local/Cloud source filter from preferences (e.g. picked in the sort
+        // sheet from another screen instance).
+        viewModelScope.launch {
+            userPreferencesRepository.playlistsSourceFilterFlow.collect { storedFilter ->
+                if (_uiState.value.currentPlaylistSourceFilter != storedFilter) {
+                    setPlaylistSourceFilterInternal(storedFilter)
                 }
             }
         }
@@ -706,6 +767,86 @@ class PlaylistViewModel @Inject constructor(
 
         viewModelScope.launch {
             userPreferencesRepository.setPlaylistsSortOption(sortOption.storageKey)
+        }
+    }
+
+    /**
+     * IMPROVE(playlist-source-filter): sets the Playlists tab's Local/Cloud
+     * filter (persisted in DataStore). The visible list is re-derived from the
+     * unfiltered DataStore collection — but the collector keeps the LAST list
+     * only, so on a filter change we re-read the playlists once and re-apply
+     * both the sort option and the new filter.
+     */
+    fun setPlaylistSourceFilter(filter: PlaylistSourceFilter) {
+        setPlaylistSourceFilterInternal(filter)
+        viewModelScope.launch {
+            userPreferencesRepository.setPlaylistsSourceFilter(filter.storageKey)
+        }
+    }
+
+    private fun setPlaylistSourceFilterInternal(filter: PlaylistSourceFilter) {
+        _uiState.update { it.copy(currentPlaylistSourceFilter = filter) }
+        viewModelScope.launch {
+            val playlists = userPreferencesRepository.userPlaylistsFlow.first()
+            val sortOption = _uiState.value.currentPlaylistSortOption
+            val filteredPlaylists = playlists.filterBySource(filter)
+            val sortedPlaylists = when (sortOption) {
+                SortOption.PlaylistNameAZ -> filteredPlaylists.sortedBy { it.name.lowercase() }
+                SortOption.PlaylistNameZA -> filteredPlaylists.sortedByDescending { it.name.lowercase() }
+                SortOption.PlaylistDateCreated -> filteredPlaylists.sortedByDescending { it.lastModified }
+                else -> filteredPlaylists.sortedBy { it.name.lowercase() }
+            }
+            _uiState.update { it.copy(playlists = sortedPlaylists) }
+        }
+    }
+
+    /** Applies a [PlaylistSourceFilter] to a playlists list. */
+    private fun List<Playlist>.filterBySource(filter: PlaylistSourceFilter): List<Playlist> =
+        when (filter) {
+            PlaylistSourceFilter.ALL -> this
+            PlaylistSourceFilter.LOCAL -> filterNot { it.isCloudSourced() }
+            PlaylistSourceFilter.CLOUD -> filter { it.isCloudSourced() }
+        }
+
+    /**
+     * IMPROVE(add-cloud-playlist-to-library): imports an ONLINE-search playlist
+     * (YouTube / SoundCloud) into the app's library. One import runs at a time;
+     * progress is exposed through [PlaylistUiState.cloudImportingPlaylistId]
+     * (drives the row button's loading state) and the outcome through
+     * [cloudImportEvents] (surfaced as toasts by the calling screens).
+     */
+    fun importCloudPlaylistToLibrary(playlist: CloudPlaylist) {
+        if (_uiState.value.cloudImportingPlaylistId != null) return
+        val stableId = CloudPlaylistImportManager.stableLibraryIdFor(playlist)
+        _uiState.update { it.copy(cloudImportingPlaylistId = stableId) }
+        viewModelScope.launch {
+            val result = cloudPlaylistImportManager.importCloudPlaylist(playlist)
+            _uiState.update { state ->
+                state.copy(
+                    cloudImportingPlaylistId = null,
+                    importedCloudPlaylistIds = if (result.isSuccess) {
+                        state.importedCloudPlaylistIds + stableId
+                    } else {
+                        state.importedCloudPlaylistIds
+                    }
+                )
+            }
+            val event = result.fold(
+                onSuccess = { outcome ->
+                    CloudPlaylistImportEvent.Success(
+                        playlistName = outcome.playlistName,
+                        trackCount = outcome.trackCount,
+                        alreadyInLibrary = outcome.alreadyInLibrary
+                    )
+                },
+                onFailure = { error ->
+                    CloudPlaylistImportEvent.Failure(
+                        playlistName = playlist.name,
+                        message = error.message ?: "Import failed"
+                    )
+                }
+            )
+            _cloudImportEvents.emit(event)
         }
     }
 

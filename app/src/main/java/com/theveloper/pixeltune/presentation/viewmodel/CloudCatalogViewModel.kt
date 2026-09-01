@@ -334,9 +334,13 @@ class CloudCatalogViewModel @Inject constructor(
             count >= 1_000_000L -> {
                 val v = count / 1_000_000L
                 val frac = (count % 1_000_000L) / 100_000L
-                if (frac > 0) "$v.${frac}M $unit" else "$v M $unit"
+                if (frac > 0) "$v.${frac}M $unit" else "${v}M $unit"
             }
-            count >= 1_000L -> "${count / 1_000L}K $unit"
+            count >= 1_000L -> {
+                val v = count / 1_000L
+                val frac = (count % 1_000L) / 100L
+                if (frac > 0) "$v.${frac}K $unit" else "${v}K $unit"
+            }
             else -> "$count $unit"
         }
     }
