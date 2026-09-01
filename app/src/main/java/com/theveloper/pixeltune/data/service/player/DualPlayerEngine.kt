@@ -103,6 +103,12 @@ class DualPlayerEngine @Inject constructor(
     private lateinit var playerA: ExoPlayer
     private lateinit var playerB: ExoPlayer
 
+    // Adaptive buffering: one SourceTunedLoadControl per player. The references
+    // swap together with the players in performOverlapTransition() so each
+    // control keeps answering for the player it was built with.
+    private lateinit var masterLoadControl: SourceTunedLoadControl
+    private lateinit var auxiliaryLoadControl: SourceTunedLoadControl
+
     private val onPlayerSwappedListeners = mutableListOf<(Player) -> Unit>()
     
     // Active Audio Session ID Flow
@@ -161,6 +167,17 @@ class DualPlayerEngine @Inject constructor(
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            // Adaptive buffering: retune the master player's LoadControl
+            // profile to the incoming source type before loading begins.
+            // Items reach the player with their ORIGINAL scheme (proxy/local
+            // resolution happens inside the DataSource at load time), which
+            // is exactly what the scheme-based classification needs.
+            masterLoadControl.select(
+                SourceTunedLoadControl.kindForUriScheme(
+                    mediaItem?.localConfiguration?.uri?.scheme
+                )
+            )
+
             // Integración de feature/telegram-cloud-sync
             val uri = mediaItem?.localConfiguration?.uri
             if (uri?.scheme == "telegram") {
@@ -241,6 +258,10 @@ class DualPlayerEngine @Inject constructor(
     fun initialize() {
         if (!isReleased && ::playerA.isInitialized && playerA.applicationLooper.thread.isAlive) return
 
+        // Adaptive buffering: fresh controls per engine (re)initialization.
+        masterLoadControl = SourceTunedLoadControl.create()
+        auxiliaryLoadControl = SourceTunedLoadControl.create()
+
         // Clean up if needed (though unlikely to be called if already initialized and alive)
         if (::playerA.isInitialized) {
             try { playerA.release() } catch (e: Exception) { /* Ignore */ }
@@ -251,8 +272,8 @@ class DualPlayerEngine @Inject constructor(
 
         // We initialize BOTH players with NO internal focus handling.
         // We manage Audio Focus manually via AudioFocusManager.
-        playerA = buildPlayer(handleAudioFocus = false)
-        playerB = buildPlayer(handleAudioFocus = false)
+        playerA = buildPlayer(handleAudioFocus = false, loadControl = masterLoadControl)
+        playerB = buildPlayer(handleAudioFocus = false, loadControl = auxiliaryLoadControl)
 
         // Attach listener to initial master
         playerA.addListener(masterPlayerListener)
@@ -292,7 +313,7 @@ class DualPlayerEngine @Inject constructor(
         }
     }
 
-    private fun buildPlayer(handleAudioFocus: Boolean): ExoPlayer {
+    private fun buildPlayer(handleAudioFocus: Boolean, loadControl: SourceTunedLoadControl): ExoPlayer {
         val renderersFactory = object : DefaultRenderersFactory(context) {
             override fun buildAudioRenderers(
                 context: Context,
@@ -411,26 +432,10 @@ class DualPlayerEngine @Inject constructor(
         )
         val resolvingFactory = ResolvingDataSource.Factory(dataSourceFactory, resolver)
 
-        // Tune LoadControl to prevent "loop of death" (underrun -> start -> underrun)
-        // while keeping playback start and seek resume snappy.
-        //
-        // FIX(cloud-streaming-speed): the start/rebuffer gates were 5s/5s —
-        // after EVERY seek ExoPlayer had to buffer a full 5 seconds of audio
-        // through the localhost proxy before playback resumed, stacking a
-        // fixed +5s delay on top of the upstream (re)connection time ("takes
-        // extremely long to play from a forwarded position"). The underrun
-        // cycling the 5s gates were raised for is actually prevented by the
-        // 30s minimum buffer (loading continues toward it while playing);
-        // 2s start / 3s rebuffer gates resume audio 2-2.5x sooner and are
-        // still above media3's own defaults of 2.5s/5s.
-        val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                30_000, // Min buffer 30s
-                60_000, // Max buffer 60s
-                2_000,  // Buffer for playback start (was 5s — resume/start 2.5x sooner)
-                3_000   // Buffer for rebuffer after seek/underrun (was 5s)
-            )
-            .build()
+        // Buffering is adaptive per source type (local files / cloud-drive
+        // proxies / remote streams): the engine selects the profile on every
+        // media item transition and before preparing the auxiliary player —
+        // see SourceTunedLoadControl.
 
         return ExoPlayer.Builder(context, renderersFactory)
             .setMediaSourceFactory(DefaultMediaSourceFactory(resolvingFactory))
@@ -667,6 +672,17 @@ class DualPlayerEngine @Inject constructor(
         try {
             Timber.tag("TransitionDebug").d("Engine: prepareNext called for %s", mediaItem.mediaId)
 
+            // Adaptive buffering: tune the auxiliary player's profile to the
+            // incoming source type. Classified from the ORIGINAL scheme
+            // (before proxy resolution rewrites the URI), so telegram/netease
+            // land on the cloud-drive profile even when resolution happens to
+            // return a local file for an already-downloaded track.
+            auxiliaryLoadControl.select(
+                SourceTunedLoadControl.kindForUriScheme(
+                    mediaItem.localConfiguration?.uri?.scheme
+                )
+            )
+
             // Pre-resolve cloud URI on the coroutine (non-blocking for ExoPlayer)
             val resolvedItem = resolveMediaItem(mediaItem)
 
@@ -838,9 +854,13 @@ class DualPlayerEngine @Inject constructor(
         // 3. Move manual focus management to the new master player
         outgoingPlayer.removeListener(masterPlayerListener)
 
-        // 4. Swap References
+        // 4. Swap References (load controls swap WITH their players so each
+        // control keeps answering for the player it was built with)
         playerA = incomingPlayer
         playerB = outgoingPlayer
+        val swappedMasterControl = auxiliaryLoadControl
+        auxiliaryLoadControl = masterLoadControl
+        masterLoadControl = swappedMasterControl
         
         // Critical: Reset pauseAtEndOfMediaItems on both players after swap.
         // The outgoing player (now B) had pauseAtEndOfMediaItems=true set before the transition started.
