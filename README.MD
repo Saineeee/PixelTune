@@ -144,6 +144,67 @@ cd PixelTune
 | `:shared` | Models and payloads shared between phone and Wear |
 | `:baselineprofile` | Startup and scrolling benchmark profiles |
 
+### Repository layout
+
+```text
+PixelTune/
+├── app/                                  # Phone application — main module
+│   └── src/
+│       ├── main/
+│       │   ├── java/com/theveloper/pixeltune/
+│       │   │   ├── data/                 # Data layer
+│       │   │   │   ├── ai/               #   AI playlist providers (Gemini, DeepSeek)
+│       │   │   │   ├── backup/           #   Module-based backup & restore
+│       │   │   │   ├── database/         #   Room database, entities & DAOs
+│       │   │   │   ├── downloads/        #   Offline download manager
+│       │   │   │   ├── gdrive/           #   Google Drive streaming
+│       │   │   │   ├── github/           #   Release announcements & contributors
+│       │   │   │   ├── media/            #   MediaStore sync & library indexing
+│       │   │   │   ├── netease/          #   NetEase Cloud Music integration
+│       │   │   │   ├── network/          #   OkHttp stack, IPv4-preferred DNS
+│       │   │   │   ├── playlist/         #   Cross-service playlist import
+│       │   │   │   ├── preferences/      #   DataStore settings repository
+│       │   │   │   ├── repository/       #   Repository implementations
+│       │   │   │   ├── service/          #   Playback engine, MediaSession, Cast, Auto
+│       │   │   │   ├── soundcloud/       #   SoundCloud streaming
+│       │   │   │   ├── stats/            #   Playback stats & engagement
+│       │   │   │   ├── stream/           #   On-device Ktor streaming proxy
+│       │   │   │   ├── telegram/         #   Telegram channel streaming (TDLib)
+│       │   │   │   ├── worker/           #   Background library-sync workers
+│       │   │   │   ├── youtube/          #   NewPipeExtractor integration
+│       │   │   │   └── …                 #   model/, paging/, image/, equalizer/, …
+│       │   │   ├── di/                   # Hilt dependency-injection modules
+│       │   │   ├── presentation/         # Compose UI layer
+│       │   │   │   ├── components/       #   Reusable composables & bottom sheets
+│       │   │   │   ├── navigation/       #   Navigation graph
+│       │   │   │   ├── screens/          #   Feature screens (player, library, …)
+│       │   │   │   ├── viewmodel/        #   ViewModels & state holders
+│       │   │   │   └── …                 #   library/, gdrive/, netease/, telegram/
+│       │   │   ├── ui/                   # Theme & design system
+│       │   │   └── utils/                # Helpers (metadata, queue, artwork cache…)
+│       │   ├── res/                      # Strings, themes, widget & shortcut XMLs
+│       │   └── AndroidManifest.xml
+│       ├── debug/                        # Debug-only resources & network config
+│       ├── benchmark/                    # Startup macrobenchmarks
+│       └── test/                         # JVM unit tests
+├── wear/                                 # Wear OS companion (Wear OS 3+)
+├── shared/                               # Phone ↔ Wear models (Wear* DTOs, intents)
+├── baselineprofile/                      # Baseline-profile generation module
+├── gradle/
+│   └── libs.versions.toml                # Version catalog — single source of versions
+├── remote-config/
+│   └── app-announcements.properties      # Remote announcement toggles (fetched at runtime)
+├── assets/                               # README screenshots
+├── build.gradle.kts                      # Root build script
+├── settings.gradle.kts                   # Module declarations
+├── gradle.properties                     # App version (APP_VERSION_NAME / APP_VERSION_CODE)
+├── CHANGELOG.md                          # Release history
+├── LICENSE                               # GPL-3.0 (+ MIT attribution header)
+├── THIRD_PARTY_NOTICES.md                # Third-party licenses & preserved MIT notice
+└── README.md                             # This file
+```
+
+
 ### Tech stack
 
 | Layer | Technology |
