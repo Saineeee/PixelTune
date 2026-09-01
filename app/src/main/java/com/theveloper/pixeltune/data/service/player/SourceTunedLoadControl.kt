@@ -3,13 +3,11 @@ package com.theveloper.pixeltune.data.service.player
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Timeline
-import androidx.media3.common.TrackGroupArray
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.analytics.PlayerId
 import androidx.media3.exoplayer.source.MediaSource
-import androidx.media3.exoplayer.trackselection.ExoTrackSelection
 import androidx.media3.exoplayer.upstream.Allocator
 import androidx.media3.exoplayer.upstream.DefaultAllocator
 
@@ -21,12 +19,12 @@ import androidx.media3.exoplayer.upstream.DefaultAllocator
  * source kind, all sharing a single [DefaultAllocator] (one allocation pool
  * per player, exactly like the single-control setup it replaces).
  *
- * Lifecycle callbacks (`onPrepared`, `onTracksSelected`, `onStopped`,
- * `onReleased`) are forwarded to every delegate so each keeps its per-player
- * loading state; decision queries (`shouldContinueLoading`,
- * `shouldStartPlayback`, back-buffer questions) are answered by the delegate
- * currently selected via [select]. The engine re-selects on every media item
- * transition (master player) and before preparing the auxiliary player.
+ * Lifecycle callbacks (`onPrepared`, `onStopped`, `onReleased`) are forwarded
+ * to every delegate so each keeps its per-player loading state; decision
+ * queries (`shouldContinueLoading`, `shouldStartPlayback`, back-buffer
+ * questions) are answered by the delegate currently selected via [select].
+ * The engine re-selects on every media item transition (master player) and
+ * before preparing the auxiliary player.
  *
  * The decision logic itself is deliberately NOT re-implemented here — it
  * stays inside media3's battle-tested [DefaultLoadControl]; only the
@@ -81,15 +79,9 @@ class SourceTunedLoadControl private constructor(
         remoteStreamControl.onPrepared(playerId)
     }
 
-    override fun onTracksSelected(
-        parameters: LoadControl.Parameters,
-        trackGroups: TrackGroupArray,
-        trackSelections: Array<ExoTrackSelection?>
-    ) {
-        onDeviceFileControl.onTracksSelected(parameters, trackGroups, trackSelections)
-        cloudDriveControl.onTracksSelected(parameters, trackGroups, trackSelections)
-        remoteStreamControl.onTracksSelected(parameters, trackGroups, trackSelections)
-    }
+    // NOTE: onTracksSelected is intentionally NOT overridden. Media3's
+    // ExoPlayer never calls it (the interface default exists "to please the
+    // compiler only"), so forwarding it would be dead code.
 
     override fun onStopped(playerId: PlayerId) {
         onDeviceFileControl.onStopped(playerId)

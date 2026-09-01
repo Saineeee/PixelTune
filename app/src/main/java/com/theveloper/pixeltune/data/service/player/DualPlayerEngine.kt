@@ -945,7 +945,10 @@ class DualPlayerEngine @Inject constructor(
 
         // Fresh Player Strategy: Release and recreate playerB to avoid OEM "stale session" tracking
         playerB.release()
-        playerB = buildPlayer(handleAudioFocus = false)
+        // Recreated with the auxiliary control that now belongs to playerB
+        // (the controls swapped together with the players above); the next
+        // prepareNext() retunes its profile to the upcoming source anyway.
+        playerB = buildPlayer(handleAudioFocus = false, loadControl = auxiliaryLoadControl)
         Timber.tag("TransitionDebug").d("Old Player (B) released and recreated fresh.")
 
         // Ensure New Player (A) is fully active and unrestricted

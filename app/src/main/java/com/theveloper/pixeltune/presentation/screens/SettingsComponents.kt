@@ -526,6 +526,7 @@ private fun syncPhaseLabel(phase: SyncProgress.SyncPhase): String =
             SyncProgress.SyncPhase.SAVING_TO_DATABASE -> "Saving to database"
             SyncProgress.SyncPhase.SCANNING_LRC -> "Scanning lyrics files"
             SyncProgress.SyncPhase.COMPLETING -> "Completing sync"
+            SyncProgress.SyncPhase.MERGING_TELEGRAM -> "Merging Telegram songs"
         }
 
 @Composable

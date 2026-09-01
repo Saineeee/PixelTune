@@ -183,13 +183,20 @@ class TelegramRepository @Inject constructor(
      * Upsert (REPLACE) semantics mean rows persist incrementally; the channel
      * row itself (`songCount` / `lastSyncTime`) stays owned by the caller,
      * matching the previous flow.
+     *
+     * @param messageCap optional override of the user's configured message
+     * cap (null = read it from preferences; 0 = unlimited).
      */
     suspend fun syncChannelAudio(
         chatId: Long,
-        messageCap: Int = userPreferencesRepository.getTelegramSyncMessageCap(),
+        messageCap: Int? = null,
         onBatchPersisted: suspend (persistedSoFar: Int) -> Unit = {}
     ): ChannelAudioSyncResult {
-        Timber.d("Chunked audio sync for chat: $chatId (cap=$messageCap)")
+        // Resolved in the body: Kotlin forbids suspend calls in default
+        // parameter values. null = use the user's configured cap.
+        val effectiveMessageCap =
+            messageCap ?: userPreferencesRepository.getTelegramSyncMessageCap()
+        Timber.d("Chunked audio sync for chat: $chatId (cap=$effectiveMessageCap)")
         try {
             clientManager.sendRequest<TdApi.Ok>(TdApi.OpenChat(chatId))
         } catch (e: Exception) {
@@ -249,7 +256,7 @@ class TelegramRepository @Inject constructor(
                 }
 
                 if (channelExhausted) break
-                if (messageCap > 0 && persistedThisRun >= messageCap) {
+                if (effectiveMessageCap > 0 && persistedThisRun >= effectiveMessageCap) {
                     hitCap = true
                     Timber.i(
                         "Chunked sync for chat %d stopped at message cap (%d persisted)",
