@@ -38,6 +38,7 @@ composeBom = "2025.05.00"
 material = "1.13.0"
 material3 = "1.5.0-alpha13"
 media = "1.7.1"
+metricsPerformance = "1.0.0"
 media3Session = "1.9.2"
 media3Transformer = "1.9.2"
 mediaRouter = "1.8.1"
@@ -138,6 +139,8 @@ androidx-media3-transformer = { module = "androidx.media3:media3-transformer", v
 androidx-media3-ui = { module = "androidx.media3:media3-ui", version.ref = "media3Session" }
 androidx-media3-exoplayer-ffmpeg = { module = "org.jellyfin.media3:media3-ffmpeg-decoder", version = "1.8.0+1" }
 androidx-media-router = { module = "androidx.mediarouter:mediarouter", version.ref = "mediaRouter" }
+# PERF(debug): JankStats for the debug-only frame-time histogram monitor.
+androidx-metrics-performance = { group = "androidx.metrics", name = "metrics-performance", version.ref = "metricsPerformance" }
 androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigationCompose" }
 androidx-palette-ktx = { module = "androidx.palette:palette-ktx", version.ref = "paletteKtx" }
 androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref = "roomCompiler" }

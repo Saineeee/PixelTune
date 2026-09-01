@@ -187,6 +187,10 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 
+    // PERF(debug): JankStats frame-time histograms (debug-only dependency;
+    // the release source set ships a no-op monitor and never links this).
+    debugImplementation(libs.androidx.metrics.performance)
+
     // Baseline Profiles (Macrobenchmark)
     // Asegúrate de que libs.versions.toml tiene androidxBenchmarkMacroJunit4 y androidxUiautomator
     // Ejemplo: androidx-benchmark-macro-junit4 = { group = "androidx.benchmark", name = "benchmark-macro-junit4", version.ref = "benchmarkMacro" }

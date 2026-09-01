@@ -145,6 +145,11 @@ interrupted sync resumes from the last persisted batch boundary
 
 ## 6. Diagnostics
 
-A debug-only frame-timing monitor (JankStats) logs per-screen frame-time
-histograms to Logcat with zero release-build impact, so regressions in the
-recomposition work above are observable during development.
+A debug-only frame-timing monitor (`DebugFrameStatsMonitor` in the
+`src/debug` source set, with a no-op twin in `src/release`) attaches
+JankStats to the activity window, buckets frame durations under the
+current navigation destination and logs per-screen histograms to Logcat
+(tag `FrameStats`, jank rate + p50/p90/p95/p99 + fixed duration bins)
+every 300 frames and on screen switches. The `androidx.metrics`
+dependency is `debugImplementation`-only, so release builds never link
+it and R8 strips the no-op — zero release impact.

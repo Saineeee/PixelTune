@@ -223,6 +223,10 @@ class MainActivity : ComponentActivity() {
         }
         super.onCreate(savedInstanceState)
 
+        // PERF(debug): frame-time histograms per screen in debug builds only
+        // (Logcat tag "FrameStats"); no-op twin ships in release.
+        com.theveloper.pixeltune.performance.DebugFrameStatsMonitor.attach(window)
+
         // Keep splash screen visible until DataStore has emitted the initial setup state,
         // preventing the blank-screen flash between splash and first frame.
         splashScreen.setKeepOnScreenCondition { mainViewModel.isSetupComplete.value == null }
@@ -612,6 +616,13 @@ class MainActivity : ComponentActivity() {
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentRoute = navBackStackEntry?.destination?.route
         var isSearchBarActive by remember { mutableStateOf(false) }
+
+        // PERF(debug): label the frame-time histograms with the visible screen.
+        androidx.compose.runtime.LaunchedEffect(currentRoute) {
+            com.theveloper.pixeltune.performance.DebugFrameStatsMonitor.setScreen(
+                currentRoute ?: "unknown"
+            )
+        }
 
         val routesWithHiddenNavigationBar = remember {
             setOf(
