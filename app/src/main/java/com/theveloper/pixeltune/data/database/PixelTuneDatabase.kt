@@ -24,7 +24,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GDriveSongEntity::class,
         GDriveFolderEntity::class
     ],
-    version = 24, // Incremented for query performance indexes
+    version = 25, // Incremented for the file_path lookup index
 
     exportSchema = false
 )
@@ -457,6 +457,23 @@ abstract class PixelTuneDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_duration ON songs(duration)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_favorites_timestamp ON favorites(timestamp)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_song_engagements_play_count ON song_engagements(play_count)")
+            }
+        }
+
+        /**
+         * Add the index backing `MusicDao.getSongByPath()` (file-path lookups,
+         * e.g. M3U import resolution) so it no longer full-scans `songs`.
+         *
+         * `parent_directory_path` is re-asserted with IF NOT EXISTS purely as
+         * a no-op hardening measure for installs whose index set diverged from
+         * the entity; on healthy v24 databases the statement does nothing.
+         * Index names follow Room's `index_<table>_<columns>` convention so the
+         * post-migration schema validation matches the entities exactly.
+         */
+        val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_file_path ON songs(file_path)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_parent_directory_path ON songs(parent_directory_path)")
             }
         }
     }
