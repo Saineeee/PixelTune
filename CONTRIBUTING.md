@@ -12,14 +12,14 @@ software.
 
 You don't need to write code to help:
 
-- 🐛 **Bug reports** — reproducible reports are the single most valuable
+-  **Bug reports** — reproducible reports are the single most valuable
   contribution during beta.
-- 💡 **Feature ideas** — well-argued proposals shape the roadmap.
-- 🌍 **Translations** — bring PixelTune to more locales.
-- 📖 **Documentation** — improve the README, in-app help text, or this guide.
-- 🔧 **Code** — bug fixes, refactors, and new features (see below).
+-  **Feature ideas** — well-argued proposals shape the roadmap.
+-  **Translations** — bring PixelTune to more locales.
+-  **Documentation** — improve the README, in-app help text, or this guide.
+-  **Code** — bug fixes, refactors, and new features (see below).
 
-## 🐛 Reporting bugs
+## ⭕️ Reporting bugs
 
 Open an [issue](https://github.com/Saineeee/PixelTune/issues) and include:
 
