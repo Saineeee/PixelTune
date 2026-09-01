@@ -125,6 +125,25 @@ android {
     }
 }
 
+// PERF(startup): baseline profile wiring for release builds.
+//
+// The androidx.baselineprofile plugin (applied above, together with the
+// "baselineProfile"(project(":baselineprofile")) dependency and the
+// androidx.profileinstaller runtime) wires ./gradlew
+// :app:generateBaselineProfile to run the StartupBenchmark in
+// :baselineprofile on a connected device/emulator and write the resulting
+// rules into app/src/release/generated/baselineProfiles/, which AGP embeds
+// into release builds as ART profile metadata. The hand-written
+// app/src/main/baseline-prof.txt keeps shipping as a fallback.
+//
+// The benchmark build type is excluded from profile generation as standard
+// practice: it exists to RUN the benchmarks, not to be profiled itself.
+baselineProfile {
+    filter {
+        exclude("benchmark")
+    }
+}
+
 dependencies {
     implementation(libs.androidx.profileinstaller)
     implementation(libs.androidx.paging.common)
