@@ -196,13 +196,7 @@ class MusicRepositoryImpl @Inject constructor(
          }
     }
 
-    override suspend fun replaceTelegramSongsForChannel(chatId: Long, songs: List<Song>) {
-        val entities = songs.mapNotNull { it.toTelegramEntity() }.filter { it.chatId == chatId }
-        telegramDao.deleteSongsByChatId(chatId)
-        if (entities.isNotEmpty()) {
-            telegramDao.insertSongs(entities)
-        }
-        // Trigger sync to update main DB (and remove deleted songs)
+    override fun requestIncrementalSync() {
         androidx.work.WorkManager.getInstance(context).enqueue(
             com.theveloper.pixeltune.data.worker.SyncWorker.incrementalSyncWork()
         )

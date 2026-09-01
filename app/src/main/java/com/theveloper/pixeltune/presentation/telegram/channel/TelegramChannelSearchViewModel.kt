@@ -91,14 +91,21 @@ class TelegramChannelSearchViewModel @Inject constructor(
         _statusMessage.value = "Syncing songs from channel..."
 
         viewModelScope.launch {
-            val fetchedSongs = telegramRepository.getAudioMessages(chatId)
+            // Chunked, resumable channel sync: each committed chunk reports
+            // progress so the status stays live during large imports.
+            val result = telegramRepository.syncChannelAudio(chatId) { persistedSoFar ->
+                _statusMessage.value = "Syncing songs from channel... $persistedSoFar"
+            }
 
-            if (fetchedSongs.isNotEmpty()) {
-                musicRepository.replaceTelegramSongsForChannel(chatId, fetchedSongs)
+            if (result.interruptedBy != null) {
+                _statusMessage.value = "Sync interrupted after ${result.newlyPersistedCount} songs — will resume next refresh"
+            } else if (result.totalSongsForChat > 0 || result.newlyPersistedCount > 0) {
+                // The chunked sync persists directly via TelegramDao; ask the
+                // incremental worker to merge the new rows into the unified DB.
+                musicRepository.requestIncrementalSync()
 
                 // Save Channel Entity
                 val chat = _foundChat.value
-                val currentQuery = _searchQuery.value
                 if (chat != null) {
                     var localPhotoPath: String? = null
                     val photoFileId = chat.photo?.small?.id
@@ -110,14 +117,18 @@ class TelegramChannelSearchViewModel @Inject constructor(
                         chatId = chat.id,
                         title = chat.title,
                         username = _resolvedUsername.value,
-                        songCount = fetchedSongs.size,
+                        songCount = result.totalSongsForChat,
                         lastSyncTime = System.currentTimeMillis(),
                         photoPath = localPhotoPath
                     )
                     musicRepository.saveTelegramChannel(entity)
                 }
 
-                _statusMessage.value = "Success! ${fetchedSongs.size} songs added to library. You can close this window."
+                _statusMessage.value = if (result.hitMessageCap) {
+                    "Imported ${result.newlyPersistedCount} songs (message cap reached — more available on next refresh). You can close this window."
+                } else {
+                    "Success! ${result.newlyPersistedCount} songs added to library (${result.totalSongsForChat} total). You can close this window."
+                }
             } else {
                 _statusMessage.value = "No audio songs found in this channel."
             }

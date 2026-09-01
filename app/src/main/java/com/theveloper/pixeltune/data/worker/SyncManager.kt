@@ -37,7 +37,9 @@ data class SyncProgress(
         PROCESSING_FILES,
         SAVING_TO_DATABASE,
         SCANNING_LRC,
-        COMPLETING
+        COMPLETING,
+        // Appended last to keep existing phase ordinals stable.
+        MERGING_TELEGRAM
     }
 
     val progress: Float

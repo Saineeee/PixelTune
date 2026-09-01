@@ -41,22 +41,32 @@ class TelegramDashboardViewModel @Inject constructor(
             _statusMessage.value = "Syncing ${channel.title}..."
 
             try {
-                // Fetch latest songs (getAudioMessages implements pagination and fetches ALL)
-                val songs = telegramRepository.getAudioMessages(channel.chatId)
-                
-                musicRepository.replaceTelegramSongsForChannel(channel.chatId, songs)
+                // Chunked, resumable channel sync: each committed chunk reports
+                // progress so the status stays live during large refreshes.
+                val result = telegramRepository.syncChannelAudio(channel.chatId) { persistedSoFar ->
+                    _statusMessage.value = "Syncing ${channel.title}... $persistedSoFar songs"
+                }
+
+                // The chunked sync persists directly via TelegramDao; ask the
+                // incremental worker to merge the new rows into the unified DB.
+                musicRepository.requestIncrementalSync()
 
                 // Update metadata
                 val updatedChannel = channel.copy(
-                    songCount = songs.size,
+                    songCount = result.totalSongsForChat,
                     lastSyncTime = System.currentTimeMillis()
                 )
                 musicRepository.saveTelegramChannel(updatedChannel)
 
-                if (songs.isNotEmpty()) {
-                    _statusMessage.value = "Synced ${songs.size} songs from ${channel.title}"
-                } else {
-                    _statusMessage.value = "No songs found in ${channel.title}"
+                _statusMessage.value = when {
+                    result.interruptedBy != null ->
+                        "Sync interrupted after ${result.newlyPersistedCount} songs — will resume next refresh"
+                    result.hitMessageCap ->
+                        "Synced ${result.newlyPersistedCount} songs (message cap reached — more available next refresh)"
+                    result.newlyPersistedCount > 0 ->
+                        "Synced ${result.newlyPersistedCount} songs from ${channel.title} (${result.totalSongsForChat} total)"
+                    else ->
+                        "No new songs found in ${channel.title} (${result.totalSongsForChat} total)"
                 }
             } catch (e: Exception) {
                 _statusMessage.value = "Sync failed: ${e.message}"

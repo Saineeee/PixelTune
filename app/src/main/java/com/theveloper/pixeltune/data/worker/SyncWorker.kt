@@ -1340,6 +1340,18 @@ constructor(
         Log.i(TAG, "Syncing Telegram songs to main database (Unified Mode)...")
         try {
             val telegramSongs = telegramDao.getAllTelegramSongs().first()
+
+            // Report merge progress to WorkManager so observers can follow the
+            // Telegram stage of the sync (chunks are already committed by the
+            // chunked channel sync; this merge is a single fast pass).
+            setProgress(
+                workDataOf(
+                    PROGRESS_CURRENT to 0,
+                    PROGRESS_TOTAL to telegramSongs.size,
+                    PROGRESS_PHASE to SyncProgress.SyncPhase.MERGING_TELEGRAM.ordinal
+                )
+            )
+
             val channels = telegramDao.getAllChannels().first().associateBy { it.chatId }
             val existingUnifiedTelegramIds = musicDao.getAllTelegramSongIds()
             
@@ -1512,6 +1524,15 @@ constructor(
                 crossRefs = crossRefsToInsert,
                 deletedSongIds = deletedUnifiedSongIds
             )
+
+            setProgress(
+                workDataOf(
+                    PROGRESS_CURRENT to songsToInsert.size,
+                    PROGRESS_TOTAL to telegramSongs.size,
+                    PROGRESS_PHASE to SyncProgress.SyncPhase.MERGING_TELEGRAM.ordinal
+                )
+            )
+
             Log.i(TAG, "Synced ${songsToInsert.size} Telegram songs with Unified Metadata.")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to sync Telegram data", e)

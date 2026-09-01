@@ -46,6 +46,12 @@ object AppThemeMode {
     const val DARK = "dark"
 }
 
+/** Bounds for the Telegram channel-sync message cap (0 = unlimited). */
+object TelegramSyncDefaults {
+    const val DEFAULT_MESSAGE_CAP = 10_000
+    const val MAX_MESSAGE_CAP = 100_000
+}
+
 /**
  * Album art quality settings for developer options.
  * Controls maximum resolution for album artwork in player view.
@@ -208,6 +214,11 @@ constructor(
 
         // Smart Duration Filtering
         val MIN_SONG_DURATION = intPreferencesKey("min_song_duration_ms")
+
+        // Telegram sync: maximum number of channel messages a single channel
+        // refresh will fetch before stopping (0 = no cap). Syncs resume from
+        // the persisted watermark, so a capped run continues on the next refresh.
+        val TELEGRAM_SYNC_MESSAGE_CAP = intPreferencesKey("telegram_sync_message_cap")
 
         // ReplayGain
         val REPLAYGAIN_ENABLED = booleanPreferencesKey("replaygain_enabled")
@@ -795,6 +806,36 @@ constructor(
     }
 
     // ===== End Smart Duration Filtering =====
+
+    // ===== Telegram Sync =====
+
+    /**
+     * User-configurable cap on messages fetched per channel sync.
+     *
+     * Defaults to 10,000 messages per refresh; `0` disables the cap. Because
+     * chunked syncs resume from the persisted watermark, capping a refresh
+     * simply defers the remaining history to the next refresh rather than
+     * dropping it.
+     */
+    val telegramSyncMessageCapFlow: Flow<Int> =
+        dataStore.data.map { preferences ->
+            (preferences[PreferencesKeys.TELEGRAM_SYNC_MESSAGE_CAP]
+                ?: TelegramSyncDefaults.DEFAULT_MESSAGE_CAP)
+                .coerceIn(0, TelegramSyncDefaults.MAX_MESSAGE_CAP)
+        }
+
+    suspend fun setTelegramSyncMessageCap(cap: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.TELEGRAM_SYNC_MESSAGE_CAP] =
+                cap.coerceIn(0, TelegramSyncDefaults.MAX_MESSAGE_CAP)
+        }
+    }
+
+    suspend fun getTelegramSyncMessageCap(): Int {
+        return telegramSyncMessageCapFlow.first()
+    }
+
+    // ===== End Telegram Sync =====
 
     // ===== Streaming Quality =====
 

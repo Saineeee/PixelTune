@@ -2,6 +2,7 @@ package com.theveloper.pixeltune.data.telegram
 
 import com.theveloper.pixeltune.data.database.TelegramDao
 import com.theveloper.pixeltune.data.database.TelegramSongEntity
+import com.theveloper.pixeltune.data.database.toTelegramEntity
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,14 @@ class TelegramRepository @Inject constructor(
     private companion object {
         private const val AUTH_REQUEST_TIMEOUT_MS = 20_000L
         private const val TELEGRAM_PLAYLIST_PREFIX = "telegram_channel:"
+
+        // TDLib SearchChatMessages hard limit per request.
+        private const val TELEGRAM_PAGE_LIMIT = 100
+
+        // Messages committed per DB transaction: five TDLib pages amortize the
+        // per-transaction overhead while bounding peak memory and giving
+        // frequent progress / resume points during large channel syncs.
+        private const val SYNC_CHUNK_MESSAGES = 500
     }
 
     val authorizationState: Flow<TdApi.AuthorizationState?> = clientManager.authorizationState
@@ -139,53 +148,130 @@ class TelegramRepository @Inject constructor(
         }
     }
 
-    suspend fun getAudioMessages(chatId: Long): List<Song> {
-        Timber.d("Fetching chat history for chat: $chatId")
+    /**
+     * Outcome of a chunked channel-history sync.
+     *
+     * @property newlyPersistedCount songs written by THIS run (chunked upserts).
+     * @property totalSongsForChat total songs persisted for the chat after the
+     * run — includes rows committed by earlier runs, since sync is incremental.
+     * @property hitMessageCap true when the run stopped because the configured
+     * message cap was reached while the channel was NOT exhausted; the next
+     * refresh resumes from the persisted watermark.
+     * @property interruptedBy non-null when the run ended early on error;
+     * chunks committed before the error stay persisted and resumable.
+     */
+    data class ChannelAudioSyncResult(
+        val newlyPersistedCount: Int,
+        val totalSongsForChat: Int,
+        val hitMessageCap: Boolean,
+        val interruptedBy: Throwable? = null
+    )
+
+    /**
+     * Chunked, resumable channel-history sync (replaces the former unbounded
+     * "fetch whole channel into memory, then replace everything" pass).
+     *
+     * TDLib pages history in batches of [TELEGRAM_PAGE_LIMIT] (API maximum)
+     * which are grouped into persistence chunks of [SYNC_CHUNK_MESSAGES]:
+     * each chunk is upserted through [TelegramDao] in a single transaction,
+     * then progress is reported via [onBatchPersisted] before more history
+     * is fetched. An interruption (process death, connectivity loss, error)
+     * therefore loses at most one in-flight chunk — every committed chunk
+     * advanced the resume watermark, so the next run continues from the
+     * oldest already-persisted message id instead of restarting.
+     *
+     * Upsert (REPLACE) semantics mean rows persist incrementally; the channel
+     * row itself (`songCount` / `lastSyncTime`) stays owned by the caller,
+     * matching the previous flow.
+     */
+    suspend fun syncChannelAudio(
+        chatId: Long,
+        messageCap: Int = userPreferencesRepository.getTelegramSyncMessageCap(),
+        onBatchPersisted: suspend (persistedSoFar: Int) -> Unit = {}
+    ): ChannelAudioSyncResult {
+        Timber.d("Chunked audio sync for chat: $chatId (cap=$messageCap)")
         try {
             clientManager.sendRequest<TdApi.Ok>(TdApi.OpenChat(chatId))
         } catch (e: Exception) {
             Timber.w("Failed to open chat: $chatId")
         }
 
-        val allSongs = mutableListOf<Song>()
-        var nextFromMessageId = 0L
-        val batchSize = 100 // TdApi limit
+        var persistedThisRun = 0
+        var hitCap = false
+        var error: Throwable? = null
 
         try {
-            while (true) {
-                // Use SearchChatMessages to find audio files specifically
-                val request = TdApi.SearchChatMessages()
-                request.chatId = chatId
-                request.query = ""
-                request.senderId = null // Use null for any sender
-                request.fromMessageId = nextFromMessageId
-                request.offset = 0
-                request.limit = batchSize
-                request.filter = TdApi.SearchMessagesFilterAudio()
-                
-                val response = clientManager.sendRequest<TdApi.FoundChatMessages>(request)
-                // Timber.d("SearchChatMessages batch (fromId $nextFromMessageId): found ${response.messages.size} / total ${response.totalCount}")
-                
-                if (response.messages.isEmpty()) {
+            // Resume watermark: oldest message already persisted for this
+            // chat. History pages strictly older than this id; null = never
+            // synced → start from the newest message.
+            var nextFromMessageId = dao.getOldestPersistedMessageId(chatId) ?: 0L
+            var channelExhausted = false
+
+            while (!channelExhausted) {
+                // Fetch one chunk: TELEGRAM_PAGE_LIMIT-sized TDLib pages
+                // until the chunk size is reached or the channel runs out.
+                val chunkSongs = mutableListOf<Song>()
+                while (chunkSongs.size < SYNC_CHUNK_MESSAGES) {
+                    val request = TdApi.SearchChatMessages()
+                    request.chatId = chatId
+                    request.query = ""
+                    request.senderId = null // Use null for any sender
+                    request.fromMessageId = nextFromMessageId
+                    request.offset = 0
+                    request.limit = TELEGRAM_PAGE_LIMIT
+                    request.filter = TdApi.SearchMessagesFilterAudio()
+
+                    val response = clientManager.sendRequest<TdApi.FoundChatMessages>(request)
+
+                    if (response.messages.isEmpty()) {
+                        channelExhausted = true
+                        break
+                    }
+
+                    response.messages.forEach { message ->
+                        mapMessageToSong(message)?.let { chunkSongs.add(it) }
+                    }
+
+                    nextFromMessageId = response.nextFromMessageId
+                    if (nextFromMessageId == 0L) {
+                        channelExhausted = true
+                        break // No more results
+                    }
+                }
+
+                if (chunkSongs.isNotEmpty()) {
+                    // One transaction per chunk — the commit advances the
+                    // resume watermark before the next fetch begins.
+                    val entities = chunkSongs.mapNotNull { it.toTelegramEntity() }
+                    dao.upsertChannelBatch(entities, channel = null)
+                    persistedThisRun += entities.size
+                    onBatchPersisted(persistedThisRun)
+                }
+
+                if (channelExhausted) break
+                if (messageCap > 0 && persistedThisRun >= messageCap) {
+                    hitCap = true
+                    Timber.i(
+                        "Chunked sync for chat %d stopped at message cap (%d persisted)",
+                        chatId, persistedThisRun
+                    )
                     break
                 }
-                
-                response.messages.forEach { message ->
-                    mapMessageToSong(message)?.let { allSongs.add(it) }
-                }
-                
-                nextFromMessageId = response.nextFromMessageId
-                if (nextFromMessageId == 0L) {
-                    break // No more results
-                }
             }
-
-            Timber.d("Total mapped audio songs: ${allSongs.size}")
-            return allSongs
         } catch (e: Exception) {
-            Timber.e(e, "Error fetching chat history for chat $chatId")
-            return allSongs // Return partial results if we crash mid-way
+            // Keep whatever chunks already committed; the next run resumes
+            // from the watermark rather than restarting from scratch.
+            error = e
+            Timber.e(e, "Chunked sync interrupted for chat $chatId (persisted=$persistedThisRun)")
         }
+
+        val totalForChat = dao.countSongsForChat(chatId)
+        return ChannelAudioSyncResult(
+            newlyPersistedCount = persistedThisRun,
+            totalSongsForChat = totalForChat,
+            hitMessageCap = hitCap,
+            interruptedBy = error
+        )
     }
     
     private suspend fun mapMessageToSong(message: TdApi.Message): Song? {

@@ -247,7 +247,11 @@ interface MusicRepository {
     suspend fun deleteById(id: Long)
     suspend fun saveTelegramSongs(songs: List<Song>)
 
-    suspend fun replaceTelegramSongsForChannel(chatId: Long, songs: List<Song>)
+    /**
+     * Enqueues the incremental SyncWorker so the unified music tables pick
+     * up telegram_songs rows committed by a chunked channel sync.
+     */
+    fun requestIncrementalSync()
     
     suspend fun clearTelegramData()
 
