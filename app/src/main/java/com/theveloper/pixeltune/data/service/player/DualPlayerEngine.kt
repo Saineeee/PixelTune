@@ -12,6 +12,7 @@ import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
@@ -103,6 +104,12 @@ class DualPlayerEngine @Inject constructor(
     private lateinit var playerA: ExoPlayer
     private lateinit var playerB: ExoPlayer
 
+    // PERF(player): per-source-type LoadControls for the two engine players.
+    // Kept as fields so media-item transitions can switch buffering profiles
+    // (local files / cloud-drive proxies / remote streams) at item boundaries.
+    private var playerALoadControl: AdaptiveLoadControl? = null
+    private var playerBLoadControl: AdaptiveLoadControl? = null
+
     private val onPlayerSwappedListeners = mutableListOf<(Player) -> Unit>()
     
     // Active Audio Session ID Flow
@@ -161,6 +168,12 @@ class DualPlayerEngine @Inject constructor(
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            // PERF(player): match the buffering profile to the source that just
+            // became current (resolved URIs: file:// for local + downloaded,
+            // loopback proxy URLs for cloud sources). Item transitions are the
+            // natural switch point - the player re-selects tracks around them.
+            playerALoadControl?.switchProfile(bufferProfileFor(mediaItem?.localConfiguration?.uri))
+
             // Integración de feature/telegram-cloud-sync
             val uri = mediaItem?.localConfiguration?.uri
             if (uri?.scheme == "telegram") {
@@ -251,8 +264,10 @@ class DualPlayerEngine @Inject constructor(
 
         // We initialize BOTH players with NO internal focus handling.
         // We manage Audio Focus manually via AudioFocusManager.
-        playerA = buildPlayer(handleAudioFocus = false)
-        playerB = buildPlayer(handleAudioFocus = false)
+        playerALoadControl = AdaptiveLoadControl()
+        playerBLoadControl = AdaptiveLoadControl()
+        playerA = buildPlayer(handleAudioFocus = false, playerALoadControl!!)
+        playerB = buildPlayer(handleAudioFocus = false, playerBLoadControl!!)
 
         // Attach listener to initial master
         playerA.addListener(masterPlayerListener)
@@ -292,7 +307,7 @@ class DualPlayerEngine @Inject constructor(
         }
     }
 
-    private fun buildPlayer(handleAudioFocus: Boolean): ExoPlayer {
+    private fun buildPlayer(handleAudioFocus: Boolean, loadControl: LoadControl): ExoPlayer {
         val renderersFactory = object : DefaultRenderersFactory(context) {
             override fun buildAudioRenderers(
                 context: Context,
@@ -411,26 +426,16 @@ class DualPlayerEngine @Inject constructor(
         )
         val resolvingFactory = ResolvingDataSource.Factory(dataSourceFactory, resolver)
 
-        // Tune LoadControl to prevent "loop of death" (underrun -> start -> underrun)
-        // while keeping playback start and seek resume snappy.
-        //
-        // FIX(cloud-streaming-speed): the start/rebuffer gates were 5s/5s —
-        // after EVERY seek ExoPlayer had to buffer a full 5 seconds of audio
-        // through the localhost proxy before playback resumed, stacking a
-        // fixed +5s delay on top of the upstream (re)connection time ("takes
-        // extremely long to play from a forwarded position"). The underrun
-        // cycling the 5s gates were raised for is actually prevented by the
-        // 30s minimum buffer (loading continues toward it while playing);
-        // 2s start / 3s rebuffer gates resume audio 2-2.5x sooner and are
-        // still above media3's own defaults of 2.5s/5s.
-        val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                30_000, // Min buffer 30s
-                60_000, // Max buffer 60s
-                2_000,  // Buffer for playback start (was 5s — resume/start 2.5x sooner)
-                3_000   // Buffer for rebuffer after seek/underrun (was 5s)
-            )
-            .build()
+        // PERF(player): per-source-type buffering. The previous single
+        // engine-wide DefaultLoadControl (30s/60s/2s/3s) was tuned for the
+        // localhost cloud-streaming proxies: correct for YouTube/SoundCloud,
+        // but it wasted start latency and memory on local files and lumped
+        // proxied personal-cloud sources (Telegram / Google Drive) together
+        // with true remote streaming. The AdaptiveLoadControl keeps one
+        // shared allocator and switches its thresholds per source type:
+        // LOCAL_FILE (minimal, fast start) / CLOUD_DRIVE (moderate) /
+        // REMOTE_STREAM (generous, keeps the battle-tested 30s/60s window).
+        // Constants and their rationale live in SourceBufferProfile.
 
         return ExoPlayer.Builder(context, renderersFactory)
             .setMediaSourceFactory(DefaultMediaSourceFactory(resolvingFactory))
@@ -669,6 +674,13 @@ class DualPlayerEngine @Inject constructor(
 
             // Pre-resolve cloud URI on the coroutine (non-blocking for ExoPlayer)
             val resolvedItem = resolveMediaItem(mediaItem)
+
+            // PERF(player): match player B's buffering profile to the next
+            // track's source before it starts pre-buffering, so the
+            // pre-buffered amount matches what that source actually needs.
+            playerBLoadControl?.switchProfile(
+                bufferProfileFor(resolvedItem.localConfiguration?.uri)
+            )
 
             playerB.stop()
             playerB.clearMediaItems()
@@ -925,7 +937,10 @@ class DualPlayerEngine @Inject constructor(
 
         // Fresh Player Strategy: Release and recreate playerB to avoid OEM "stale session" tracking
         playerB.release()
-        playerB = buildPlayer(handleAudioFocus = false)
+        // PERF(player): recreate B with a fresh adaptive (per-source-type)
+        // load control; the old profile state died with the released player.
+        playerBLoadControl = AdaptiveLoadControl()
+        playerB = buildPlayer(handleAudioFocus = false, playerBLoadControl!!)
         Timber.tag("TransitionDebug").d("Old Player (B) released and recreated fresh.")
 
         // Ensure New Player (A) is fully active and unrestricted
