@@ -14,7 +14,7 @@ import javax.inject.Singleton
  * This class handles the original queue order for shuffle/unshuffle operations.
  */
 @Singleton
-class QueueStateHolder @Inject constructor() {
+class QueueOrderStore @Inject constructor() {
     
     // Original queue order before shuffle (for restoring when unshuffling)
     private var _originalQueueOrder: List<Song> = emptyList()

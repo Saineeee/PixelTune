@@ -69,7 +69,7 @@ class PlayerViewModelTest {
     private val mockDailyMixStateHolder: DailyMixStateHolder = mockk(relaxed = true)
     private val mockLyricsStateHolder: LyricsStateHolder = mockk(relaxed = true)
     private val mockCastStateHolder: CastStateHolder = mockk(relaxed = true)
-    private val mockQueueStateHolder: QueueStateHolder = mockk(relaxed = true)
+    private val mockQueueOrderStore: QueueOrderStore = mockk(relaxed = true)
     private val mockPlaybackStateHolder: PlaybackStateHolder = mockk(relaxed = true)
     private val mockConnectivityStateHolder: ConnectivityStateHolder = mockk(relaxed = true)
     private val mockSleepTimerStateHolder: SleepTimerStateHolder = mockk(relaxed = true)
@@ -208,7 +208,7 @@ class PlayerViewModelTest {
             mockDailyMixStateHolder,
             mockLyricsStateHolder,
             mockCastStateHolder,
-            mockQueueStateHolder,
+            mockQueueOrderStore,
             mockPlaybackStateHolder,
             mockConnectivityStateHolder,
             mockSleepTimerStateHolder,
@@ -357,7 +357,7 @@ class PlayerViewModelTest {
             coEvery { mockMusicRepository.getRandomSongs(500) } returns randomSongs
             
             // Mock queue preparation to return a valid shuffled queue and start song
-            coEvery { mockQueueStateHolder.prepareShuffledQueueSuspending(randomSongs, any()) } returns Pair(randomSongs, song2)
+            coEvery { mockQueueOrderStore.prepareShuffledQueueSuspending(randomSongs, any()) } returns Pair(randomSongs, song2)
             
             // We can't easily spy on internal methods like internalPlaySongs, 
             // but we can verify dependencies called by it.
@@ -373,7 +373,7 @@ class PlayerViewModelTest {
 
             // Assert
             coVerify { mockMusicRepository.getRandomSongs(500) }
-            coVerify { mockQueueStateHolder.prepareShuffledQueueSuspending(randomSongs, "All Songs (Shuffled)") }
+            coVerify { mockQueueOrderStore.prepareShuffledQueueSuspending(randomSongs, "All Songs (Shuffled)") }
             // Verify playback started
             verify { mockPlayer.setMediaItems(any(), any(), any()) }
             verify { mockPlayer.prepare() }

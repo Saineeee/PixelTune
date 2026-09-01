@@ -30,7 +30,7 @@ class PlaybackStateHolder @Inject constructor(
     private val dualPlayerEngine: DualPlayerEngine,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val castStateHolder: CastStateHolder,
-    private val queueStateHolder: QueueStateHolder,
+    private val queueOrderStore: QueueOrderStore,
     private val listeningStatsTracker: ListeningStatsTracker
 ) {
     companion object {
@@ -478,9 +478,9 @@ class PlaybackStateHolder @Inject constructor(
 
                 if (!isCurrentlyShuffled) {
                     // Enable Shuffle
-                    if (!queueStateHolder.hasOriginalQueue()) {
-                        queueStateHolder.setOriginalQueueOrder(currentSongs)
-                        queueStateHolder.saveOriginalQueueState(currentSongs, currentQueueSourceName)
+                    if (!queueOrderStore.hasOriginalQueue()) {
+                        queueOrderStore.setOriginalQueueOrder(currentSongs)
+                        queueOrderStore.saveOriginalQueueState(currentSongs, currentQueueSourceName)
                     }
 
                     val currentMediaId = player.currentMediaItem?.mediaId ?: currentSong?.id
@@ -525,12 +525,12 @@ class PlaybackStateHolder @Inject constructor(
                         }
                     }
 
-                    if (!queueStateHolder.hasOriginalQueue()) {
+                    if (!queueOrderStore.hasOriginalQueue()) {
                         _stablePlayerState.update { it.copy(isShuffleEnabled = false) }
                         return@launch
                     }
 
-                    val originalQueue = queueStateHolder.originalQueueOrder
+                    val originalQueue = queueOrderStore.originalQueueOrder
                     val wasPlaying = player.isPlaying
                     val currentPosition = player.currentPosition
                     val currentSongId = currentSong?.id ?: player.currentMediaItem?.mediaId

@@ -192,7 +192,7 @@ class PlayerViewModel @Inject constructor(
     private val dailyMixStateHolder: DailyMixStateHolder,
     private val lyricsStateHolder: LyricsStateHolder,
     private val castStateHolder: CastStateHolder,
-    private val queueStateHolder: QueueStateHolder,
+    private val queueOrderStore: QueueOrderStore,
     private val playbackStateHolder: PlaybackStateHolder,
     private val connectivityStateHolder: ConnectivityStateHolder,
     private val sleepTimerStateHolder: SleepTimerStateHolder,
@@ -3049,8 +3049,8 @@ class PlayerViewModel @Inject constructor(
             }
 
             // Store the original order so we can "unshuffle" later if the user turns shuffle off
-            queueStateHolder.setOriginalQueueOrder(validSongs)
-            queueStateHolder.saveOriginalQueueState(validSongs, queueName)
+            queueOrderStore.setOriginalQueueOrder(validSongs)
+            queueOrderStore.saveOriginalQueueState(validSongs, queueName)
 
             // Check if the user wants shuffle to be persistent across different albums
             val isPersistent = userPreferencesRepository.persistentShuffleEnabledFlow.first()
@@ -3089,7 +3089,7 @@ class PlayerViewModel @Inject constructor(
         startAtZero: Boolean = false
     ) {
         viewModelScope.launch {
-            val result = queueStateHolder.prepareShuffledQueueSuspending(songsToPlay, queueName, startAtZero)
+            val result = queueOrderStore.prepareShuffledQueueSuspending(songsToPlay, queueName, startAtZero)
             if (result == null) {
                 sendToast("No songs to shuffle.")
                 return@launch
