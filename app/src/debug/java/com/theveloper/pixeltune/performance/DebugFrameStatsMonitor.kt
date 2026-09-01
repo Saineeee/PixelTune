@@ -2,7 +2,7 @@ package com.theveloper.pixeltune.performance
 
 import android.util.Log
 import android.view.Window
-import androidx.metrics.JankStats
+import androidx.metrics.performance.JankStats
 import java.util.Arrays
 
 /**
