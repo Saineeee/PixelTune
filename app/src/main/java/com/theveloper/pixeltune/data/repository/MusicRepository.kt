@@ -248,11 +248,43 @@ interface MusicRepository {
     suspend fun saveTelegramSongs(songs: List<Song>)
 
     suspend fun replaceTelegramSongsForChannel(chatId: Long, songs: List<Song>)
-    
+
+    /**
+     * PERF(sync): upserts ONE batch (~500 songs) of a Telegram channel
+     * backfill in a single database transaction. Rows are keyed by
+     * "chatId_messageId" and conflicts are replaced, so batches are
+     * idempotent and an interrupted backfill can be re-run safely.
+     */
+    suspend fun upsertTelegramSongsBatch(chatId: Long, songs: List<Song>)
+
+    /**
+     * PERF(sync): persists the resume point of an in-flight channel backfill
+     * (the oldest message id of the last persisted batch). Called once per
+     * batch; a cheap single-row UPDATE.
+     */
+    suspend fun setTelegramChannelSyncProgress(chatId: Long, lastSyncedMessageId: Long)
+
+    /**
+     * PERF(sync): removes rows of [chatId] whose ids are not in [keepSongIds]
+     * (songs deleted from the channel since the last full sync). Deletions
+     * are chunked to stay under SQLite's host-variable limit. Only call this
+     * after a FULL (resumed-from-zero, exhausted) sync, when the keep-set is
+     * the complete channel content.
+     */
+    suspend fun pruneTelegramSongsForChannel(chatId: Long, keepSongIds: List<String>)
+
+    /**
+     * Enqueues the incremental library sync so the unified `songs` table
+     * mirrors the latest `telegram_songs` rows.
+     */
+    fun requestTelegramLibraryResync()
+
     suspend fun clearTelegramData()
 
     suspend fun saveTelegramChannel(channel: TelegramChannelEntity)
     fun getAllTelegramChannels(): Flow<List<TelegramChannelEntity>>
+    suspend fun getTelegramChannel(chatId: Long): TelegramChannelEntity?
+    suspend fun countTelegramSongs(chatId: Long): Int
     suspend fun deleteTelegramChannel(chatId: Long)
     
     

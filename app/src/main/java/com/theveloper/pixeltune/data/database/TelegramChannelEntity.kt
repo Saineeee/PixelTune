@@ -14,6 +14,13 @@ data class TelegramChannelEntity(
     
     @ColumnInfo(name = "song_count") val songCount: Int = 0,
     @ColumnInfo(name = "last_sync_time") val lastSyncTime: Long = 0,
+
+    // PERF(sync): backfill resume point. Zero means the channel is fully
+    // synced (or was never synced); non-zero is the oldest message id of the
+    // last persisted batch of an interrupted backfill - the next sync
+    // continues from there instead of re-fetching from the newest message.
+    // Added in migration 25->26.
+    @ColumnInfo(name = "last_synced_message_id", defaultValue = "0") val lastSyncedMessageId: Long = 0,
     
     @ColumnInfo(name = "photo_path") val photoPath: String? = null // Local path to cached profile photo
 )

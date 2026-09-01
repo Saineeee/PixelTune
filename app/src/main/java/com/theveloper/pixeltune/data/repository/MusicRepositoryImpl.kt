@@ -208,6 +208,47 @@ class MusicRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun upsertTelegramSongsBatch(chatId: Long, songs: List<Song>) {
+        // PERF(sync): one batch == one Room transaction (a single @Insert
+        // call is transactional), replacing rows by primary key so batches
+        // are idempotent and interruptions resume cleanly.
+        val entities = songs.mapNotNull { it.toTelegramEntity() }.filter { it.chatId == chatId }
+        if (entities.isNotEmpty()) {
+            withContext(Dispatchers.IO) {
+                telegramDao.insertSongs(entities)
+            }
+        }
+    }
+
+    override suspend fun setTelegramChannelSyncProgress(chatId: Long, lastSyncedMessageId: Long) {
+        withContext(Dispatchers.IO) {
+            telegramDao.updateSyncProgress(chatId, lastSyncedMessageId)
+        }
+    }
+
+    override suspend fun pruneTelegramSongsForChannel(chatId: Long, keepSongIds: List<String>) {
+        if (keepSongIds.isEmpty()) return
+        val existing = withContext(Dispatchers.IO) {
+            telegramDao.getSongsByChatId(chatId)
+        }
+        val keep = keepSongIds.toHashSet()
+        val stale = existing.filter { it.id !in keep }.map { it.id }
+        if (stale.isEmpty()) return
+        // Chunk deletions to stay under SQLite's 999 host-variable limit,
+        // same practice as the MediaStore reconciliation in SyncWorker.
+        stale.chunked(500).forEach { chunk ->
+            withContext(Dispatchers.IO) {
+                telegramDao.deleteSongsByIds(chunk)
+            }
+        }
+    }
+
+    override fun requestTelegramLibraryResync() {
+        androidx.work.WorkManager.getInstance(context).enqueue(
+            com.theveloper.pixeltune.data.worker.SyncWorker.incrementalSyncWork()
+        )
+    }
+
     /**
      * Compute allowed parent directories by subtracting blocked dirs from all known dirs.
      * Returns Pair(allowedDirs, applyFilter) for use with Room DAO filtered queries.
@@ -934,6 +975,18 @@ class MusicRepositoryImpl @Inject constructor(
 
     override fun getAllTelegramChannels(): Flow<List<TelegramChannelEntity>> {
         return telegramDao.getAllChannels()
+    }
+
+    override suspend fun getTelegramChannel(chatId: Long): TelegramChannelEntity? {
+        return withContext(Dispatchers.IO) {
+            telegramDao.getChannelById(chatId)
+        }
+    }
+
+    override suspend fun countTelegramSongs(chatId: Long): Int {
+        return withContext(Dispatchers.IO) {
+            telegramDao.countSongsByChatId(chatId)
+        }
     }
 
     override suspend fun deleteTelegramChannel(chatId: Long) {

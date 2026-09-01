@@ -33,6 +33,39 @@ import kotlin.math.absoluteValue
 
 import timber.log.Timber
 
+/**
+ * One persisted batch of a chunked Telegram channel backfill.
+ * See [TelegramRepository.syncChannelAudioBatches].
+ *
+ * @property songs songs mapped from this batch's messages
+ * (size <= [TelegramRepository.TELEGRAM_SYNC_BATCH_SIZE]).
+ * @property processedCount total songs emitted by the sync so far,
+ * including this batch.
+ * @property totalCountEstimate TDLib's approximate total audio-message count
+ * for the channel (-1 when unknown); use for progress display only.
+ * @property resumeFromMessageId message id to persist as the channel's
+ * resume point once this batch has been written to storage.
+ */
+data class TelegramSyncBatch(
+    val songs: List<Song>,
+    val processedCount: Int,
+    val totalCountEstimate: Int,
+    val resumeFromMessageId: Long
+)
+
+/**
+ * Outcome of a chunked channel sync.
+ *
+ * @property totalSongs total songs emitted by the sync.
+ * @property exhausted true when the channel history was walked to the end;
+ * false when [TelegramRepository.syncChannelAudioBatches] stopped at the
+ * caller-supplied song cap.
+ */
+data class TelegramChannelSyncResult(
+    val totalSongs: Int,
+    val exhausted: Boolean
+)
+
 @Singleton
 class TelegramRepository @Inject constructor(
     private val clientManager: TelegramClientManager,
@@ -42,11 +75,30 @@ class TelegramRepository @Inject constructor(
     private companion object {
         private const val AUTH_REQUEST_TIMEOUT_MS = 20_000L
         private const val TELEGRAM_PLAYLIST_PREFIX = "telegram_channel:"
+
+        /**
+         * TDLib hard-caps [TdApi.SearchChatMessages] results at 100 messages
+         * per request, so the channel history must be paged regardless.
+         */
+        private const val TDLIB_HISTORY_PAGE_SIZE = 100
+
+        /**
+         * PERF(sync): channel backfills are flushed in batches of ~500
+         * messages (five TDLib pages). Each batch becomes ONE database
+         * transaction and ONE progress report, so a 5,000+ message channel
+         * streams to storage with bounded memory and visible progress
+         * instead of accumulating an unbounded in-memory list and writing
+         * a single giant transaction. 500 keeps per-batch write latency in
+         * the tens-of-milliseconds range on flash storage while still
+         * amortizing the per-transaction overhead across five network
+         * round-trips.
+         */
+        const val TELEGRAM_SYNC_BATCH_SIZE = 500
     }
 
     val authorizationState: Flow<TdApi.AuthorizationState?> = clientManager.authorizationState
     val authErrors: SharedFlow<TdApi.Error> = clientManager.errors
-            
+
     /**
      * Clear memory caches in the repository.
      * For full cache clearing including files, use TelegramCacheManager.
@@ -66,7 +118,7 @@ class TelegramRepository @Inject constructor(
      * @param timeoutMs Maximum time to wait
      * @return true if ready, false if timed out
      */
-    suspend fun awaitReady(timeoutMs: Long = 30_000L): Boolean = 
+    suspend fun awaitReady(timeoutMs: Long = 30_000L): Boolean =
         clientManager.awaitReady(timeoutMs)
 
     fun sendPhoneNumber(phoneNumber: String) {
@@ -139,17 +191,75 @@ class TelegramRepository @Inject constructor(
         }
     }
 
+    /**
+     * Fetches the audio history of a channel into memory as one list.
+     *
+     * Kept for callers that only need the mapped songs (e.g. resolving a
+     * channel search). Internally this now pages the history in batches of
+     * [TELEGRAM_SYNC_BATCH_SIZE]; for channel SYNC use
+     * [syncChannelAudioBatches], which persists each batch in its own
+     * transaction instead of accumulating everything in memory.
+     */
     suspend fun getAudioMessages(chatId: Long): List<Song> {
-        Timber.d("Fetching chat history for chat: $chatId")
+        val allSongs = mutableListOf<Song>()
+        try {
+            syncChannelAudioBatches(
+                chatId = chatId,
+                maxSongs = Int.MAX_VALUE,
+                fromMessageId = 0L
+            ) { batch -> allSongs.addAll(batch.songs) }
+        } catch (e: Exception) {
+            // Return partial results if we crash mid-way (historical contract).
+            Timber.e(e, "Batched fetch interrupted for chat $chatId; returning ${allSongs.size} partial songs")
+        }
+        Timber.d("Total mapped audio songs: ${allSongs.size}")
+        return allSongs
+    }
+
+    /**
+     * PERF(sync): walks a channel's audio history newest-to-oldest in batches
+     * of [TELEGRAM_SYNC_BATCH_SIZE] and hands each batch to [onBatch] as soon
+     * as it is mapped.
+     *
+     * The consumer is expected to persist the batch (single transaction) and
+     * store [TelegramSyncBatch.resumeFromMessageId] as the channel's resume
+     * point. The fetch keeps going until the channel history is exhausted
+     * ([TelegramChannelSyncResult.exhausted] = true) or [maxSongs] mapped
+     * songs have been emitted. Because every batch call suspends until the
+     * consumer finishes, a cancelled consumer stops the fetch at the next
+     * batch boundary - the channel then resumes from the last persisted
+     * batch when [fromMessageId] is passed back on the next attempt.
+     *
+     * @param chatId channel to walk.
+     * @param maxSongs cap on mapped songs; Int.MAX_VALUE for no cap.
+     * @param fromMessageId message id to continue from (0 = start from the
+     * newest message; pass the persisted resume point to continue an
+     * interrupted backfill).
+     * @param onBatch invoked per batch; must persist before returning.
+     */
+    suspend fun syncChannelAudioBatches(
+        chatId: Long,
+        maxSongs: Int = Int.MAX_VALUE,
+        fromMessageId: Long = 0L,
+        onBatch: suspend (TelegramSyncBatch) -> Unit
+    ): TelegramChannelSyncResult {
+        Timber.d("Chunked history sync for chat $chatId (cap=$maxSongs, resumeFrom=$fromMessageId)")
         try {
             clientManager.sendRequest<TdApi.Ok>(TdApi.OpenChat(chatId))
         } catch (e: Exception) {
             Timber.w("Failed to open chat: $chatId")
         }
 
-        val allSongs = mutableListOf<Song>()
-        var nextFromMessageId = 0L
-        val batchSize = 100 // TdApi limit
+        val pending = ArrayList<Song>(TELEGRAM_SYNC_BATCH_SIZE)
+        var songsEmitted = 0
+        var totalCountEstimate = -1
+        // TDLib's own pagination cursor: start at the caller's resume point
+        // (0 = newest message) and advance with nextFromMessageId per page.
+        var paginationCursor = maxOf(fromMessageId, 0L)
+        // Messages arrive newest-to-oldest, so the last iterated id is the
+        // oldest one seen - the natural resume point for the next attempt.
+        var oldestMessageId = paginationCursor
+        var exhausted = false
 
         try {
             while (true) {
@@ -158,34 +268,85 @@ class TelegramRepository @Inject constructor(
                 request.chatId = chatId
                 request.query = ""
                 request.senderId = null // Use null for any sender
-                request.fromMessageId = nextFromMessageId
+                request.fromMessageId = paginationCursor
                 request.offset = 0
-                request.limit = batchSize
+                request.limit = TDLIB_HISTORY_PAGE_SIZE
                 request.filter = TdApi.SearchMessagesFilterAudio()
-                
+
                 val response = clientManager.sendRequest<TdApi.FoundChatMessages>(request)
-                // Timber.d("SearchChatMessages batch (fromId $nextFromMessageId): found ${response.messages.size} / total ${response.totalCount}")
-                
+                if (totalCountEstimate < 0 && response.totalCount > 0) {
+                    totalCountEstimate = response.totalCount
+                }
                 if (response.messages.isEmpty()) {
+                    exhausted = true
                     break
                 }
-                
-                response.messages.forEach { message ->
-                    mapMessageToSong(message)?.let { allSongs.add(it) }
+
+                for (message in response.messages) {
+                    oldestMessageId = message.id
+                    if (songsEmitted >= maxSongs) break
+                    mapMessageToSong(message)?.let { song ->
+                        pending.add(song)
+                        songsEmitted++
+                    }
+                    if (pending.size >= TELEGRAM_SYNC_BATCH_SIZE) {
+                        onBatch(
+                            TelegramSyncBatch(
+                                songs = pending.toList(),
+                                processedCount = songsEmitted,
+                                totalCountEstimate = totalCountEstimate,
+                                resumeFromMessageId = oldestMessageId
+                            )
+                        )
+                        pending.clear()
+                        // Reuse the capacity instead of reallocating per batch.
+                        pending.ensureCapacity(TELEGRAM_SYNC_BATCH_SIZE)
+                    }
                 }
-                
-                nextFromMessageId = response.nextFromMessageId
-                if (nextFromMessageId == 0L) {
+
+                if (songsEmitted >= maxSongs) break // User-configured cap reached
+                paginationCursor = response.nextFromMessageId
+                if (paginationCursor == 0L) {
+                    exhausted = true
                     break // No more results
                 }
             }
-
-            Timber.d("Total mapped audio songs: ${allSongs.size}")
-            return allSongs
         } catch (e: Exception) {
-            Timber.e(e, "Error fetching chat history for chat $chatId")
-            return allSongs // Return partial results if we crash mid-way
+            // Flush whatever full batches were already mapped so the caller's
+            // partial work is not lost; if the consumer is cancelled too the
+            // flush is skipped and the channel simply resumes from the last
+            // batch it persisted.
+            if (pending.isNotEmpty()) {
+                try {
+                    onBatch(
+                        TelegramSyncBatch(
+                            songs = pending.toList(),
+                            processedCount = songsEmitted,
+                            totalCountEstimate = totalCountEstimate,
+                            resumeFromMessageId = oldestMessageId
+                        )
+                    )
+                } catch (flushError: Exception) {
+                    Timber.w(flushError, "Could not flush partial batch for chat $chatId")
+                }
+            }
+            throw e
         }
+
+        // Final (possibly empty) batch so the consumer sees the end of the
+        // backfill and can finalize channel metadata.
+        if (pending.isNotEmpty()) {
+            onBatch(
+                TelegramSyncBatch(
+                    songs = pending.toList(),
+                    processedCount = songsEmitted,
+                    totalCountEstimate = totalCountEstimate,
+                    resumeFromMessageId = oldestMessageId
+                )
+            )
+        }
+
+        return TelegramChannelSyncResult(totalSongs = songsEmitted, exhausted = exhausted)
     }
     
     private suspend fun mapMessageToSong(message: TdApi.Message): Song? {

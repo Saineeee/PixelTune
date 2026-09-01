@@ -127,6 +127,11 @@ constructor(
         val DISABLE_CAST_AUTOPLAY = booleanPreferencesKey("disable_cast_autoplay")
         val SHOW_QUEUE_HISTORY = booleanPreferencesKey("show_queue_history")
         val FULL_PLAYER_SHOW_FILE_INFO = booleanPreferencesKey("full_player_show_file_info")
+
+        // PERF(sync): caps how deep a Telegram channel backfill goes before
+        // the sync stops (the channel can always be refreshed again). Bounds
+        // keep the value sane whatever gets persisted.
+        val TELEGRAM_SYNC_MESSAGE_CAP = intPreferencesKey("telegram_sync_message_cap")
         val FULL_PLAYER_DELAY_ALL = booleanPreferencesKey("full_player_delay_all")
         val FULL_PLAYER_DELAY_ALBUM = booleanPreferencesKey("full_player_delay_album")
         val FULL_PLAYER_DELAY_METADATA = booleanPreferencesKey("full_player_delay_metadata")
@@ -360,6 +365,21 @@ constructor(
             dataStore.data.map { preferences ->
                 (preferences[PreferencesKeys.CROSSFADE_DURATION] ?: 2000).coerceIn(1000, 12000)
             }
+
+    // PERF(sync): Telegram channel backfill cap - the sync stops after this
+    // many songs (a full refresh can always continue deeper). Default 10k
+    // covers the large music channels this app targets while bounding the
+    // backfill's runtime, network usage and DB churn.
+    val telegramSyncMessageCapFlow: Flow<Int> =
+            dataStore.data.map { preferences ->
+                (preferences[PreferencesKeys.TELEGRAM_SYNC_MESSAGE_CAP] ?: 10_000).coerceIn(100, 100_000)
+            }
+
+    suspend fun setTelegramSyncMessageCap(cap: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.TELEGRAM_SYNC_MESSAGE_CAP] = cap.coerceIn(100, 100_000)
+        }
+    }
 
     suspend fun setCrossfadeDuration(duration: Int) {
         dataStore.edit { preferences ->

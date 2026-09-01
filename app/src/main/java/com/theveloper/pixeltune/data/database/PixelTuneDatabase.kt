@@ -24,7 +24,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GDriveSongEntity::class,
         GDriveFolderEntity::class
     ],
-    version = 25, // Incremented for query performance indexes
+    version = 26, // Incremented for query performance indexes
 
     exportSchema = false
 )
@@ -483,6 +483,22 @@ abstract class PixelTuneDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_file_path ON songs(file_path)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_parent_directory_path ON songs(parent_directory_path)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_telegram_songs_chat_id ON telegram_songs(chat_id)")
+            }
+        }
+
+        /**
+         * PERF(sync): resume point for chunked Telegram channel backfills.
+         *
+         * `telegram_channels.last_synced_message_id` stores the oldest
+         * message id of the last batch persisted by an in-flight sync; 0
+         * means fully synced. Nullable-safe additive column with DEFAULT 0
+         * so existing channels simply read as "fully synced".
+         */
+        val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE telegram_channels ADD COLUMN last_synced_message_id INTEGER NOT NULL DEFAULT 0"
+                )
             }
         }
     }

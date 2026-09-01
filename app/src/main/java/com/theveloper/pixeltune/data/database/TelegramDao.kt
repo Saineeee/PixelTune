@@ -20,6 +20,29 @@ interface TelegramDao {
     @Query("SELECT * FROM telegram_songs WHERE chat_id = :chatId ORDER BY date_added DESC")
     suspend fun getSongsByChatId(chatId: Long): List<TelegramSongEntity>
 
+    @Query("SELECT COUNT(*) FROM telegram_songs WHERE chat_id = :chatId")
+    suspend fun countSongsByChatId(chatId: Long): Int
+
+    @Query("SELECT * FROM telegram_channels WHERE chat_id = :chatId")
+    suspend fun getChannelById(chatId: Long): TelegramChannelEntity?
+
+    /**
+     * PERF(sync): advances a channel's backfill resume point after a batch
+     * was persisted. Cheap single-row UPDATE; called once per ~500-song batch.
+     */
+    @Query("UPDATE telegram_channels SET last_synced_message_id = :lastSyncedMessageId WHERE chat_id = :chatId")
+    suspend fun updateSyncProgress(chatId: Long, lastSyncedMessageId: Long)
+
+    @Query("SELECT last_synced_message_id FROM telegram_channels WHERE chat_id = :chatId")
+    suspend fun getSyncProgress(chatId: Long): Long?
+
+    /**
+     * PERF(sync): batch prune of rows removed from their channel; callers
+     * chunk [ids] to stay under SQLite's host-variable limit.
+     */
+    @Query("DELETE FROM telegram_songs WHERE id IN (:ids)")
+    suspend fun deleteSongsByIds(ids: List<String>)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSongs(songs: List<TelegramSongEntity>)
     
