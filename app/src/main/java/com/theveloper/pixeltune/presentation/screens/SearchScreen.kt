@@ -154,7 +154,12 @@ fun SearchScreen(
     val systemNavBarInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val bottomBarHeightDp = NavBarContentHeight + systemNavBarInset
     var showPlaylistBottomSheet by remember { mutableStateOf(false) }
-    val uiState by playerViewModel.playerUiState.collectAsStateWithLifecycle()
+    // PERF(search): observe only the search-relevant slice of the player UI
+    // state instead of the whole PlayerUiState aggregate. The aggregate
+    // re-emits on every unrelated playback/library/folder change and used to
+    // recompose this screen for none of its own inputs; the slice only
+    // changes when query results, filters, history or search mode change.
+    val uiState by playerViewModel.searchUiSlice.collectAsStateWithLifecycle()
     val currentFilter by remember { derivedStateOf { uiState.selectedSearchFilter } }
     val isOnlineSearch by remember { derivedStateOf { uiState.isOnlineSearch } }
     val genres by playerViewModel.genres.collectAsStateWithLifecycle()

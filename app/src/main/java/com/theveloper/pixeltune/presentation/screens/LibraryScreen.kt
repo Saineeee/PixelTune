@@ -1146,7 +1146,9 @@ fun LibraryScreen(
                                             onAlbumLongPress = onAlbumLongPress,
                                             onAlbumSelectionToggle = onAlbumSelectionToggle,
                                             getSelectionIndex = getAlbumSelectionIndex,
-                                            storageFilter = playerUiState.currentStorageFilter
+                                            storageFilter = playerUiState.currentStorageFilter,
+                                            isListView = playerUiState.isAlbumsListView,
+                                            currentAlbumSortOption = playerUiState.currentAlbumSortOption
                                         )
                                     }
 
@@ -1168,7 +1170,8 @@ fun LibraryScreen(
                                             },
                                             isRefreshing = isRefreshing,
                                             onRefresh = onRefresh,
-                                            storageFilter = playerUiState.currentStorageFilter
+                                            storageFilter = playerUiState.currentStorageFilter,
+                                            currentArtistSortOption = playerUiState.currentArtistSortOption
                                         )
                                     }
 
@@ -3157,25 +3160,28 @@ fun LibraryAlbumsTab(
     onAlbumLongPress: (Album) -> Unit = {},
     onAlbumSelectionToggle: (Album) -> Unit = {},
     getSelectionIndex: (Long) -> Int? = { null },
-    storageFilter: StorageFilter = StorageFilter.ALL
+    storageFilter: StorageFilter = StorageFilter.ALL,
+    // PERF(library): view-mode and sort option are hoisted parameters now.
+    // The tab previously collected the full PlayerUiState aggregate just for
+    // these two values, recomposing the grid on every unrelated state
+    // emission; the parent already observes a narrow projection and passes
+    // the resolved values down.
+    isListView: Boolean = false,
+    currentAlbumSortOption: SortOption = SortOption.AlbumTitleAZ
 ) {
     val gridState = rememberLazyGridState()
     val listState = rememberLazyListState() // New state for list view
     val context = LocalContext.current
     val imageLoader = context.imageLoader
 
-    // Collect view mode preference
-    val playerUiState by playerViewModel.playerUiState.collectAsStateWithLifecycle()
-    val isListView = playerUiState.isAlbumsListView
-
     var lastHandledAlbumSortKey by remember {
-        mutableStateOf(playerUiState.currentAlbumSortOption.storageKey)
+        mutableStateOf(currentAlbumSortOption.storageKey)
     }
     var pendingAlbumSortScrollReset by remember { mutableStateOf(false) }
 
     // Mark reset only when the sort option actually changes (skip initial composition).
-    LaunchedEffect(playerUiState.currentAlbumSortOption) {
-        val currentSortKey = playerUiState.currentAlbumSortOption.storageKey
+    LaunchedEffect(currentAlbumSortOption) {
+        val currentSortKey = currentAlbumSortOption.storageKey
         if (currentSortKey != lastHandledAlbumSortKey) {
             lastHandledAlbumSortKey = currentSortKey
             pendingAlbumSortScrollReset = true
@@ -3669,18 +3675,22 @@ fun LibraryArtistsTab(
     onArtistClick: (Long) -> Unit,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
-    storageFilter: StorageFilter = StorageFilter.ALL
+    storageFilter: StorageFilter = StorageFilter.ALL,
+    // PERF(library): sort option hoisted as a parameter. The tab previously
+    // collected the full PlayerUiState aggregate just for this value and
+    // recomposed on every unrelated state emission; the parent already
+    // observes a narrow projection and passes the resolved value down.
+    currentArtistSortOption: SortOption = SortOption.ArtistNameAZ
 ) {
     val listState = rememberLazyListState()
-    val playerUiState by playerViewModel.playerUiState.collectAsStateWithLifecycle()
     var lastHandledArtistSortKey by remember {
-        mutableStateOf(playerUiState.currentArtistSortOption.storageKey)
+        mutableStateOf(currentArtistSortOption.storageKey)
     }
     var pendingArtistSortScrollReset by remember { mutableStateOf(false) }
 
     // Mark reset only when the sort option actually changes (skip initial composition).
-    LaunchedEffect(playerUiState.currentArtistSortOption) {
-        val currentSortKey = playerUiState.currentArtistSortOption.storageKey
+    LaunchedEffect(currentArtistSortOption) {
+        val currentSortKey = currentArtistSortOption.storageKey
         if (currentSortKey == lastHandledArtistSortKey) return@LaunchedEffect
         lastHandledArtistSortKey = currentSortKey
         pendingArtistSortScrollReset = true

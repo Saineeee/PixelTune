@@ -212,9 +212,53 @@ class PlayerViewModel @Inject constructor(
     private val downloadedSongsRepository: com.theveloper.pixeltune.data.downloads.DownloadedSongsRepository
 ) : ViewModel() {
 
+    private companion object {
+        /**
+         * Upstream-collection grace period for the sliced UI flows: keeps the
+         * combine pipeline hot for 5s after the last collector disappears so
+         * brief navigation (search -> now-playing sheet -> back) does not
+         * tear it down and replay defaults. Matches the timeout used by
+         * SyncManager's shared flows.
+         */
+        private const val SLICE_STOP_TIMEOUT_MS = 5_000L
+    }
+
     private val _playerUiState = MutableStateFlow(PlayerUiState())
     val playerUiState: StateFlow<PlayerUiState> = _playerUiState.asStateFlow()
-    
+
+    /**
+     * PERF(search): sliced search state for the Search screen.
+     *
+     * [playerUiState] is a ~40-field aggregate; any unrelated field change
+     * (library sync flags, queue edits, undo-bar state, position writes on
+     * pause/seek, ...) re-emits it and used to recompose the entire Search
+     * screen even though none of its visible inputs changed. This slice is
+     * combined directly from the [SearchStateHolder] flows that back the
+     * mirrored fields of [PlayerUiState], so the Search screen only
+     * recomposes when a search-relevant value actually changes.
+     */
+    val searchUiSlice: StateFlow<SearchUiSlice> = combine(
+        searchStateHolder.searchResults,
+        searchStateHolder.selectedSearchFilter,
+        searchStateHolder.searchHistory,
+        searchStateHolder.isSearching,
+        searchStateHolder.isOnlineSearch
+    ) { results, filter, history, isSearching, isOnlineSearch ->
+        SearchUiSlice(
+            searchResults = results,
+            selectedSearchFilter = filter,
+            searchHistory = history,
+            isSearching = isSearching,
+            isOnlineSearch = isOnlineSearch
+        )
+    }
+        .distinctUntilChanged()
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(SLICE_STOP_TIMEOUT_MS),
+            SearchUiSlice()
+        )
+
     private val _showNoInternetDialog = MutableSharedFlow<Unit>(
         extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
