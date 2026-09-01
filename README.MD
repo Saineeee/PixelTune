@@ -15,7 +15,7 @@ streaming catalogs, in one expressive player for Android.**
      before release if assets/ still shows the original PixelPlay branding. -->
 | Home | Player | Cloud Catalog | Library |
 |:---:|:---:|:---:|:---:|
-| ![](assets/screenshot1.jpg) | ![](assets/screenshot2.jpg) | ![](assets/screenshot3.jpg) | ![](assets/screenshot4.jpg) |
+| ![](assets/Home.png) | ![](assets/Player.png) | ![](assets/Cloud.png) | ![](assets/screenshot4.jpg) |
 
 **[Download](#-download--install) · [Features](#-features) · [Build from source](#️-building-from-source) · [FAQ](#-faq--troubleshooting) · [Contributing](#-contributing)**
 
