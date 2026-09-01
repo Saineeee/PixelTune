@@ -2,11 +2,22 @@ package com.theveloper.pixeltune.data.database
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.theveloper.pixeltune.data.model.Song
 import kotlin.math.absoluteValue
 
-@Entity(tableName = "telegram_songs")
+@Entity(
+    tableName = "telegram_songs",
+    indices = [
+        // PERF(db): every channel-sync operation filters telegram_songs by
+        // chat_id (per-channel reads, resume lookups and channel pruning),
+        // and TelegramDao.deleteSongsByChatId prunes by it. Without this
+        // index those queries scan the whole table once per channel.
+        // Added in migration 24->25.
+        Index(value = ["chat_id"], unique = false)
+    ]
+)
 data class TelegramSongEntity(
     @PrimaryKey
     @ColumnInfo(name = "id") val id: String, // format: "chatId_messageId"

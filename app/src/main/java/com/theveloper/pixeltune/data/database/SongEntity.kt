@@ -19,6 +19,11 @@ import com.theveloper.pixeltune.utils.normalizeMetadataTextOrEmpty
         Index(value = ["artist_name"], unique = false), // Nuevo índice para búsquedas por nombre de artista
         Index(value = ["genre"], unique = false),
         Index(value = ["parent_directory_path"], unique = false), // Índice para filtrado por directorio
+        // PERF(db): file_path powers MusicDao.getSongByPath (folder explorer
+        // and MediaStore reconciliation lookups). It was the only lookup
+        // column without an index, so every path check was a full scan of
+        // the songs table. Added in migration 24->25.
+        Index(value = ["file_path"], unique = false),
         Index(value = ["content_uri_string"], unique = false),
         Index(value = ["date_added"], unique = false),
         Index(value = ["duration"], unique = false)

@@ -24,7 +24,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GDriveSongEntity::class,
         GDriveFolderEntity::class
     ],
-    version = 24, // Incremented for query performance indexes
+    version = 25, // Incremented for query performance indexes
 
     exportSchema = false
 )
@@ -457,6 +457,32 @@ abstract class PixelTuneDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_duration ON songs(duration)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_favorites_timestamp ON favorites(timestamp)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_song_engagements_play_count ON song_engagements(play_count)")
+            }
+        }
+
+        /**
+         * PERF(db): add the file-lookup indexes that were still missing at v24.
+         *
+         * - `songs.file_path` backs `MusicDao.getSongByPath` (folder explorer
+         *   and MediaStore reconciliation); it was the only songs lookup
+         *   column without an index, so each lookup scanned the whole table.
+         * - `songs.parent_directory_path` is re-asserted idempotently
+         *   (`IF NOT EXISTS`): the index is declared on the entity and has
+         *   been present on validated databases, but fresh devices coming
+         *   from destructive fallbacks or exotic upgrade paths get it
+         *   guaranteed here.
+         * - `telegram_songs.chat_id` is the column every channel-sync query
+         *   filters and prunes by (per-channel reads, resume lookups,
+         *   `deleteSongsByChatId`); telegram_songs had no indexes at all.
+         *
+         * All statements are `IF NOT EXISTS` so the migration is idempotent
+         * and safe to re-run after an interrupted upgrade.
+         */
+        val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_file_path ON songs(file_path)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_parent_directory_path ON songs(parent_directory_path)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_telegram_songs_chat_id ON telegram_songs(chat_id)")
             }
         }
     }
