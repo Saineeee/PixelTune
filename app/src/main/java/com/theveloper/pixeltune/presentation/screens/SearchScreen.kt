@@ -116,8 +116,12 @@ import com.theveloper.pixeltune.presentation.components.PlaylistCover
 import com.theveloper.pixeltune.presentation.navigation.Screen
 import com.theveloper.pixeltune.presentation.screens.search.components.GenreCategoriesGrid
 import com.theveloper.pixeltune.presentation.viewmodel.PlaylistViewModel
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -139,6 +143,21 @@ private enum class SearchBodyMode { GENRE_BROWSE, ONLINE_HISTORY, RESULTS }
 /** IMPROVE(search-loading): what the results area shows. */
 private enum class SearchResultsViewState { LOADING, EMPTY, RESULTS }
 
+/**
+ * State slicing: only the search-relevant fields of [PlayerUiState], observed
+ * through a map + distinctUntilChanged projection. Collecting the whole
+ * PlayerUiState here meant the entire screen recomposed on every ~250 ms
+ * playback-position tick and any unrelated queue/undo state change; the slice
+ * only emits when a search-relevant field actually changes.
+ */
+private data class SearchUiSlice(
+    val selectedSearchFilter: SearchFilterType = SearchFilterType.ALL,
+    val isOnlineSearch: Boolean = true,
+    val isSearching: Boolean = false,
+    val searchResults: ImmutableList<SearchResultItem> = persistentListOf(),
+    val searchHistory: ImmutableList<SearchHistoryItem> = persistentListOf()
+)
+
 
 @androidx.annotation.OptIn(UnstableApi::class)
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
@@ -154,9 +173,21 @@ fun SearchScreen(
     val systemNavBarInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val bottomBarHeightDp = NavBarContentHeight + systemNavBarInset
     var showPlaylistBottomSheet by remember { mutableStateOf(false) }
-    val uiState by playerViewModel.playerUiState.collectAsStateWithLifecycle()
-    val currentFilter by remember { derivedStateOf { uiState.selectedSearchFilter } }
-    val isOnlineSearch by remember { derivedStateOf { uiState.isOnlineSearch } }
+    val searchUiState by remember(playerViewModel) {
+        playerViewModel.playerUiState
+            .map { uiState ->
+                SearchUiSlice(
+                    selectedSearchFilter = uiState.selectedSearchFilter,
+                    isOnlineSearch = uiState.isOnlineSearch,
+                    isSearching = uiState.isSearching,
+                    searchResults = uiState.searchResults,
+                    searchHistory = uiState.searchHistory
+                )
+            }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = SearchUiSlice())
+    val currentFilter = searchUiState.selectedSearchFilter
+    val isOnlineSearch = searchUiState.isOnlineSearch
     val genres by playerViewModel.genres.collectAsStateWithLifecycle()
     val stablePlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
     val favoriteSongIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle()
@@ -181,16 +212,16 @@ fun SearchScreen(
     LaunchedEffect(searchQuery, currentFilter) {
         playerViewModel.performSearch(searchQuery)
     }
-    val searchResults = uiState.searchResults
+    val searchResults = searchUiState.searchResults
 
     // IMPROVE(search-loading): true only while an ONLINE search request is in
     // flight — drives the expressive Material 3 loading indicator below.
-    val isSearchingOnline by remember { derivedStateOf { uiState.isSearching && isOnlineSearch } }
+    val isSearchingOnline by remember { derivedStateOf { searchUiState.isSearching && isOnlineSearch } }
 
     // IMPROVE(search-history): recent-search state + actions for the Online
     // landing. Refreshed whenever the online landing becomes visible so the
     // list always reflects the latest submits / deletions.
-    val searchHistory = uiState.searchHistory
+    val searchHistory = searchUiState.searchHistory
     LaunchedEffect(isOnlineSearch, searchQuery.isNotBlank()) {
         if (isOnlineSearch && searchQuery.isBlank()) {
             playerViewModel.loadSearchHistory()

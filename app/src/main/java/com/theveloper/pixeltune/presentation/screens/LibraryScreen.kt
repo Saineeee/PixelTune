@@ -1138,6 +1138,8 @@ fun LibraryScreen(
                                             isLoading = isLoading,
                                             playerViewModel = playerViewModel,
                                             bottomBarHeight = bottomBarHeightDp,
+                                            isListView = playerUiState.isAlbumsListView,
+                                            currentAlbumSortOption = playerUiState.currentAlbumSortOption,
                                             onAlbumClick = stableOnAlbumClick,
                                             isRefreshing = isRefreshing,
                                             onRefresh = onRefresh,
@@ -1159,6 +1161,7 @@ fun LibraryScreen(
                                             isLoading = isLoading,
                                             playerViewModel = playerViewModel,
                                             bottomBarHeight = bottomBarHeightDp,
+                                            currentArtistSortOption = playerUiState.currentArtistSortOption,
                                             onArtistClick = { artistId ->
                                                 navController.navigateSafely(
                                                     Screen.ArtistDetail.createRoute(
@@ -3149,6 +3152,8 @@ fun LibraryAlbumsTab(
     isLoading: Boolean,
     playerViewModel: PlayerViewModel,
     bottomBarHeight: Dp,
+    isListView: Boolean,
+    currentAlbumSortOption: SortOption,
     onAlbumClick: (Long) -> Unit,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
@@ -3164,18 +3169,14 @@ fun LibraryAlbumsTab(
     val context = LocalContext.current
     val imageLoader = context.imageLoader
 
-    // Collect view mode preference
-    val playerUiState by playerViewModel.playerUiState.collectAsStateWithLifecycle()
-    val isListView = playerUiState.isAlbumsListView
-
     var lastHandledAlbumSortKey by remember {
-        mutableStateOf(playerUiState.currentAlbumSortOption.storageKey)
+        mutableStateOf(currentAlbumSortOption.storageKey)
     }
     var pendingAlbumSortScrollReset by remember { mutableStateOf(false) }
 
     // Mark reset only when the sort option actually changes (skip initial composition).
-    LaunchedEffect(playerUiState.currentAlbumSortOption) {
-        val currentSortKey = playerUiState.currentAlbumSortOption.storageKey
+    LaunchedEffect(currentAlbumSortOption) {
+        val currentSortKey = currentAlbumSortOption.storageKey
         if (currentSortKey != lastHandledAlbumSortKey) {
             lastHandledAlbumSortKey = currentSortKey
             pendingAlbumSortScrollReset = true
@@ -3666,21 +3667,21 @@ fun LibraryArtistsTab(
     // canLoadMore: Boolean, // Removed
     playerViewModel: PlayerViewModel,
     bottomBarHeight: Dp,
+    currentArtistSortOption: SortOption,
     onArtistClick: (Long) -> Unit,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
     storageFilter: StorageFilter = StorageFilter.ALL
 ) {
     val listState = rememberLazyListState()
-    val playerUiState by playerViewModel.playerUiState.collectAsStateWithLifecycle()
     var lastHandledArtistSortKey by remember {
-        mutableStateOf(playerUiState.currentArtistSortOption.storageKey)
+        mutableStateOf(currentArtistSortOption.storageKey)
     }
     var pendingArtistSortScrollReset by remember { mutableStateOf(false) }
 
     // Mark reset only when the sort option actually changes (skip initial composition).
-    LaunchedEffect(playerUiState.currentArtistSortOption) {
-        val currentSortKey = playerUiState.currentArtistSortOption.storageKey
+    LaunchedEffect(currentArtistSortOption) {
+        val currentSortKey = currentArtistSortOption.storageKey
         if (currentSortKey == lastHandledArtistSortKey) return@LaunchedEffect
         lastHandledArtistSortKey = currentSortKey
         pendingArtistSortScrollReset = true
