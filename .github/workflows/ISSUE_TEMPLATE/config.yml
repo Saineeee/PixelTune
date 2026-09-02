@@ -1,8 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: ❓ Question or help
-    url: https://github.com/Saineeee/PixelTune/discussions
-    about: Ask how something works or get setup help — not for reproducible bugs.
-  - name: 📖 Documentation
-    url: https://github.com/Saineeee/PixelTune#readme
-    about: Features, install & build instructions, repository layout and FAQ.
