@@ -1,6 +1,6 @@
+![](assets/pixeltune-icon.svg)
 <div align="center">
 
-![](assets/pixeltune-icon.svg)
 # 🎵 PixelTune
 
 **Your music, everywhere — local files, cloud drives, and the world's biggest
