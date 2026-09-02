@@ -1,6 +1,7 @@
 <div align="center">
 
 # 🎵 PixelTune
+![](assets/pixeltune-icon.svg)
 
 **Your music, everywhere — local files, cloud drives, and the world's biggest
 streaming catalogs, in one expressive player for Android.**
