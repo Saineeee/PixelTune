@@ -226,7 +226,7 @@ releases. Breaking changes will be called out in the
 Stability reports — especially from devices the maintainer doesn't own — are
 the most valuable contributions right now.
 
-## ⬇️ Download
+## ⬇️ Store Download Links
 
 <p align="center">
   <a href="https://f-droid.org/packages/<YOUR_PACKAGE>/"><img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" height="60" alt="Get it on F-Droid" align="middle"/></a>
