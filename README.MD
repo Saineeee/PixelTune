@@ -226,6 +226,14 @@ releases. Breaking changes will be called out in the
 Stability reports — especially from devices the maintainer doesn't own — are
 the most valuable contributions right now.
 
+## ⬇️ Download
+
+<p align="center">
+  <a href="https://f-droid.org/packages/<YOUR_PACKAGE>/"><img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" height="60" alt="Get it on F-Droid" align="middle"/></a>
+  <a href="https://apt.izzysoft.de/packages/<YOUR_PACKAGE>"><img src="https://gitlab.com/IzzyOnDroid/repo/-/raw/master/assets/IzzyOnDroid.png" height="60" alt="Get it on IzzyOnDroid" align="middle"/></a>
+  <a href="https://github.com/<USER>/<REPO>/releases/latest"><img src="https://img.shields.io/badge/Direct_APK-Download-blue.svg?logo=github&logoColor=white" height="60" alt="Direct APK Download" align="middle"/></a>
+</p>
+
 ## 🤝 Contributing
 
 Contributions are welcome, in every form:
