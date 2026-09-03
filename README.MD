@@ -238,7 +238,7 @@ the most valuable contributions right now.
 
 Contributions are welcome, in every form:
 
-- 🐛 **Bug reports** — open an [issue](https://github.com/Saineeee/PixelTune/issues)
+- 👾 **Bug reports** — open an [issue](https://github.com/Saineeee/PixelTune/issues)
   with your device, Android version, and steps to reproduce. Crash logs are gold.
 - 💡 **Feature ideas** — start a discussion or issue describing the problem
   you're solving before the implementation.
