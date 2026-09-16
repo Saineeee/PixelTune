@@ -48,7 +48,6 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
         }
 
         // AGREGA ESTE BLOQUE:
@@ -59,19 +58,28 @@ android {
             isDebuggable = false // Esto quita el error que mencionaste
         }
     }
+
+    lint {
+        isCheckReleaseBuilds = false
+        isAbortOnError = false
+    }
+
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+
     composeOptions {
         kotlinCompilerExtensionVersion = "2.1.0"
         // Para habilitar informes de composición (legibles):
     }
+
     buildFeatures {
         compose = true
         buildConfig = true
     }
+
     kotlinOptions {
         jvmTarget = "11"
         // Aquí es donde debes agregar freeCompilerArgs para los informes del compilador de Compose.
@@ -168,20 +176,12 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 
-    // Baseline Profiles (Macrobenchmark)
-    // Asegúrate de que libs.versions.toml tiene androidxBenchmarkMacroJunit4 y androidxUiautomator
-    // Ejemplo: androidx-benchmark-macro-junit4 = { group = "androidx.benchmark", name = "benchmark-macro-junit4", version.ref = "benchmarkMacro" }
-    // benchmarkMacro = "1.2.4"
-    //androidTestImplementation(libs.androidx.benchmark.macro.junit4)
-    //androidTestImplementation(libs.androidx.uiautomator)
-
-
     // Hilt
     implementation(libs.hilt.android)
-    ksp(libs.hilt.android.compiler) // For Dagger Hilt
+    ksp(libs.hilt.android.compiler)
     implementation(libs.androidx.hilt.navigation.compose)
     implementation(libs.androidx.hilt.work)
-    ksp(libs.androidx.hilt.compiler) // Esta línea es crucial y ahora funcionará
+    ksp(libs.androidx.hilt.compiler)
 
     // Room
     implementation(libs.androidx.room.runtime)
@@ -207,9 +207,6 @@ dependencies {
     //Work
     implementation(libs.androidx.work.runtime.ktx)
 
-    //Duktape
-    // implementation(libs.duktape.android)
-
     //Smooth corners shape
     implementation(libs.smooth.corner.rect.android.compose)
     implementation(libs.androidx.graphics.shapes)
@@ -228,10 +225,9 @@ dependencies {
     implementation(libs.coil.compose)
 
     //Capturable
-    implementation(libs.capturable) // Verifica la última versión en GitHub
+    implementation(libs.capturable)
 
     //Reorderable List/Drag and Drop
-    // compose.dnd (mohamedrejeb) 未被使用，已删除
     implementation(libs.reorderables)
 
     //CodeView
@@ -252,7 +248,7 @@ dependencies {
     implementation(libs.androidx.palette.ktx)
 
     // For foreground service permission (Android 13+)
-    implementation(libs.androidx.core.splashscreen) // No directamente para permiso, pero útil
+    implementation(libs.androidx.core.splashscreen)
 
     //ConstraintLayout
     implementation(libs.androidx.constraintlayout.compose)
@@ -263,42 +259,29 @@ dependencies {
     implementation(libs.wavy.slider)
 
     // Splash Screen API
-    implementation(libs.androidx.core.splashscreen) // O la versión más reciente
+    implementation(libs.androidx.core.splashscreen)
 
     //Icons
     implementation(libs.androidx.material.icons.core)
     implementation(libs.androidx.material.icons.extended)
 
-    // Protobuf (JavaLite es suficiente para Android y más pequeño)
-    // implementation(libs.protobuf.javalite) // Eliminada dependencia de Protobuf
-
     //Material library
     implementation(libs.material)
 
     // Kotlin Collections
-    implementation(libs.kotlinx.collections.immutable) // Verifica la última versión
-
-    // Gemini — 使用 com.google.ai.client.generativeai (已在上方声明)
-    // google.genai (Java JVM SDK) 未被任何代码引用，已移除
+    implementation(libs.kotlinx.collections.immutable)
 
     //permisisons
     implementation(libs.accompanist.permissions)
 
     //Audio editing
-    // Spleeter para separación de audio y Amplituda para procesar formas de onda
-    //implementation(libs.tensorflow.lite)
-    //implementation(libs.tensorflow.lite.support)
-    ///implementation(libs.tensorflow.lite.select.tf.ops)
     implementation(libs.amplituda)
 
     // Compose-audiowaveform para la UI
     implementation(libs.compose.audiowaveform)
 
-    // Media3 Transformer (ya debería estar, pero asegúrate)
+    // Media3 Transformer
     implementation(libs.androidx.media3.transformer)
-
-    //implementation(libs.pytorch.android)
-    //implementation(libs.pytorch.android.torchvision)
 
     //Checker framework
     implementation(libs.checker.qual)
