@@ -1251,20 +1251,30 @@ fun SearchResultsList(
                     }
                 }
             }
+        }
 
-            // IMPROVE(search-load-more): a "Load more" row at the very bottom
-            // of the ONLINE results — shown whenever the provider has another
-            // page for the CURRENT filter chip (All / Songs / Albums /
-            // Artists / Playlists all paginate now). The list's contentPadding
-            // reserves the nav bar + miniplayer overlay above it, so the
-            // button is always fully visible and tappable.
-            if (hasMoreResults || isLoadingMoreResults) {
-                item(key = "search_load_more") {
-                    SearchLoadMoreRow(
-                        isLoadingMore = isLoadingMoreResults,
-                        onLoadMore = onLoadMoreResults
-                    )
-                }
+        // IMPROVE(search-load-more): the "Load more" row of the ONLINE results.
+        //
+        // ⚠️ CRITICAL — this item MUST be registered exactly ONCE, at the very
+        // bottom of the LazyColumn and OUTSIDE the sectionOrder.forEach loop
+        // above. It previously sat INSIDE the loop, which registered the SAME
+        // key ("search_load_more") once per section (up to 4×). LazyLayout
+        // wraps every composed item in SaveableStateProvider(key), and
+        // androidx.compose.runtime.saveable requires that no two
+        // simultaneously-composed items share a key:
+        //   IllegalArgumentException: Key search_load_more was used multiple times
+        // — a hard crash the moment two of the duplicate rows composed together
+        // (short result lists such as the Playlists chip crashed immediately;
+        // long lists such as Songs / Albums crashed when scrolled to the
+        // bottom where the rows sat). Registering once after ALL sections keeps
+        // a single row at the true bottom of the list, always visible over the
+        // reserved content padding (nav bar + miniplayer overlay).
+        if (hasMoreResults || isLoadingMoreResults) {
+            item(key = "search_load_more") {
+                SearchLoadMoreRow(
+                    isLoadingMore = isLoadingMoreResults,
+                    onLoadMore = onLoadMoreResults
+                )
             }
         }
     }
