@@ -114,35 +114,24 @@ class PlaylistViewModel @Inject constructor(
     )
     val playlistCreationEvent: SharedFlow<Boolean> = _playlistCreationEvent.asSharedFlow()
 
-    companion object {
-        private const val SONG_SELECTION_PAGE_SIZE =
-            100 // Cargar 100 canciones a la vez para el selector
-        const val FOLDER_PLAYLIST_PREFIX = "folder_playlist:"
-        private const val MANUAL_ORDER_MODE = "manual"
-    }
-
-    // Helper function to resolve stored playlist sort keys
-    private fun resolvePlaylistSortOption(optionKey: String?): SortOption {
-        return SortOption.fromStorageKey(
-            optionKey,
-            SortOption.PLAYLISTS,
-            SortOption.PlaylistNameAZ
-        )
-    }
-
-    init {
-        loadPlaylistsAndInitialSortOption()
-        loadMoreSongsForSelection(isInitialLoad = true)
-        observePlaylistOrderModes()
-        observeImportedCloudPlaylists()
-    }
-
     // ===================================================================
     // IMPROVE(cloud-playlist-import): state for the "Add to your playlist"
     // action on ONLINE-search playlists (search result rows + the cloud
     // catalog detail screen). Importing persists the playlist's tracks and
     // creates a library playlist tagged with its streaming provider
     // (YouTube / SoundCloud) — see CloudPlaylistImportManager.
+    //
+    // ⚠️ DECLARATION-ORDER SENSITIVE — these properties (like every state
+    // property of this ViewModel) MUST stay ABOVE the init block below.
+    // viewModelScope uses Dispatchers.Main.immediate, so the collectors
+    // launched by init can run SYNCHRONOUSLY while the constructor is still
+    // executing: DataStore flows emit their already-cached value without
+    // ever suspending. If a collector reads a MutableStateFlow declared
+    // below the init block, that field is still null at that moment and the
+    // app crashes with
+    //   NullPointerException: MutableStateFlow.getValue() on a null object
+    //   reference
+    // the instant this ViewModel is instantiated (Search / Library).
     // ===================================================================
 
     /** Message events (success / duplicate / failure) surfaced as app toasts. */
@@ -167,6 +156,42 @@ class PlaylistViewModel @Inject constructor(
     private val _isImportingCloudPlaylist = MutableStateFlow(false)
     val isImportingCloudPlaylist: StateFlow<Boolean> =
         _isImportingCloudPlaylist.asStateFlow()
+
+    /**
+     * IMPROVE(cloud-playlist-source-filter): the UNFILTERED playlist list —
+     * source-filter / sort re-derivations always start here. Also
+     * declaration-order sensitive (written by an init-launched collector),
+     * so it lives with the rest of the state above the init block.
+     */
+    private var allPlaylistsCache: List<Playlist> = emptyList()
+
+    companion object {
+        private const val SONG_SELECTION_PAGE_SIZE =
+            100 // Cargar 100 canciones a la vez para el selector
+        const val FOLDER_PLAYLIST_PREFIX = "folder_playlist:"
+        private const val MANUAL_ORDER_MODE = "manual"
+    }
+
+    // Helper function to resolve stored playlist sort keys
+    private fun resolvePlaylistSortOption(optionKey: String?): SortOption {
+        return SortOption.fromStorageKey(
+            optionKey,
+            SortOption.PLAYLISTS,
+            SortOption.PlaylistNameAZ
+        )
+    }
+
+    // ⚠️ Keep this init block BELOW every state property declaration above.
+    // The collectors it launches run on Dispatchers.Main.immediate and
+    // DataStore flows emit their cached value synchronously, so any state
+    // field declared below this point is still NULL when they first run
+    // (this exact ordering bug crashed the app on opening Search/Library).
+    init {
+        loadPlaylistsAndInitialSortOption()
+        loadMoreSongsForSelection(isInitialLoad = true)
+        observePlaylistOrderModes()
+        observeImportedCloudPlaylists()
+    }
 
     /** Tracks which cloud playlists are already in the library (dedupe state). */
     private fun observeImportedCloudPlaylists() {
@@ -283,9 +308,6 @@ class PlaylistViewModel @Inject constructor(
             }
         }
     }
-
-    /** IMPROVE(cloud-playlist-source-filter): the UNFILTERED playlist list — source-filter / sort re-derivations always start here. */
-    private var allPlaylistsCache: List<Playlist> = emptyList()
 
     /** Sorts the FULL playlist list by [sortOption]. */
     private fun sortAllPlaylists(
