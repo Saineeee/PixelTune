@@ -360,6 +360,43 @@ fun CloudCatalogScreen(
                 label = "fabPadding"
             )
 
+            // FIX(cloud-detail-load-more-overlap): the list's bottom padding is
+            // measured from the LazyColumn viewport's BOTTOM edge — and the
+            // collapsing-header layout offsets the whole LazyColumn DOWN by the
+            // header height (`.offset { IntOffset(0, topBarHeight.value) }`),
+            // pushing that edge BELOW the physical screen by the collapsed
+            // header height (minTopBarHeight = 64.dp + status bar inset). The
+            // previous reservation (miniplayer + spacer + 96dp) ignored that
+            // offset AND the system navigation-bar inset, so at full scroll the
+            // effective clearance above the screen bottom was only
+            // ~72-96dp — less than the band the miniplayer occupies on this
+            // route (the app navigation bar is hidden here, unlike the Search
+            // tab, so the miniplayer re-anchors to the very bottom of the
+            // screen: MiniPlayerHeight + spacer + system nav-bar inset). The
+            // last track and the "Load more tracks" row therefore ended up
+            // flush behind / under the miniplayer.
+            //
+            // Mirror how the Search results list reserves bottom space: the
+            // REAL overlay (collapsed-header viewport offset + miniplayer
+            // height + its spacer + system nav-bar inset) plus breathing room,
+            // and never less than the same legacy floor the Search list keeps
+            // (miniplayer + system bars + 94dp) so nothing ever scrolls UNDER
+            // the miniplayer — with clean spacing above it at all times.
+            val miniPlayerBand =
+                if (isMiniPlayerVisible) MiniPlayerHeight + MiniPlayerBottomSpacer else 0.dp
+            val detailBottomOverlay =
+                minTopBarHeight + miniPlayerBand + systemNavBarInset + 24.dp
+            val detailLegacyBottomPadding = MiniPlayerHeight + systemNavBarInset + 94.dp
+            val targetDetailBottomPadding = if (detailBottomOverlay > detailLegacyBottomPadding) {
+                detailBottomOverlay
+            } else {
+                detailLegacyBottomPadding
+            }
+            val detailListBottomPadding by animateDpAsState(
+                targetValue = targetDetailBottomPadding,
+                label = "cloudDetailListBottomPadding"
+            )
+
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -377,14 +414,14 @@ fun CloudCatalogScreen(
                         end = if ((lazyListState.canScrollForward || lazyListState.canScrollBackward) &&
                             collapseFraction > 0.95f
                         ) 24.dp else 16.dp,
-                        // FIX(cloud-load-more-visibility): reserve the miniplayer
-                        // overlay (+ its spacer) plus generous breathing room so
-                        // the "Load more tracks" row at the bottom of the list is
-                        // always fully visible and comfortably tappable. The app
-                        // navigation bar no longer overlays this screen (its route
-                        // joined the hidden-nav-bar set in MainActivity), so the
-                        // miniplayer is the only bottom overlay to clear.
-                        bottom = fabBottomPadding + MiniPlayerBottomSpacer + 96.dp
+                        // FIX(cloud-detail-load-more-overlap): reserve the full
+                        // bottom overlay (collapsed-header viewport offset +
+                        // miniplayer band + system nav-bar inset + breathing
+                        // room, floored by the Search list's legacy reservation)
+                        // so the last track and the "Load more tracks" row are
+                        // always fully visible with clean spacing above the
+                        // miniplayer — exactly like the Search results list.
+                        bottom = detailListBottomPadding
                     )
                 ) {
                     if (songs.isEmpty()) {
