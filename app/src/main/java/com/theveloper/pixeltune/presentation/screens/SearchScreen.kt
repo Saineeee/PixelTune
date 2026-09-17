@@ -34,9 +34,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -70,6 +73,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.theveloper.pixeltune.data.model.Album
@@ -89,6 +93,9 @@ import android.util.Log
 import com.theveloper.pixeltune.ui.theme.LocalPixelTuneDarkTheme
 import androidx.compose.material.icons.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.WindowInsets
@@ -110,6 +117,7 @@ import androidx.navigation.NavHostController
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.repository.MusicRepository
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
+import com.theveloper.pixeltune.presentation.components.MiniPlayerBottomSpacer
 import com.theveloper.pixeltune.presentation.components.NavBarContentHeight
 import com.theveloper.pixeltune.presentation.components.PlaylistBottomSheet
 import com.theveloper.pixeltune.presentation.components.PlaylistCover
@@ -174,6 +182,15 @@ fun SearchScreen(
             delay(40L)
             searchInputFocusRequester.requestFocus()
             keyboardController?.show()
+        }
+    }
+
+    // IMPROVE(cloud-playlist-import): surface the outcome of adding an online
+    // playlist to the library (success / already-added / failure) through the
+    // app's global toast channel.
+    LaunchedEffect(playlistViewModel) {
+        playlistViewModel.cloudPlaylistImportEvents.collect { message ->
+            playerViewModel.sendToast(message)
         }
     }
 
@@ -527,7 +544,17 @@ fun SearchScreen(
                                         currentPlayingSongId = stablePlayerState.currentSong?.id,
                                         isPlaying = stablePlayerState.isPlaying,
                                         onSongMoreOptionsClick = handleSongMoreOptionsClick,
-                                        navController = navController
+                                        navController = navController,
+                                        // IMPROVE(search-load-more): pagination of
+                                        // the current ONLINE search — the "Load
+                                        // more" row shows for every filter chip.
+                                        hasMoreResults = isOnlineSearch && uiState.hasMoreSearchResults,
+                                        isLoadingMoreResults = isOnlineSearch && uiState.isLoadingMoreSearchResults,
+                                        onLoadMoreResults = { playerViewModel.loadMoreSearchResults() },
+                                        // IMPROVE(cloud-playlist-import): the
+                                        // "Add to your playlist" action on
+                                        // online playlist rows.
+                                        playlistViewModel = playlistViewModel
                                     )
                                 }
                             }
@@ -926,11 +953,29 @@ fun SearchResultsList(
     currentPlayingSongId: String?,
     isPlaying: Boolean,
     onSongMoreOptionsClick: (Song) -> Unit,
-    navController: NavHostController
+    navController: NavHostController,
+    // IMPROVE(search-load-more): pagination state of the current ONLINE
+    // search — a "Load more" row renders at the bottom of the results when
+    // the provider has another page (available on EVERY filter chip).
+    hasMoreResults: Boolean = false,
+    isLoadingMoreResults: Boolean = false,
+    onLoadMoreResults: () -> Unit = {},
+    // IMPROVE(cloud-playlist-import): the "Add to your playlist" action for
+    // online playlist rows.
+    playlistViewModel: PlaylistViewModel? = null
 ) {
     val localDensity = LocalDensity.current
     val playerStableState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
     val allSongs by playerViewModel.allSongsFlow.collectAsStateWithLifecycle()
+
+    // IMPROVE(cloud-playlist-import): imported-cloud-playlist state, collected
+    // as Compose state so the "Added" checkmark appears the MOMENT an import
+    // completes (a plain function read of the ViewModel's StateFlow value
+    // would not recompose these rows).
+    val importedCloudPlaylistIds by playlistViewModel?.importedCloudPlaylistIds
+        ?.collectAsStateWithLifecycle() ?: remember { mutableStateOf(emptySet<String>()) }
+    val importingCloudPlaylistId by playlistViewModel?.importingCloudPlaylistId
+        ?.collectAsStateWithLifecycle() ?: remember { mutableStateOf<String?>(null) }
 
     if (results.isEmpty()) {
         Box(
@@ -969,11 +1014,29 @@ fun SearchResultsList(
     val imePadding = WindowInsets.ime.getBottom(localDensity).dp
     val systemBarPaddingBottom = WindowInsets.systemBars.asPaddingValues().calculateBottomPadding() + 94.dp
 
+    // FIX(cloud-load-more-visibility): the bottom of the results list sits
+    // under BOTH the app navigation bar and the miniplayer. The old constant
+    // left the last rows flush against the miniplayer, which made a "Load
+    // more" row at the bottom impossible to tap. Reserve the REAL overlay
+    // (nav bar content + system inset + miniplayer + its spacer) plus
+    // breathing room so every bottom row — the Load more button included —
+    // is fully visible and comfortably tappable.
+    val miniPlayerVisible = currentPlayingSongId != null
+    val bottomOverlay = if (miniPlayerVisible) {
+        bottomBarHeightDpForResults() + MiniPlayerHeight + MiniPlayerBottomSpacer + 24.dp
+    } else {
+        bottomBarHeightDpForResults() + 24.dp
+    }
+    // Keep at least the legacy reservation (miniplayer + system bars + 94dp)
+    // so nothing ever scrolls UNDER the miniplayer on tall-overlay devices.
+    val legacyBottomPadding = MiniPlayerHeight + systemBarPaddingBottom
+    val resultsBottomPadding = if (bottomOverlay > legacyBottomPadding) bottomOverlay else legacyBottomPadding
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
             top = 8.dp,
-            bottom = if (imePadding <= 8.dp) (MiniPlayerHeight + systemBarPaddingBottom) else imePadding
+            bottom = if (imePadding <= 8.dp) resultsBottomPadding else imePadding
         )
     ) {
         sectionOrder.forEach { filterType ->
@@ -1143,7 +1206,18 @@ fun SearchResultsList(
                                 SearchResultCloudPlaylistItem(
                                     playlist = item.playlist,
                                     onOpenClick = onOpenClick,
-                                    onPlayClick = onPlayClick
+                                    onPlayClick = onPlayClick,
+                                    // IMPROVE(cloud-playlist-import): add this
+                                    // online playlist straight to the library's
+                                    // Playlists tab.
+                                    onAddToLibraryClick = playlistViewModel?.let { vm ->
+                                        { vm.importCloudPlaylistToLibrary(item.playlist) }
+                                    },
+                                    isImported = importedCloudPlaylistIds.contains(
+                                        com.theveloper.pixeltune.data.playlist.CloudPlaylistImportManager
+                                            .playlistIdFor(item.playlist)
+                                    ),
+                                    isImporting = importingCloudPlaylistId == item.playlist.id
                                 )
                             }
 
@@ -1176,6 +1250,74 @@ fun SearchResultsList(
                         }
                     }
                 }
+            }
+
+            // IMPROVE(search-load-more): a "Load more" row at the very bottom
+            // of the ONLINE results — shown whenever the provider has another
+            // page for the CURRENT filter chip (All / Songs / Albums /
+            // Artists / Playlists all paginate now). The list's contentPadding
+            // reserves the nav bar + miniplayer overlay above it, so the
+            // button is always fully visible and tappable.
+            if (hasMoreResults || isLoadingMoreResults) {
+                item(key = "search_load_more") {
+                    SearchLoadMoreRow(
+                        isLoadingMore = isLoadingMoreResults,
+                        onLoadMore = onLoadMoreResults
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * FIX(cloud-load-more-visibility): the app navigation bar height that
+ * overlays the bottom of the search results (the Search tab keeps the
+ * bottom bar visible).
+ */
+@Composable
+private fun bottomBarHeightDpForResults(): Dp {
+    val systemNavBarInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    return NavBarContentHeight + systemNavBarInset
+}
+
+/**
+ * IMPROVE(search-load-more): the "Load more" row of the online search
+ * results — an expressive Material 3 button while idle, a contained progress
+ * indicator while the next page is in flight. Placed as the LAST item of the
+ * results list; the list's bottom contentPadding keeps it clear of the
+ * navigation bar and the miniplayer so it is always comfortably tappable.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchLoadMoreRow(
+    isLoadingMore: Boolean,
+    onLoadMore: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 14.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isLoadingMore) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(28.dp),
+                strokeWidth = 3.dp,
+                color = MaterialTheme.colorScheme.primary
+            )
+        } else {
+            FilledTonalButton(
+                onClick = onLoadMore,
+                shape = CircleShape
+            ) {
+                Icon(
+                    Icons.Rounded.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("Load more")
             }
         }
     }
@@ -1419,13 +1561,22 @@ fun SearchResultPlaylistItem(
  * filled play button) — but now renders the provider's REAL metadata:
  * high-res artwork, uploader name and true track count (the old mapping
  * showed a placeholder cover with "0 songs").
+ *
+ * IMPROVE(cloud-playlist-import): a compact "Add to your playlist" action
+ * sits next to the play button — tapping it adds the playlist to the
+ * library's Playlists tab (provider-badged); once added the button turns
+ * into a checkmark. The button is a real, fully tappable 40dp target placed
+ * ABOVE the list's bottom padding, never overlapped by other UI.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchResultCloudPlaylistItem(
     playlist: CloudPlaylist,
     onOpenClick: () -> Unit,
-    onPlayClick: () -> Unit
+    onPlayClick: () -> Unit,
+    onAddToLibraryClick: (() -> Unit)? = null,
+    isImported: Boolean = false,
+    isImporting: Boolean = false
 ) {
     val itemShape = remember {
         AbsoluteSmoothCornerShape(
@@ -1505,6 +1656,49 @@ fun SearchResultCloudPlaylistItem(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+            // IMPROVE(cloud-playlist-import): "Add to your playlist" — a
+            // real 40dp tappable target; checkmark once it's in the library.
+            if (onAddToLibraryClick != null) {
+                FilledTonalIconButton(
+                    onClick = onAddToLibraryClick,
+                    modifier = Modifier.size(40.dp),
+                    shape = CircleShape,
+                    enabled = !isImporting && !isImported,
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = if (isImported) {
+                            MaterialTheme.colorScheme.tertiaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        },
+                        contentColor = if (isImported) {
+                            MaterialTheme.colorScheme.onTertiaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSecondaryContainer
+                        }
+                    )
+                ) {
+                    if (isImporting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.5.dp,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    } else if (isImported) {
+                        Icon(
+                            Icons.Rounded.CheckCircle,
+                            contentDescription = "Added to your playlists",
+                            modifier = Modifier.size(22.dp)
+                        )
+                    } else {
+                        Icon(
+                            Icons.Rounded.PlaylistAdd,
+                            contentDescription = "Add to your playlists",
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
             }
             FilledIconButton(
                 onClick = onPlayClick,
@@ -1631,22 +1825,48 @@ private fun cloudPlaylistSubtitle(playlist: CloudPlaylist): String {
     return listOfNotNull(uploader, countLabel).joinToString(" • ")
 }
 
-/** "1.2M followers" subtitle for a cloud artist row. */
+/**
+ * Subtitle for a cloud artist row.
+ *
+ * FIX(youtube-subscriber-count): YouTube Music artist search results report a
+ * "monthly audience" metric (monthly listeners) rather than subscriber counts,
+ * and NewPipe misparses it INTO `subscriberCount` — the app then showed absurd
+ * values like "313M subscribers" for artists whose channels have ~28.6M. The
+ * repository layer now keeps the two metrics apart
+ * ([CloudArtist.subscriberCount] vs [CloudArtist.monthlyAudienceCount]), and
+ * this subtitle labels each one honestly:
+ *   - "28.6M subscribers"  — only when the provider said "subscribers";
+ *   - "313M monthly listeners" — the monthly-audience metric, exactly what
+ *     YouTube Music itself displays on artist search results;
+ *   - "Artist" — neither metric known.
+ */
 private fun cloudArtistSubtitle(artist: CloudArtist): String {
-    if (artist.subscriberCount < 0) return "Artist"
     val unit = if (artist.provider == com.theveloper.pixeltune.data.model.CloudStreamProvider.YOUTUBE) {
         "subscribers"
     } else {
         "followers"
     }
+    // Only a count the provider explicitly labeled "subscribers"/"followers"
+    // may be rendered with the subscriber label.
+    if (artist.subscriberCount >= 0) {
+        return formatCloudAudienceCount(artist.subscriberCount, unit)
+    }
+    if (artist.monthlyAudienceCount >= 0) {
+        return formatCloudAudienceCount(artist.monthlyAudienceCount, "monthly listeners")
+    }
+    return "Artist"
+}
+
+/** "1.2M subscribers" / "28.6M monthly listeners" count formatter. */
+private fun formatCloudAudienceCount(count: Long, unit: String): String {
     return when {
-        artist.subscriberCount >= 1_000_000L -> {
-            val v = artist.subscriberCount / 1_000_000L
-            val frac = (artist.subscriberCount % 1_000_000L) / 100_000L
+        count >= 1_000_000L -> {
+            val v = count / 1_000_000L
+            val frac = (count % 1_000_000L) / 100_000L
             if (frac > 0) "$v.${frac}M $unit" else "$v M $unit"
         }
-        artist.subscriberCount >= 1_000L -> "${artist.subscriberCount / 1_000L}K $unit"
-        else -> "${artist.subscriberCount} $unit"
+        count >= 1_000L -> "${count / 1_000L}K $unit"
+        else -> "$count $unit"
     }
 }
 

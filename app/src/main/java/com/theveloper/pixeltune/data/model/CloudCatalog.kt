@@ -88,8 +88,27 @@ data class CloudArtist(
     /** Canonical extractor-ready channel URL (never encoded). */
     val url: String,
     val name: String,
-    /** Follower/subscriber count as reported by the provider; -1 unknown. */
+    /**
+     * Follower/subscriber count as reported by the provider; -1 unknown.
+     *
+     * FIX(youtube-subscriber-count): only ever set from a count the provider
+     * explicitly labels "subscribers"/"followers" — never from YouTube
+     * Music's "monthly audience" metric (see [monthlyAudienceCount]).
+     */
     val subscriberCount: Long = -1L,
+    /**
+     * FIX(youtube-subscriber-count): YouTube Music artist search results
+     * report a "X monthly audience" metric (monthly listeners across the
+     * artist's catalog) instead of subscriber counts for artist entries.
+     * NewPipeExtractor parses that text into `subscriberCount`, which made
+     * the app display e.g. "313M subscribers" for Coldplay (whose channel
+     * actually has ~28.6M subscribers — 313M is the monthly audience).
+     *
+     * This field carries that metric SEPARATELY so the UI can label it
+     * honestly ("313M monthly listeners") instead of mislabeling it as
+     * subscribers. -1 = unknown/not reported.
+     */
+    val monthlyAudienceCount: Long = -1L,
     /** Highest-resolution avatar URL (upgraded by CloudArtworkHelper). */
     val artworkUrl: String? = null,
     val isVerified: Boolean = false,

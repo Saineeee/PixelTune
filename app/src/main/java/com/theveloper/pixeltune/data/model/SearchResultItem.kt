@@ -2,6 +2,25 @@ package com.theveloper.pixeltune.data.model
 
 import androidx.compose.runtime.Immutable
 
+/**
+ * IMPROVE(search-load-more): ONE page of an ONLINE search (YouTube Music /
+ * SoundCloud), plus the opaque continuation token the provider needs to serve
+ * the next page.
+ *
+ * The repositories' plain search functions return only the first page (a
+ * List); the paged variants return this wrapper so the search screen can
+ * offer a "Load more" action on EVERY filter chip. [continuation] is the
+ * NewPipe `Page` (or, for the raw YT Music artists tier, the provider's
+ * continuation token wrapped by the repository) — the UI never inspects it,
+ * it just hands the whole page back to the SAME repository via its
+ * "load more" overload.
+ */
+class SearchPage(
+    val results: List<SearchResultItem>,
+    val hasMore: Boolean = false,
+    val continuation: Any? = null
+)
+
 @Immutable
 sealed interface SearchResultItem {
     data class SongItem(val song: Song) : SearchResultItem

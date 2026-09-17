@@ -253,8 +253,24 @@ class PlaybackStatsRepository @Inject constructor(
 
         val songMap = songs.associateBy { it.id }
         val normalizedEvents = filteredEvents.map { event ->
+            // IMPROVE(cloud-stats): cloud-streamed songs (YouTube / SoundCloud)
+            // are NOT part of the local MediaStore-backed library the caller
+            // passes in — the event's own songDurationMs snapshot (recorded at
+            // play time) is the only duration cap available for them.
             normalizeEventDuration(event, songMap[event.songId])
         }
+
+        // IMPROVE(cloud-stats): metadata snapshot per songId, preferring the
+        // event's OWN title / artist / album / artwork when the song is not
+        // resolvable from the local library. The tracker started recording
+        // these snapshots with every playback event — without this fallback,
+        // cloud plays were silently dropped from the Top lists and lumped
+        // into "Unknown Artist" / "Unknown Album" on the stats screens.
+        val metadataBySongId = filteredEvents.groupBy { it.songId }
+            .mapValues { (_, eventsForSong) ->
+                eventsForSong.firstOrNull { it.title?.isNotBlank() == true }
+                    ?: eventsForSong.firstOrNull()
+            }
 
         val segmentsBySong = normalizedEvents
             .groupBy { it.songId }
@@ -274,15 +290,25 @@ class PlaybackStatsRepository @Inject constructor(
 
         val allSongs = segmentsBySong
             .mapNotNull { (songId, segmentsForSong) ->
-                val song = songMap[songId] ?: return@mapNotNull null
-                val title = song.title.takeIf { it.isNotBlank() }
-                    ?: song.path.substringAfterLast('/').ifBlank { return@mapNotNull null }
-                val artist = song.displayArtist.takeIf { it.isNotBlank() } ?: "Unknown Artist"
+                // IMPROVE(cloud-stats): resolve the local song first; fall back
+                // to the event's metadata snapshot for cloud-streamed songs so
+                // online plays appear in Top Songs exactly like local ones
+                // (previously they were dropped from the list entirely).
+                val song = songMap[songId]
+                val eventMeta = metadataBySongId[songId]
+                val title = song?.title?.takeIf { it.isNotBlank() }
+                    ?: eventMeta?.title?.takeIf { it.isNotBlank() }
+                    ?: song?.path?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                val artist = song?.displayArtist?.takeIf { it.isNotBlank() }
+                    ?: eventMeta?.artist?.takeIf { it.isNotBlank() }
+                    ?: "Unknown Artist"
                 SongPlaybackSummary(
                     songId = songId,
                     title = title,
                     artist = artist,
-                    albumArtUri = song.albumArtUriString,
+                    albumArtUri = song?.albumArtUriString
+                        ?: eventMeta?.albumArtUri?.takeIf { it.isNotBlank() },
                     totalDurationMs = segmentsForSong.sumOf { it.durationMs },
                     playCount = segmentsForSong.size
                 )
@@ -300,9 +326,13 @@ class PlaybackStatsRepository @Inject constructor(
             }
             .map { (genre, groupedSongs) ->
                 val flattened = groupedSongs.flatMap { it.value }
+                // IMPROVE(cloud-stats): count cloud-streamed songs' artists
+                // (via their event snapshots) toward the genre's unique-artist
+                // total too.
                 val uniqueArtists = groupedSongs
                     .mapNotNull { (songId, _) ->
                         songMap[songId]?.artist?.takeIf { it.isNotBlank() }
+                            ?: metadataBySongId[songId]?.artist?.takeIf { it.isNotBlank() }
                     }
                     .toSet()
                     .size
@@ -368,7 +398,12 @@ class PlaybackStatsRepository @Inject constructor(
 
         val topArtists = segmentsBySong.entries
             .groupBy { (songId, _) ->
-                songMap[songId]?.artist?.takeIf { it.isNotBlank() } ?: "Unknown Artist"
+                // IMPROVE(cloud-stats): cloud-streamed songs resolve no local
+                // artist — use the event's artist snapshot instead of lumping
+                // every online play into "Unknown Artist".
+                songMap[songId]?.artist?.takeIf { it.isNotBlank() }
+                    ?: metadataBySongId[songId]?.artist?.takeIf { it.isNotBlank() }
+                    ?: "Unknown Artist"
             }
             .map { (artist, groupedSongs) ->
                 val flattened = groupedSongs.flatMap { it.value }
@@ -389,7 +424,12 @@ class PlaybackStatsRepository @Inject constructor(
         val topAlbums = segmentsBySong.entries
             .groupBy { (songId, _) ->
                 val song = songMap[songId]
-                song?.album?.takeIf { it.isNotBlank() } ?: "Unknown Album"
+                // IMPROVE(cloud-stats): cloud-streamed songs resolve no local
+                // album — use the event's album snapshot instead of lumping
+                // every online play into "Unknown Album".
+                song?.album?.takeIf { it.isNotBlank() }
+                    ?: metadataBySongId[songId]?.album?.takeIf { it.isNotBlank() }
+                    ?: "Unknown Album"
             }
             .map { (album, groupedSongs) ->
                 val flattened = groupedSongs.flatMap { it.value }
@@ -400,7 +440,10 @@ class PlaybackStatsRepository @Inject constructor(
                     .firstOrNull()
                 AlbumPlaybackSummary(
                     album = album,
-                    albumArtUri = firstSong?.albumArtUriString,
+                    albumArtUri = firstSong?.albumArtUriString
+                        ?: groupedSongs.asSequence()
+                            .mapNotNull { metadataBySongId[it.key]?.albumArtUri?.takeIf { art -> art.isNotBlank() } }
+                            .firstOrNull(),
                     totalDurationMs = flattened.sumOf { it.durationMs },
                     playCount = flattened.size,
                     uniqueSongs = uniqueSongCount
@@ -594,6 +637,11 @@ class PlaybackStatsRepository @Inject constructor(
     ): PlaybackEvent {
         val safeEnd = event.endMillis()
         val trackDuration = song?.duration?.takeIf { it > 0L }
+            // IMPROVE(cloud-stats): cloud-streamed songs are not in the local
+            // library — the event's own songDurationMs snapshot (recorded when
+            // playback started) is the cap that keeps inflated online
+            // durations in check.
+            ?: event.songDurationMs?.takeIf { it > 0L }
         val boundedDuration = event.durationMs
             .coerceAtLeast(0L)
             .let { duration ->

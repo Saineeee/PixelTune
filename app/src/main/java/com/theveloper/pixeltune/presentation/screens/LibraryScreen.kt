@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -57,6 +58,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material.icons.rounded.ViewModule
 import com.theveloper.pixeltune.presentation.components.ToggleSegmentButton
 import androidx.compose.material3.LoadingIndicator
@@ -149,6 +152,7 @@ import com.theveloper.pixeltune.presentation.viewmodel.PlayerViewModel
 import com.theveloper.pixeltune.presentation.viewmodel.StablePlayerState
 import com.theveloper.pixeltune.presentation.viewmodel.PlaylistUiState
 import com.theveloper.pixeltune.presentation.viewmodel.PlaylistViewModel
+import com.theveloper.pixeltune.presentation.viewmodel.PlaylistSourceFilter
 import com.theveloper.pixeltune.data.model.LibraryTabId
 import com.theveloper.pixeltune.data.model.toLibraryTabIdOrNull
 import com.theveloper.pixeltune.data.preferences.LibraryNavigationMode
@@ -957,6 +961,57 @@ fun LibraryScreen(
                                     currentStorageFilter = playerUiState.currentStorageFilter,
                                     onStorageFilterClick = { playerViewModel.toggleStorageFilter() }
                                 )
+                            }
+                        }
+
+                        // IMPROVE(cloud-playlist-source-filter): the Playlists
+                        // tab's Local / Cloud source filter — the same kind of
+                        // affordance the other library tabs have (storage
+                        // filter / grid-list toggle). Material 3 filter chips,
+                        // hidden while a multi-selection action row is active.
+                        if (currentTabId == LibraryTabId.PLAYLISTS &&
+                            !isPlaylistSelectionMode &&
+                            !isSelectionMode &&
+                            !isAlbumSelectionMode
+                        ) {
+                            val currentSourceFilter = playlistUiState.currentPlaylistSourceFilter
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                PlaylistSourceFilter.entries.forEach { filter ->
+                                    FilterChip(
+                                        selected = currentSourceFilter == filter,
+                                        onClick = { playlistViewModel.setPlaylistSourceFilter(filter) },
+                                        label = { Text(filter.displayName) },
+                                        shape = CircleShape,
+                                        border = BorderStroke(
+                                            width = 0.dp,
+                                            color = Color.Transparent
+                                        ),
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                            labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                                            selectedLeadingIconColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                        ),
+                                        leadingIcon = if (currentSourceFilter == filter) {
+                                            {
+                                                Icon(
+                                                    painter = painterResource(R.drawable.rounded_check_circle_24),
+                                                    contentDescription = "Selected",
+                                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                                    modifier = Modifier.size(FilterChipDefaults.IconSize)
+                                                )
+                                            }
+                                        } else {
+                                            null
+                                        }
+                                    )
+                                }
                             }
                         }
 

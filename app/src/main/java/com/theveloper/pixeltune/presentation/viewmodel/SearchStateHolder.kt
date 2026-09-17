@@ -3,6 +3,7 @@ package com.theveloper.pixeltune.presentation.viewmodel
 import android.util.Log
 import com.theveloper.pixeltune.data.model.SearchFilterType
 import com.theveloper.pixeltune.data.model.SearchHistoryItem
+import com.theveloper.pixeltune.data.model.SearchPage
 import com.theveloper.pixeltune.data.model.SearchResultItem
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.repository.MusicRepository
@@ -110,6 +111,27 @@ class SearchStateHolder @Inject constructor(
     val searchResults = _searchResults.asStateFlow()
 
     /**
+     * IMPROVE(search-load-more): true while the provider reports MORE pages
+     * for the current online search — drives the "Load more" row at the
+     * bottom of the search results (every filter chip).
+     */
+    private val _hasMoreSearchResults = MutableStateFlow(false)
+    val hasMoreSearchResults = _hasMoreSearchResults.asStateFlow()
+
+    /** IMPROVE(search-load-more): true while a "Load more" page is in flight. */
+    private val _isLoadingMoreSearchResults = MutableStateFlow(false)
+    val isLoadingMoreSearchResults = _isLoadingMoreSearchResults.asStateFlow()
+
+    /**
+     * IMPROVE(search-load-more): the current online search's opaque
+     * continuation (the provider's token for the next page). Reset on every
+     * new search; advanced by [loadMoreSearchResults]. Null for local
+     * searches (local search is instant and needs no pagination) and after
+     * the last page has been consumed.
+     */
+    private var searchContinuation: Any? = null
+
+    /**
      * IMPROVE(search-loading): true while an ONLINE search request is in
      * flight (from the moment the debounced request starts executing until
      * its results are published / it fails / it is superseded by a newer
@@ -159,6 +181,10 @@ class SearchStateHolder @Inject constructor(
                             _searchResults.value = persistentListOf()
                         }
                         _isSearching.value = false
+                        // IMPROVE(search-load-more): a blank query has no pages.
+                        searchContinuation = null
+                        _hasMoreSearchResults.value = false
+                        _isLoadingMoreSearchResults.value = false
                         return@collectLatest
                     }
 
@@ -170,17 +196,31 @@ class SearchStateHolder @Inject constructor(
 
                         val currentFilter = _selectedSearchFilter.value
 
+                        // IMPROVE(search-load-more): online searches now use
+                        // the PAGED repository variants so the continuation —
+                        // and with it the "Load more" row — is available on
+                        // EVERY filter chip. A new search always resets the
+                        // previous search's continuation first.
+                        searchContinuation = null
+                        _hasMoreSearchResults.value = false
+
                         val resultsList = withContext(Dispatchers.IO) {
                             if (request.isOnline) {
-                                if (_currentProvider.value == OnlineProvider.YOUTUBE) {
-                                    youTubeRepository.searchYouTube(normalizedQuery, currentFilter) { youtubeId ->
-                                        youTubeStreamProxy.getProxyUrl(youtubeId)
+                                val page: SearchPage =
+                                    if (_currentProvider.value == OnlineProvider.YOUTUBE) {
+                                        youTubeRepository.searchYouTubePaged(normalizedQuery, currentFilter) { youtubeId ->
+                                            youTubeStreamProxy.getProxyUrl(youtubeId)
+                                        }
+                                    } else {
+                                        soundCloudRepository.searchSoundCloudPaged(normalizedQuery, currentFilter) { encodedUrl ->
+                                            soundCloudStreamProxy.getProxyUrl(encodedUrl)
+                                        }
                                     }
-                                } else {
-                                    soundCloudRepository.searchSoundCloud(normalizedQuery, currentFilter) { encodedUrl ->
-                                        soundCloudStreamProxy.getProxyUrl(encodedUrl)
-                                    }
+                                if (request.requestId == latestSearchRequestId.get()) {
+                                    searchContinuation = page.continuation
+                                    _hasMoreSearchResults.value = page.hasMore && page.continuation != null
                                 }
+                                page.results
                             } else {
                                 musicRepository.searchAll(normalizedQuery, currentFilter).first()
                             }
@@ -193,6 +233,13 @@ class SearchStateHolder @Inject constructor(
                         }
 
                         _isSearching.value = false
+
+                        // IMPROVE(search-load-more): remember the query its
+                        // continuation pages belong to (a "Load more" always
+                        // continues THIS query).
+                        if (request.isOnline) {
+                            lastCommittedQuery = normalizedQuery
+                        }
 
                         val immutableResults = resultsList.toImmutableList()
                         if (_searchResults.value != immutableResults) {
@@ -243,6 +290,8 @@ class SearchStateHolder @Inject constructor(
                             Log.e("SearchStateHolder", "Error performing search for query: $normalizedQuery", e)
                             _searchResults.value = persistentListOf()
                             _isSearching.value = false
+                            searchContinuation = null
+                            _hasMoreSearchResults.value = false
                         }
                     }
                 }
@@ -251,6 +300,106 @@ class SearchStateHolder @Inject constructor(
 
     fun updateSearchFilter(filterType: SearchFilterType) {
         _selectedSearchFilter.value = filterType
+    }
+
+    /**
+     * IMPROVE(search-load-more): loads the NEXT page of the current ONLINE
+     * search ("Load more" row at the bottom of the results — available on
+     * EVERY filter chip: All / Songs / Albums / Artists / Playlists).
+     *
+     * Follows the CURRENT provider + filter + query; appends the new page's
+     * items (deduped by stable keys — providers occasionally repeat an item
+     * on page boundaries); advances the continuation. Guarded so repeated
+     * taps and concurrent loads are no-ops.
+     */
+    fun loadMoreSearchResults() {
+        val isOnline = _isOnlineSearch.value
+        if (!isOnline) return
+        if (_isLoadingMoreSearchResults.value || !_hasMoreSearchResults.value) return
+        val continuation = searchContinuation ?: return
+        val query = lastCommittedQuery
+        if (query.isBlank()) return
+
+        scope?.launch {
+            _isLoadingMoreSearchResults.value = true
+            try {
+                val filter = _selectedSearchFilter.value
+                val previousPage = SearchPage(
+                    results = emptyList(),
+                    hasMore = true,
+                    continuation = continuation
+                )
+                val nextPage = withContext(Dispatchers.IO) {
+                    if (_currentProvider.value == OnlineProvider.YOUTUBE) {
+                        youTubeRepository.getMoreYouTubeSearchResults(
+                            query = query,
+                            filter = filter,
+                            previousPage = previousPage,
+                            proxyUrlProvider = { youtubeId ->
+                                youTubeStreamProxy.getProxyUrl(youtubeId)
+                            }
+                        )
+                    } else {
+                        soundCloudRepository.getMoreSoundCloudSearchResults(
+                            query = query,
+                            filter = filter,
+                            previousPage = previousPage,
+                            proxyUrlProvider = { encodedUrl ->
+                                soundCloudStreamProxy.getProxyUrl(encodedUrl)
+                            }
+                        )
+                    }
+                }
+
+                // A NEWER search superseded this load while it was in flight —
+                // discard the stale page entirely.
+                if (continuation !== searchContinuation) {
+                    _isLoadingMoreSearchResults.value = false
+                    return@launch
+                }
+
+                searchContinuation = nextPage.continuation
+                _hasMoreSearchResults.value =
+                    nextPage.hasMore && nextPage.continuation != null
+
+                if (nextPage.results.isNotEmpty()) {
+                    val existingIds = _searchResults.value.mapNotNull { it.stableSearchKey() }.toHashSet()
+                    val newItems = nextPage.results.filter { item ->
+                        val key = item.stableSearchKey() ?: return@filter true
+                        existingIds.add(key)
+                    }
+                    if (newItems.isNotEmpty()) {
+                        _searchResults.value =
+                            (_searchResults.value + newItems).toImmutableList()
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("SearchStateHolder", "Error loading more search results for query: $query", e)
+                // Keep hasMore=true so the user can RETRY the failed page
+                // (the "Load more" row surfaces the error inline).
+            } finally {
+                _isLoadingMoreSearchResults.value = false
+            }
+        }
+    }
+
+    /** The query of the last completed online search (for its continuation pages). */
+    private var lastCommittedQuery: String = ""
+
+    /**
+     * IMPROVE(search-load-more): stable dedupe key of a search result — the
+     * provider occasionally repeats an item across continuation page
+     * boundaries, and the appended page must not duplicate visible rows.
+     */
+    private fun SearchResultItem.stableSearchKey(): String? = when (this) {
+        is SearchResultItem.SongItem -> "song_${song.id}"
+        is SearchResultItem.AlbumItem -> "album_${album.id}"
+        is SearchResultItem.ArtistItem -> "artist_${artist.id}"
+        is SearchResultItem.PlaylistItem -> "playlist_${playlist.id}"
+        is SearchResultItem.CloudPlaylistItem -> "cloud_playlist_${playlist.id}"
+        is SearchResultItem.CloudArtistItem -> "cloud_artist_${artist.id}"
     }
 
     fun toggleSearchMode(isOnline: Boolean) {

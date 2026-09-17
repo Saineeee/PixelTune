@@ -28,7 +28,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ContainedLoadingIndicator
@@ -36,6 +38,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LargeExtendedFloatingActionButton
@@ -85,6 +88,7 @@ import androidx.navigation.NavController
 import coil.size.Size
 import com.theveloper.pixeltune.presentation.components.ExpressiveScrollBar
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
+import com.theveloper.pixeltune.presentation.components.MiniPlayerBottomSpacer
 import com.theveloper.pixeltune.presentation.components.NavBarContentHeight
 import com.theveloper.pixeltune.presentation.components.PlaylistBottomSheet
 import com.theveloper.pixeltune.presentation.components.SmartImage
@@ -142,6 +146,34 @@ fun CloudCatalogScreen(
     var showPlaylistBottomSheet by remember { mutableStateOf(false) }
     val systemNavBarInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val bottomBarHeightDp = NavBarContentHeight + systemNavBarInset
+
+    // =================================================================
+    // IMPROVE(cloud-playlist-import): "Add to your playlist" action for the
+    // OPENED online playlist / album — adds it to the library's Playlists
+    // tab (provider-badged) via the PlaylistViewModel + its import manager.
+    // =================================================================
+    // Collect as Compose state so the "Added" checkmark appears the MOMENT
+    // the import completes (and the progress indicator while it runs).
+    val importingCloudPlaylistId by playlistViewModel.importingCloudPlaylistId.collectAsStateWithLifecycle()
+    val importedCloudPlaylistIds by playlistViewModel.importedCloudPlaylistIds.collectAsStateWithLifecycle()
+    // Capture the delegated property into a local val so the null checks and
+    // smart casts below compile (delegated properties cannot be smart-cast).
+    val openedCloudPlaylist = uiState.playlist
+    val isPlaylistImporting = openedCloudPlaylist != null &&
+        importingCloudPlaylistId == openedCloudPlaylist.id
+    val isPlaylistImported = openedCloudPlaylist != null &&
+        importedCloudPlaylistIds.contains(
+            com.theveloper.pixeltune.data.playlist.CloudPlaylistImportManager
+                .playlistIdFor(openedCloudPlaylist)
+        )
+
+    // IMPROVE(cloud-playlist-import): surface the import outcome (success /
+    // already-added / failure) through the app's global toast channel.
+    LaunchedEffect(playlistViewModel) {
+        playlistViewModel.cloudPlaylistImportEvents.collect { message ->
+            playerViewModel.sendToast(message)
+        }
+    }
 
     // OPTIMIZATION (copied from AlbumDetailScreen): defer long list work
     // until the navigation transition settles.
@@ -345,7 +377,14 @@ fun CloudCatalogScreen(
                         end = if ((lazyListState.canScrollForward || lazyListState.canScrollBackward) &&
                             collapseFraction > 0.95f
                         ) 24.dp else 16.dp,
-                        bottom = fabBottomPadding + 80.dp // Account for the FAB
+                        // FIX(cloud-load-more-visibility): reserve the miniplayer
+                        // overlay (+ its spacer) plus generous breathing room so
+                        // the "Load more tracks" row at the bottom of the list is
+                        // always fully visible and comfortably tappable. The app
+                        // navigation bar no longer overlays this screen (its route
+                        // joined the hidden-nav-bar set in MainActivity), so the
+                        // miniplayer is the only bottom overlay to clear.
+                        bottom = fabBottomPadding + MiniPlayerBottomSpacer + 96.dp
                     )
                 ) {
                     if (songs.isEmpty()) {
@@ -454,6 +493,15 @@ fun CloudCatalogScreen(
                             )
                         }
                     },
+                    // IMPROVE(cloud-playlist-import): "Add to your playlist"
+                    // for the opened online playlist / album.
+                    onAddToLibraryClick = openedCloudPlaylist?.let { playlist ->
+                        {
+                            playlistViewModel.importCloudPlaylistToLibrary(playlist)
+                        }
+                    },
+                    isAddToLibraryImported = isPlaylistImported,
+                    isAddToLibraryImporting = isPlaylistImporting,
                     isDarkTheme = isDarkTheme
                 )
             }
@@ -609,6 +657,11 @@ private fun CollapsingCloudCatalogTopBar(
     headerHeight: Dp,
     onBackPressed: () -> Unit,
     onShuffleClick: () -> Unit,
+    // IMPROVE(cloud-playlist-import): "Add to your playlist" action — null
+    // for artist pages (only playlists / albums can be imported).
+    onAddToLibraryClick: (() -> Unit)? = null,
+    isAddToLibraryImported: Boolean = false,
+    isAddToLibraryImporting: Boolean = false,
     isDarkTheme: Boolean
 ) {
     val surfaceColor = MaterialTheme.colorScheme.surface
@@ -736,7 +789,7 @@ private fun CollapsingCloudCatalogTopBar(
                 )
             }
 
-            // Top bar content (back button, title, shuffle FAB)
+            // Top bar content (back button, add-to-library, title, shuffle FAB)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -757,6 +810,54 @@ private fun CollapsingCloudCatalogTopBar(
                     )
                 }
 
+                // IMPROVE(cloud-playlist-import): "Add to your playlist" — a
+                // real, fully tappable 48dp Material 3 tonal button pinned to
+                // the top end of the header. It stays put through the collapse
+                // animation, sits clear of the title block (the title column
+                // reserves end padding), and flips to a checkmark once the
+                // playlist is in the library.
+                if (onAddToLibraryClick != null) {
+                    FilledTonalIconButton(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(end = 12.dp, top = 4.dp)
+                            .size(48.dp),
+                        onClick = onAddToLibraryClick,
+                        enabled = !isAddToLibraryImporting && !isAddToLibraryImported,
+                        shape = CircleShape,
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = if (isAddToLibraryImported) {
+                                MaterialTheme.colorScheme.tertiaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerLow
+                            },
+                            contentColor = if (isAddToLibraryImported) {
+                                MaterialTheme.colorScheme.onTertiaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    ) {
+                        if (isAddToLibraryImporting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.5.dp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else if (isAddToLibraryImported) {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = "Added to your playlists"
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Rounded.PlaylistAdd,
+                                contentDescription = "Add to your playlists"
+                            )
+                        }
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .align(animatedTitleAlignment)
@@ -767,7 +868,7 @@ private fun CollapsingCloudCatalogTopBar(
                     Column(
                         modifier = Modifier
                             .align(Alignment.CenterStart)
-                            .padding(start = titlePaddingStart, end = 120.dp)
+                            .padding(start = titlePaddingStart, end = 96.dp)
                             .graphicsLayer {
                                 scaleX = titleScale
                                 scaleY = titleScale

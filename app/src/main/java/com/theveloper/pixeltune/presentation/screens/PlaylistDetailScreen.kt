@@ -240,13 +240,21 @@ fun PlaylistDetailScreen(
                     containerColor = Color.Transparent
                 ),
                 subtitle = {
+                    // IMPROVE(cloud-playlist-import): imported playlists name
+                    // the cloud streaming provider they came from (YouTube /
+                    // SoundCloud) right in the header.
+                    val providerLabel = when (currentPlaylist?.source) {
+                        "YOUTUBE" -> " • from YouTube"
+                        "SOUNDCLOUD" -> " • from SoundCloud"
+                        else -> ""
+                    }
                     Text(
                         modifier = Modifier.padding(start = 8.dp),
                         text = "${songsInPlaylist.size} songs • ${
                             formatTotalDuration(
                                 songsInPlaylist
                             )
-                        }",
+                        }$providerLabel",
                         style = MaterialTheme.typography.labelMedium.copy(fontFamily = GoogleSansRounded),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

@@ -1948,6 +1948,28 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
+        // IMPROVE(search-load-more): mirror the pagination flags the search
+        // screen's "Load more" row consumes (available on every filter chip).
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.combine(
+                searchStateHolder.hasMoreSearchResults,
+                searchStateHolder.isLoadingMoreSearchResults
+            ) { hasMore, loadingMore ->
+                hasMore to loadingMore
+            }.collect { (hasMore, loadingMore) ->
+                _playerUiState.update {
+                    if (it.hasMoreSearchResults == hasMore && it.isLoadingMoreSearchResults == loadingMore) {
+                        it
+                    } else {
+                        it.copy(
+                            hasMoreSearchResults = hasMore,
+                            isLoadingMoreSearchResults = loadingMore
+                        )
+                    }
+                }
+            }
+        }
+
         viewModelScope.launch {
             searchStateHolder.isOnlineSearch.collect { isOnline ->
                 _playerUiState.update {
@@ -4223,6 +4245,16 @@ class PlayerViewModel @Inject constructor(
 
     fun performSearch(query: String) {
         searchStateHolder.performSearch(query)
+    }
+
+    /**
+     * IMPROVE(search-load-more): loads the next page of the current ONLINE
+     * search — wired to the "Load more" row at the bottom of the search
+     * results, available on EVERY filter chip (All / Songs / Albums /
+     * Artists / Playlists).
+     */
+    fun loadMoreSearchResults() {
+        searchStateHolder.loadMoreSearchResults()
     }
 
     fun deleteSearchHistoryItem(query: String) {

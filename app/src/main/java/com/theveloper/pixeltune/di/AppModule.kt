@@ -634,8 +634,13 @@ object AppModule {
 
     @Singleton
     @Provides
-    fun provideYouTubeRepository(): com.theveloper.pixeltune.data.youtube.YouTubeRepository {
-        return com.theveloper.pixeltune.data.youtube.YouTubeRepository()
+    fun provideYouTubeRepository(
+        okHttpClient: OkHttpClient
+    ): com.theveloper.pixeltune.data.youtube.YouTubeRepository {
+        // FIX(youtube-subscriber-count): the repository now needs the app-wide
+        // OkHttpClient for its RAW YouTube Music artists search (the parse
+        // that keeps "monthly audience" apart from real subscriber counts).
+        return com.theveloper.pixeltune.data.youtube.YouTubeRepository(okHttpClient)
     }
 
     @Singleton

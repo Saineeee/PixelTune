@@ -59,6 +59,13 @@ data class PlayerUiState(
     // IMPROVE(search-loading): true while an online search request is in
     // flight — drives the expressive loading indicator on the Search screen.
     val isSearching: Boolean = false,
+    // IMPROVE(search-load-more): the current ONLINE search has more pages
+    // available — shows the "Load more" row at the bottom of the results
+    // (every filter chip: All / Songs / Albums / Artists / Playlists).
+    val hasMoreSearchResults: Boolean = false,
+    // IMPROVE(search-load-more): a "Load more" page is currently in flight —
+    // the row renders a progress indicator instead of the button.
+    val isLoadingMoreSearchResults: Boolean = false,
     val isSyncingLibrary: Boolean = false,
     val selectedSearchFilter: SearchFilterType = SearchFilterType.ALL,
     val currentStorageFilter: com.theveloper.pixeltune.data.model.StorageFilter = com.theveloper.pixeltune.data.model.StorageFilter.ALL,

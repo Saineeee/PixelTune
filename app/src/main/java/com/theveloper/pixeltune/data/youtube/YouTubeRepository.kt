@@ -6,6 +6,7 @@ import com.theveloper.pixeltune.data.model.CloudStreamProvider
 import com.theveloper.pixeltune.data.model.CloudTracksPage
 import com.theveloper.pixeltune.data.model.SearchResultItem
 import com.theveloper.pixeltune.data.model.SearchFilterType
+import com.theveloper.pixeltune.data.model.SearchPage
 import com.theveloper.pixeltune.data.model.Song
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -21,6 +22,12 @@ import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import org.schabi.newpipe.extractor.stream.StreamType
 import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.channel.ChannelInfoItem
+import org.json.JSONArray
+import org.json.JSONObject
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -29,7 +36,16 @@ import com.theveloper.pixeltune.data.stream.CloudArtworkHelper
 import kotlin.math.abs
 
 @Singleton
-class YouTubeRepository @Inject constructor() {
+class YouTubeRepository @Inject constructor(
+    /**
+     * FIX(youtube-subscriber-count): HTTP client for the RAW YouTube Music
+     * artists search (see [searchYouTubeMusicArtistsRaw]). The app-wide
+     * default OkHttp client (same one [PlaylistImportManager] uses for
+     * playlist scraping) is sufficient — a single small POST per artists
+     * search.
+     */
+    private val client: OkHttpClient
+) {
 
     /**
      * Extracts the best available audio stream URL for a given YouTube video ID.
@@ -188,23 +204,37 @@ class YouTubeRepository @Inject constructor() {
         }
     }
 
-    suspend fun searchYouTube(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): List<SearchResultItem> = withContext(Dispatchers.IO) {
-        // IMPROVE(music-only): search YouTube MUSIC (the music.youtube.com
-        // index) instead of generic YouTube videos. Generic results regularly
-        // include vlogs, tutorials, podcasts and other non-music uploads the
-        // user explicitly does not want; the YT Music songs index guarantees
-        // real songs. The "All" tab maps to the same music-songs filter so
-        // ONLY music shows up everywhere (search, tap-to-play, queue refill).
-        //
-        // FIX(online-filter-chips): the Albums / Artists / Playlists chips now
-        // map to the matching YouTube MUSIC indexes (MUSIC_ALBUMS /
-        // MUSIC_ARTISTS / MUSIC_PLAYLISTS) instead of the generic
-        // "playlists"/"channels" filters. NewPipe's YoutubeMusicSearchExtractor
-        // fully supports all of them (its params switch selects the YT Music
-        // tab and commits dedicated item extractors — albums & playlists yield
-        // PlaylistInfoItems, artists yield ChannelInfoItems), and every result
-        // carries the rich metadata (artwork, uploader, counts) the cloud
-        // result rows and the CloudCatalog detail screen render.
+    suspend fun searchYouTube(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): List<SearchResultItem> {
+        // IMPROVE(search-load-more): the plain List-shaped entry point kept for
+        // existing callers (queue refill, provider handoff, playlist import) —
+        // the search UI uses the paginated [searchYouTubePaged] variant.
+        return searchYouTubePaged(query, filter, proxyUrlProvider).results
+    }
+
+    /**
+     * IMPROVE(search-load-more): the PAGED YouTube Music search — one page of
+     * results plus the provider's continuation token, so the search screen can
+     * offer "Load more" on EVERY filter chip (All / Songs / Albums / Artists /
+     * Playlists).
+     *
+     * IMPROVE(music-only): search YouTube MUSIC (the music.youtube.com
+     * index) instead of generic YouTube videos. Generic results regularly
+     * include vlogs, tutorials, podcasts and other non-music uploads the
+     * user explicitly does not want; the YT Music songs index guarantees
+     * real songs. The "All" tab maps to the same music-songs filter so
+     * ONLY music shows up everywhere (search, tap-to-play, queue refill).
+     *
+     * FIX(online-filter-chips): the Albums / Artists / Playlists chips now
+     * map to the matching YouTube MUSIC indexes (MUSIC_ALBUMS /
+     * MUSIC_ARTISTS / MUSIC_PLAYLISTS) instead of the generic
+     * "playlists"/"channels" filters. NewPipe's YoutubeMusicSearchExtractor
+     * fully supports all of them (its params switch selects the YT Music
+     * tab and commits dedicated item extractors — albums & playlists yield
+     * PlaylistInfoItems, artists yield ChannelInfoItems), and every result
+     * carries the rich metadata (artwork, uploader, counts) the cloud
+     * result rows and the CloudCatalog detail screen render.
+     */
+    suspend fun searchYouTubePaged(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): SearchPage = withContext(Dispatchers.IO) {
         val searchFilter = when (filter) {
             SearchFilterType.ALL -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
             SearchFilterType.SONGS -> YoutubeSearchQueryHandlerFactory.MUSIC_SONGS
@@ -214,11 +244,34 @@ class YouTubeRepository @Inject constructor() {
         }
 
         // Tier 1: the YouTube Music songs index.
-        var results = runCatching {
+        var page = runCatching {
             performSearch(query, searchFilter, filter, proxyUrlProvider)
         }.onFailure { e ->
             Timber.e(e, "Error searching YouTube for query: $query")
-        }.getOrDefault(emptyList())
+        }.getOrDefault(SearchPage(emptyList()))
+
+        // FIX(youtube-subscriber-count): the ARTISTS chip has a dedicated
+        // tier that replaces the NewPipe-parsed results with a RAW YouTube
+        // Music API parse. NewPipe's YoutubeMusicArtistInfoItemExtractor
+        // reads the LAST subtitle run ("313m monthly audience") and reports
+        // it as `subscriberCount`, so the app displayed e.g. "313M
+        // subscribers" for Coldplay (real count: ~28.6M — 313M is the
+        // MONTHLY AUDIENCE metric). The raw parse below keeps the two
+        // metrics apart (CloudArtist.subscriberCount vs
+        // CloudArtist.monthlyAudienceCount) so the UI can label them
+        // honestly. Falls back to the NewPipe results above (with their
+        // counts demoted to the monthly-audience field) when the raw
+        // request fails.
+        if (filter == SearchFilterType.ARTISTS) {
+            val rawArtistsPage = runCatching {
+                searchYouTubeMusicArtistsRaw(query, null)
+            }.onFailure { e ->
+                Timber.w(e, "Raw YT Music artists search failed for '%s' — using NewPipe results", query)
+            }.getOrDefault(SearchPage(emptyList()))
+            if (rawArtistsPage.results.isNotEmpty()) {
+                page = rawArtistsPage
+            }
+        }
 
         // FIX(search-reliability): the YT Music index occasionally fails or
         // returns a bot-check/HTML/short response (which NewPipe turns into an
@@ -231,8 +284,8 @@ class YouTubeRepository @Inject constructor() {
         // Better a relevant, duration-filtered result list than a blank screen.
         val wasMusicIndexSearch =
             filter == SearchFilterType.ALL || filter == SearchFilterType.SONGS
-        if (wasMusicIndexSearch && results.none { it is SearchResultItem.SongItem }) {
-            val fallbackResults = runCatching {
+        if (wasMusicIndexSearch && page.results.none { it is SearchResultItem.SongItem }) {
+            val fallbackPage = runCatching {
                 performSearch(
                     query = query,
                     searchFilter = YoutubeSearchQueryHandlerFactory.VIDEOS,
@@ -242,26 +295,86 @@ class YouTubeRepository @Inject constructor() {
                 )
             }.onFailure { e ->
                 Timber.w(e, "YouTube generic search fallback failed for query: %s", query)
-            }.getOrDefault(emptyList())
-            if (fallbackResults.isNotEmpty()) {
+            }.getOrDefault(SearchPage(emptyList()))
+            if (fallbackPage.results.isNotEmpty()) {
                 Timber.d(
                     "YouTube music search returned no songs for '%s' — generic " +
                         "videos fallback returned %d items",
-                    query, fallbackResults.size
+                    query, fallbackPage.results.size
                 )
-                results = fallbackResults
+                page = fallbackPage
             }
         }
-        results
+        page
+    }
+
+    /**
+     * IMPROVE(search-load-more): loads the NEXT page of a YouTube search
+     * started by [searchYouTubePaged] — [previousPage] is the page the UI
+     * holds; its continuation token (opaque to the caller) selects the tier
+     * (raw YT Music artists parse vs NewPipe search page vs the generic-videos
+     * fallback) this continuation belongs to.
+     */
+    suspend fun getMoreYouTubeSearchResults(
+        query: String,
+        filter: SearchFilterType,
+        previousPage: SearchPage,
+        proxyUrlProvider: (String) -> String
+    ): SearchPage = withContext(Dispatchers.IO) {
+        when (val continuation = previousPage.continuation) {
+            is RawMusicArtistsContinuation -> {
+                if (filter != SearchFilterType.ARTISTS) {
+                    return@withContext SearchPage(emptyList())
+                }
+                runCatching {
+                    searchYouTubeMusicArtistsRaw(query, continuation)
+                }.onFailure { e ->
+                    Timber.e(e, "Raw YT Music artists continuation failed for '%s'", query)
+                }.getOrDefault(SearchPage(emptyList()))
+            }
+            is NewPipeSearchContinuation -> {
+                runCatching {
+                    val extractor: SearchExtractor = if (continuation.searchFilter.isNotEmpty()) {
+                        ServiceList.YouTube.getSearchExtractor(query, listOf(continuation.searchFilter), "")
+                    } else {
+                        ServiceList.YouTube.getSearchExtractor(query)
+                    }
+                    extractor.fetchPage()
+                    val next = extractor.getPage(continuation.page)
+                    SearchPage(
+                        results = mapSearchInfoItems(
+                            items = next.items,
+                            filter = continuation.uiFilter,
+                            musicOnlyFilter = continuation.musicOnlyFilter,
+                            proxyUrlProvider = proxyUrlProvider
+                        ),
+                        hasMore = next.nextPage != null,
+                        continuation = next.nextPage?.let {
+                            NewPipeSearchContinuation(
+                                page = it,
+                                searchFilter = continuation.searchFilter,
+                                uiFilter = continuation.uiFilter,
+                                musicOnlyFilter = continuation.musicOnlyFilter
+                            )
+                        }
+                    )
+                }.onFailure { e ->
+                    Timber.e(e, "YouTube search continuation failed for query: %s", query)
+                }.getOrDefault(SearchPage(emptyList()))
+            }
+            else -> SearchPage(emptyList())
+        }
     }
 
     /**
      * Runs one NewPipe YouTube search with [searchFilter] and maps the raw
      * items to [SearchResultItem]s (song/playlist/artist) for the requested
-     * UI [filter].
+     * UI [filter]. IMPROVE(search-load-more): now returns a [SearchPage] —
+     * the provider's `nextPage` is kept as an opaque continuation so the
+     * search screen can page deeper ("Load more" on every filter chip).
      *
      * [musicOnlyFilter] is set only by the generic-videos FALLBACK tier of
-     * [searchYouTube]: it drops stream items that don't look like a single
+     * [searchYouTubePaged]: it drops stream items that don't look like a single
      * song (live streams, unknown durations, > 20 min uploads) so the
      * fallback can never regress the music-only search requirement.
      */
@@ -271,7 +384,7 @@ class YouTubeRepository @Inject constructor() {
         filter: SearchFilterType,
         proxyUrlProvider: (String) -> String,
         musicOnlyFilter: Boolean = false
-    ): List<SearchResultItem> {
+    ): SearchPage {
         val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
             ServiceList.YouTube.getSearchExtractor(query, listOf(searchFilter), "")
         } else {
@@ -280,9 +393,40 @@ class YouTubeRepository @Inject constructor() {
 
         extractor.fetchPage()
 
+        val initialPage = extractor.initialPage
+        return SearchPage(
+            results = mapSearchInfoItems(
+                items = initialPage.items,
+                filter = filter,
+                musicOnlyFilter = musicOnlyFilter,
+                proxyUrlProvider = proxyUrlProvider
+            ),
+            hasMore = initialPage.nextPage != null,
+            continuation = initialPage.nextPage?.let {
+                NewPipeSearchContinuation(
+                    page = it,
+                    searchFilter = searchFilter,
+                    uiFilter = filter,
+                    musicOnlyFilter = musicOnlyFilter
+                )
+            }
+        )
+    }
+
+    /**
+     * IMPROVE(search-load-more): maps raw NewPipe search [items] to
+     * [SearchResultItem]s — shared by the initial page and every "Load more"
+     * continuation page so both map identically.
+     */
+    private fun mapSearchInfoItems(
+        items: List<org.schabi.newpipe.extractor.InfoItem>,
+        filter: SearchFilterType,
+        musicOnlyFilter: Boolean,
+        proxyUrlProvider: (String) -> String
+    ): List<SearchResultItem> {
         val results = mutableListOf<SearchResultItem>()
 
-        extractor.initialPage.items.forEach { item ->
+        items.forEach { item ->
             when (item) {
                 is StreamInfoItem -> {
                     if (filter == SearchFilterType.ALL || filter == SearchFilterType.SONGS) {
@@ -354,18 +498,30 @@ class YouTubeRepository @Inject constructor() {
                     is ChannelInfoItem -> {
                         if (filter == SearchFilterType.ALL || filter == SearchFilterType.ARTISTS) {
                             // FIX(online-filter-chips): same treatment for
-                            // artists — keep the channel avatar + subscriber
+                            // artists — keep the channel avatar + follower
                             // count NewPipe extracted (the LOCAL Artist mapping
-                            // dropped the avatar and mislabeled subscribers as
+                            // dropped the avatar and mislabeled followers as
                             // "X Songs"), and keep the channel URL the detail
                             // screen extracts the artist's tracks from.
+                            //
+                            // FIX(youtube-subscriber-count): this branch is now
+                            // only a FALLBACK (the primary artists tier is the
+                            // raw parse in [searchYouTubeMusicArtistsRaw]).
+                            // NewPipe's YoutubeMusicArtistInfoItemExtractor
+                            // mislabels YouTube Music's "monthly audience"
+                            // subtitle as the subscriber count, so the number
+                            // it reports is demoted to [monthlyAudienceCount]
+                            // — the UI then labels it "monthly listeners"
+                            // instead of showing a wildly inflated subscriber
+                            // count ("313M subscribers" for Coldplay).
                             results.add(
                                 SearchResultItem.CloudArtistItem(
                                     CloudArtist(
                                         id = item.url.hashCode().toString(),
                                         url = item.url,
                                         name = item.name ?: "Unknown Artist",
-                                        subscriberCount = runCatching { item.subscriberCount }.getOrDefault(-1L),
+                                        subscriberCount = -1L,
+                                        monthlyAudienceCount = runCatching { item.subscriberCount }.getOrDefault(-1L),
                                         artworkUrl = CloudArtworkHelper.bestArtworkUrl(
                                             runCatching { item.thumbnails }.getOrDefault(emptyList())
                                         ),
@@ -380,6 +536,17 @@ class YouTubeRepository @Inject constructor() {
             }
         return results
     }
+
+    /** IMPROVE(search-load-more): tagged continuation for the NewPipe search tier. */
+    private class NewPipeSearchContinuation(
+        val page: org.schabi.newpipe.extractor.Page,
+        val searchFilter: String,
+        val uiFilter: SearchFilterType,
+        val musicOnlyFilter: Boolean
+    )
+
+    /** IMPROVE(search-load-more): continuation token for the RAW YT Music artists tier. */
+    private class RawMusicArtistsContinuation(val token: String)
 
     private fun extractVideoId(url: String): String? {
         // e.g., https://www.youtube.com/watch?v=dQw4w9WgXcQ
@@ -398,6 +565,374 @@ class YouTubeRepository @Inject constructor() {
      */
     private fun normalizePlaylistUrl(url: String): String {
         return url.replace("music.youtube.com", "www.youtube.com")
+    }
+
+    // =====================================================================
+    // FIX(youtube-subscriber-count): RAW YouTube Music artists search.
+    //
+    // YouTube Music's artist search responses replaced the old "X
+    // subscribers" subtitle with a "X monthly audience" metric (live-verified
+    // 2026-09: searching "Adele" returns "382m monthly audience", "Coldplay"
+    // returns "313m monthly audience"). NewPipeExtractor — v0.26.3 AND the
+    // current master — parses that LAST subtitle run as the channel's
+    // SUBSCRIBER count (YoutubeMusicArtistInfoItemExtractor ->
+    // Utils.mixedNumberWordToLong), so the app displayed absurd subscriber
+    // counts like "313M subscribers" for artists whose channels have ~28.6M.
+    //
+    // The ONLY correct fix requires the subtitle's LABEL, which NewPipe's
+    // ChannelInfoItem API throws away — so this function performs the same
+    // youtubei/v1/search POST NewPipe does (WEB_REMIX client, MUSIC_ARTISTS
+    // params) and parses the raw JSON itself:
+    //
+    //   flexColumns[1].runs = ["Artist", " • ", "313m monthly audience"]
+    //   flexColumns[1].runs = ["Artist", " • ", "350 subscribers"]
+    //
+    // "…subscribers" -> CloudArtist.subscriberCount (real subscriber count);
+    // "…monthly audience" / "…monthly listeners" -> CloudArtist
+    // .monthlyAudienceCount (honest "monthly listeners" label in the UI).
+    //
+    // IMPROVE(search-load-more): the raw tier ALSO carries the provider's
+    // continuation token (musicShelfRenderer.continuations ->
+    // nextContinuationData.continuation) so the artists chip can page deeper
+    // like every other filter chip.
+    //
+    // The request body/params mirror YoutubeMusicSearchExtractor exactly
+    // (hardcoded WEB_REMIX client version with a one-shot re-discovery from
+    // music.youtube.com/sw.js when the hardcoded one stops being accepted).
+    // Any failure here simply returns an empty page and [searchYouTubePaged]
+    // falls back to the NewPipe-parsed results (with counts demoted to the
+    // monthly-audience field, so the mislabel can never resurface).
+    // =====================================================================
+    private fun searchYouTubeMusicArtistsRaw(
+        query: String,
+        continuation: RawMusicArtistsContinuation?
+    ): SearchPage {
+        val response = postYouTubeMusicSearch(query, continuation) ?: return SearchPage(emptyList())
+        return parseYouTubeMusicArtistsResponse(response, continuation != null)
+    }
+
+    /**
+     * Runs the artists search POST (initial page, or a continuation page when
+     * [continuation] is set), retrying once with a freshly discovered client
+     * version.
+     */
+    private fun postYouTubeMusicSearch(
+        query: String,
+        continuation: RawMusicArtistsContinuation? = null
+    ): JSONObject? {
+        val first = runCatching {
+            postYouTubeMusicSearchWithVersion(query, HARDCODED_WEB_REMIX_CLIENT_VERSION, continuation)
+        }.getOrNull()
+        if (first != null) return first
+
+        // The hardcoded WEB_REMIX client version may have aged out — re-discover
+        // it from the music.youtube.com service worker (the same fallback
+        // NewPipe's YoutubeParsingHelper uses) and retry once.
+        val discovered = runCatching { discoverYoutubeMusicClientVersion() }.getOrNull()
+        if (discovered != null && discovered != HARDCODED_WEB_REMIX_CLIENT_VERSION) {
+            return runCatching {
+                postYouTubeMusicSearchWithVersion(query, discovered, continuation)
+            }.getOrNull()
+        }
+        return null
+    }
+
+    private fun postYouTubeMusicSearchWithVersion(
+        query: String,
+        clientVersion: String,
+        continuation: RawMusicArtistsContinuation? = null
+    ): JSONObject? {
+        val jsonBody = JSONObject()
+            .put(
+                "context",
+                JSONObject()
+                    .put(
+                        "client",
+                        JSONObject()
+                            .put("clientName", "WEB_REMIX")
+                            .put("clientVersion", clientVersion)
+                            .put("hl", "en-GB")
+                            .put("gl", "US")
+                            .put("platform", "DESKTOP")
+                            .put("utcOffsetMinutes", 0)
+                    )
+                    .put(
+                        "request",
+                        JSONObject()
+                            .put("internalExperimentFlags", JSONArray())
+                            .put("useSsl", true)
+                    )
+                    .put("user", JSONObject().put("lockedSafetyMode", false))
+            )
+
+        // IMPROVE(search-load-more): an initial search POST carries the query
+        // + MUSIC_ARTISTS params; a continuation POST addresses the
+        // continuation endpoint via ctoken with a context-only body (exactly
+        // the split YoutubeMusicSearchExtractor's onFetchPage / getPage
+        // implement — neither query nor params are sent on continuation).
+        val url = if (continuation != null) {
+            "https://music.youtube.com/youtubei/v1/search?ctoken=${continuation.token}" +
+                "&continuation=${continuation.token}&prettyPrint=false"
+        } else {
+            jsonBody.put("query", query)
+            jsonBody.put("params", MUSIC_ARTISTS_SEARCH_PARAMS)
+            "https://music.youtube.com/youtubei/v1/search?prettyPrint=false"
+        }
+
+        val request = Request.Builder()
+            .url(url)
+            .header("Content-Type", "application/json")
+            .header("Origin", "https://music.youtube.com")
+            .header("Referer", "https://music.youtube.com/")
+            .header("X-YouTube-Client-Name", "67")
+            .header("X-YouTube-Client-Version", clientVersion)
+            .header("User-Agent", MUSIC_SEARCH_USER_AGENT)
+            .header("Accept-Language", "en-GB, en;q=0.9")
+            .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                Timber.w("YT Music artists search HTTP %d for query '%s'", response.code, query)
+                return null
+            }
+            val body = response.body?.string() ?: return null
+            val parsed = JSONObject(body)
+            // Sanity: a real search response always carries one of these spines.
+            // Anything else (consent page, bot check, error payload) is a miss.
+            if (parsed.optJSONObject("contents") == null &&
+                parsed.optJSONObject("continuationContents") == null
+            ) {
+                return null
+            }
+            return parsed
+        }
+    }
+
+    /** Extracts the current WEB_REMIX client version from music.youtube.com/sw.js. */
+    private fun discoverYoutubeMusicClientVersion(): String? {
+        val request = Request.Builder()
+            .url("https://music.youtube.com/sw.js")
+            .header("Origin", "https://music.youtube.com")
+            .header("Referer", "https://music.youtube.com/")
+            .header("User-Agent", MUSIC_SEARCH_USER_AGENT)
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return null
+            val body = response.body?.string() ?: return null
+            return Regex("\"INNERTUBE_CONTEXT_CLIENT_VERSION\":\"([\\d.]+)\"")
+                .find(body)?.groupValues?.get(1)
+        }
+    }
+
+    /**
+     * Maps the raw artist items of a YT Music search response to [CloudArtist]s.
+     *
+     * IMPROVE(search-load-more): [isContinuation] selects the response spine —
+     * an initial search exposes `contents.tabbedSearchResultsRenderer…` while a
+     * continuation response exposes `continuationContents.musicShelfContinuation`.
+     * The provider's next continuation token is captured either way and returned
+     * on the [SearchPage] so the caller can page deeper.
+     */
+    private fun parseYouTubeMusicArtistsResponse(
+        response: JSONObject,
+        isContinuation: Boolean
+    ): SearchPage {
+        val results = mutableListOf<SearchResultItem>()
+        val shelves = mutableListOf<JSONArray>()
+        var nextToken: String? = null
+
+        if (isContinuation) {
+            val shelfContinuation = response
+                .optJSONObject("continuationContents")
+                ?.optJSONObject("musicShelfContinuation")
+                ?: return SearchPage(emptyList())
+            shelves.add(shelfContinuation.optJSONArray("contents") ?: JSONArray())
+            nextToken = extractMusicShelfContinuationToken(shelfContinuation.optJSONArray("continuations"))
+        } else {
+            val sectionContents = response
+                .optJSONObject("contents")
+                ?.optJSONObject("tabbedSearchResultsRenderer")
+                ?.optJSONArray("tabs")
+                ?.optJSONObject(0)
+                ?.optJSONObject("tabRenderer")
+                ?.optJSONObject("content")
+                ?.optJSONObject("sectionListRenderer")
+                ?.optJSONArray("contents")
+                ?: return SearchPage(emptyList())
+
+            for (i in 0 until sectionContents.length()) {
+                val shelf = sectionContents.optJSONObject(i)?.optJSONObject("musicShelfRenderer") ?: continue
+                val shelfContents = shelf.optJSONArray("contents") ?: continue
+                shelves.add(shelfContents)
+                if (nextToken == null) {
+                    nextToken = extractMusicShelfContinuationToken(shelf.optJSONArray("continuations"))
+                }
+            }
+        }
+
+        for (shelfContents in shelves) {
+            for (j in 0 until shelfContents.length()) {
+                val item = shelfContents.optJSONObject(j)
+                    ?.optJSONObject("musicResponsiveListItemRenderer")
+                    ?: continue
+                if (item.optString("musicItemRendererDisplayPolicy") ==
+                    "MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT"
+                ) {
+                    continue
+                }
+
+                val name = extractMusicTextRun(
+                    item.optJSONArray("flexColumns")?.optJSONObject(0)
+                        ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                        ?.optJSONObject("text")
+                )?.takeIf { it.isNotBlank() } ?: continue
+
+                val browseId = item.optJSONObject("navigationEndpoint")
+                    ?.optJSONObject("browseEndpoint")
+                    ?.optString("browseId")
+                    ?.takeIf { it.startsWith("UC") }
+                    ?: continue
+                val channelUrl = "https://www.youtube.com/channel/$browseId"
+
+                // The subtitle runs look like ["Artist", " • ", "313m monthly audience"]
+                // or ["Artist", " • ", "350 subscribers"] or just ["Artist"].
+                val subtitleRuns = extractMusicTextRuns(
+                    item.optJSONArray("flexColumns")?.optJSONObject(1)
+                        ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                        ?.optJSONObject("text")
+                )
+                val lastRun = subtitleRuns.lastOrNull()?.trim().orEmpty()
+                var subscriberCount = -1L
+                var monthlyAudienceCount = -1L
+                if (lastRun.isNotEmpty()) {
+                    val lower = lastRun.lowercase()
+                    when {
+                        lower.contains("subscriber") ->
+                            subscriberCount = parseMusicCount(lastRun)
+                        lower.contains("monthly audience") ||
+                            lower.contains("monthly listener") ->
+                            monthlyAudienceCount = parseMusicCount(lastRun)
+                        else -> {
+                            // Unknown label (future wording) — treat as monthly
+                            // audience rather than asserting "subscribers".
+                            val parsed = parseMusicCount(lastRun)
+                            if (parsed >= 0) monthlyAudienceCount = parsed
+                        }
+                    }
+                }
+
+                val artworkUrl = CloudArtworkHelper.bestArtworkUrl(
+                    item.optJSONObject("thumbnail")
+                        ?.optJSONObject("musicThumbnailRenderer")
+                        ?.optJSONObject("thumbnail")
+                        ?.optJSONArray("thumbnails")
+                        ?.let { thumbnailsFromJsonArray(it) }
+                        ?: emptyList()
+                )
+
+                results.add(
+                    SearchResultItem.CloudArtistItem(
+                        CloudArtist(
+                            id = channelUrl.hashCode().toString(),
+                            url = channelUrl,
+                            name = name,
+                            subscriberCount = subscriberCount,
+                            monthlyAudienceCount = monthlyAudienceCount,
+                            artworkUrl = artworkUrl,
+                            isVerified = true, // artists on YT Music are verified
+                            provider = com.theveloper.pixeltune.data.model.CloudStreamProvider.YOUTUBE
+                        )
+                    )
+                )
+            }
+        }
+        return SearchPage(
+            results = results,
+            hasMore = nextToken != null,
+            continuation = nextToken?.let { RawMusicArtistsContinuation(it) }
+        )
+    }
+
+    /**
+     * IMPROVE(search-load-more): pulls the continuation token out of a music
+     * shelf's `continuations` array (`nextContinuationData.continuation`).
+     */
+    private fun extractMusicShelfContinuationToken(continuations: JSONArray?): String? {
+        if (continuations == null || continuations.length() == 0) return null
+        return continuations.optJSONObject(0)
+            ?.optJSONObject("nextContinuationData")
+            ?.optString("continuation")
+            ?.takeIf { it.isNotEmpty() }
+    }
+
+    /** Concatenated text of a YT Music text object ("runs" or "simpleText"). */
+    private fun extractMusicTextRun(textObj: JSONObject?): String? {
+        if (textObj == null) return null
+        textObj.optString("simpleText").takeIf { it.isNotEmpty() }?.let { return it }
+        val runs = textObj.optJSONArray("runs") ?: return null
+        val sb = StringBuilder()
+        for (i in 0 until runs.length()) {
+            sb.append(runs.optJSONObject(i)?.optString("text").orEmpty())
+        }
+        return sb.toString()
+    }
+
+    /** Individual run texts of a YT Music text object (label detection needs the LAST run alone). */
+    private fun extractMusicTextRuns(textObj: JSONObject?): List<String> {
+        if (textObj == null) return emptyList()
+        val runs = textObj.optJSONArray("runs") ?: return emptyList()
+        val out = ArrayList<String>(runs.length())
+        for (i in 0 until runs.length()) {
+            out.add(runs.optJSONObject(i)?.optString("text").orEmpty())
+        }
+        return out
+    }
+
+    /** Minimal (url) list built from a raw thumbnails JSON array (nanojson Image compat). */
+    private fun thumbnailsFromJsonArray(array: JSONArray): List<org.schabi.newpipe.extractor.Image> {
+        val out = ArrayList<org.schabi.newpipe.extractor.Image>(array.length())
+        for (i in 0 until array.length()) {
+            val thumb = array.optJSONObject(i) ?: continue
+            val url = thumb.optString("url").takeIf { it.isNotEmpty() } ?: continue
+            val height = thumb.optInt("height", -1)
+            val width = thumb.optInt("width", -1)
+            val resolutionLevel = when {
+                height >= 720 -> org.schabi.newpipe.extractor.Image.ResolutionLevel.HIGH
+                height in 1..719 -> org.schabi.newpipe.extractor.Image.ResolutionLevel.MEDIUM
+                else -> org.schabi.newpipe.extractor.Image.ResolutionLevel.UNKNOWN
+            }
+            out.add(
+                org.schabi.newpipe.extractor.Image(
+                    url,
+                    if (height > 0) height else org.schabi.newpipe.extractor.Image.HEIGHT_UNKNOWN,
+                    if (width > 0) width else org.schabi.newpipe.extractor.Image.WIDTH_UNKNOWN,
+                    resolutionLevel
+                )
+            )
+        }
+        return out
+    }
+
+    /**
+     * Parses a provider count string like "313m monthly audience",
+     * "63.2m monthly audience", "1.2K subscribers" or "1,234 subscribers"
+     * into its numeric value. Returns -1 when no number could be parsed.
+     */
+    private fun parseMusicCount(text: String): Long {
+        val cleaned = text.replace(",", "") // thousands separators ("1,234")
+        val match = Regex("([\\d]+(?:[.,][\\d]+)?)\\s*([KkMmBb])?").find(cleaned) ?: return -1L
+        val number = match.groupValues[1].replace(",", ".").toDoubleOrNull() ?: return -1L
+        val multiplier = when (match.groupValues[2].uppercase()) {
+            "K" -> 1_000.0
+            "M" -> 1_000_000.0
+            "B" -> 1_000_000_000.0
+            else -> 1.0
+        }
+        val value = number * multiplier
+        if (value < 0 || value > 1e12 || !value.isFinite()) return -1L
+        return value.toLong()
     }
 
     /**
@@ -910,6 +1445,12 @@ class YouTubeRepository @Inject constructor() {
             Result.success(
                 CloudTracksPage(
                     songs = songs,
+                    // FIX(youtube-subscriber-count): Topic channels report no
+                    // subscriber count of their own — surface the metrics the
+                    // search result already carried (subscriber count when the
+                    // provider labeled it as such, otherwise the monthly
+                    // audience) instead of leaving the header blank.
+                    refreshedSubtitle = artistAudienceSubtitle(artist),
                     hasMore = resultPage.nextPage != null,
                     continuation = resultPage.nextPage?.let {
                         ArtistSearchContinuation(it)
@@ -919,6 +1460,37 @@ class YouTubeRepository @Inject constructor() {
         } catch (e: Exception) {
             Timber.e(e, "YT Music songs search for artist '%s' failed", artist.name)
             Result.failure(e)
+        }
+    }
+
+    /**
+     * FIX(youtube-subscriber-count): the audience subtitle for an artist whose
+     * tracks came from the songs-search tier — "28.6M subscribers" when the
+     * provider labeled the count as subscribers, otherwise "313M monthly
+     * listeners" (the honest label for YouTube Music's monthly-audience
+     * metric). Null when neither metric is known.
+     */
+    private fun artistAudienceSubtitle(artist: CloudArtist): String? {
+        if (artist.subscriberCount >= 0) {
+            return formatSubscriberCount(artist.subscriberCount)
+        }
+        if (artist.monthlyAudienceCount >= 0) {
+            return formatMonthlyAudienceCount(artist.monthlyAudienceCount)
+        }
+        return null
+    }
+
+    /** FIX(youtube-subscriber-count): "313M monthly listeners" style subtitle. */
+    private fun formatMonthlyAudienceCount(count: Long): String? {
+        if (count < 0) return null
+        return when {
+            count >= 1_000_000L -> {
+                val v = count / 1_000_000L
+                val frac = (count % 1_000_000L) / 100_000L
+                if (frac > 0) "$v.${frac}M monthly listeners" else "$v M monthly listeners"
+            }
+            count >= 1_000L -> "${count / 1_000L}K monthly listeners"
+            else -> "$count monthly listeners"
         }
     }
 
@@ -1012,6 +1584,25 @@ class YouTubeRepository @Inject constructor() {
     companion object {
         /** 20 minutes — upper bound for what still counts as a single song. */
         private const val MAX_RADIO_CANDIDATE_DURATION_SECONDS = 20 * 60
+
+        /**
+         * FIX(youtube-subscriber-count): the WEB_REMIX client version used by
+         * the RAW YT Music artists search. Mirrors NewPipe v0.26.3's
+         * WEB_REMIX_HARDCODED_CLIENT_VERSION (the same version the app's
+         * NewPipe requests already send, live-verified working); when YouTube
+         * stops accepting it, [postYouTubeMusicSearch] re-discovers the
+         * current version from music.youtube.com/sw.js and retries once.
+         */
+        private const val HARDCODED_WEB_REMIX_CLIENT_VERSION = "1.20260121.03.00"
+
+        /** FIX(youtube-subscriber-count): MUSIC_ARTISTS search params (same token NewPipe sends). */
+        private const val MUSIC_ARTISTS_SEARCH_PARAMS =
+            "Eg-KAQwIABAAGAAgASgAMABqChAEEAUQAxAKEAk%3D"
+
+        /** FIX(youtube-subscriber-count): browser UA for the raw YT Music requests. */
+        private const val MUSIC_SEARCH_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
         /**
          * Decoration words stripped (as whole words) before comparing

@@ -6,6 +6,7 @@ import com.theveloper.pixeltune.data.model.CloudStreamProvider
 import com.theveloper.pixeltune.data.model.CloudTracksPage
 import com.theveloper.pixeltune.data.model.SearchResultItem
 import com.theveloper.pixeltune.data.model.SearchFilterType
+import com.theveloper.pixeltune.data.model.SearchPage
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.preferences.StreamingQuality
 import com.theveloper.pixeltune.data.stream.CloudArtworkHelper
@@ -204,7 +205,20 @@ class SoundCloudRepository @Inject constructor() {
         }
     }
 
-    suspend fun searchSoundCloud(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): List<SearchResultItem> = withContext(Dispatchers.IO) {
+    suspend fun searchSoundCloud(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): List<SearchResultItem> {
+        // IMPROVE(search-load-more): the plain List-shaped entry point kept for
+        // existing callers — the search UI uses the paginated
+        // [searchSoundCloudPaged] variant.
+        return searchSoundCloudPaged(query, filter, proxyUrlProvider).results
+    }
+
+    /**
+     * IMPROVE(search-load-more): the PAGED SoundCloud search — one page of
+     * results plus the provider's continuation token, so the search screen can
+     * offer "Load more" on EVERY filter chip (All / Songs / Albums / Artists /
+     * Playlists).
+     */
+    suspend fun searchSoundCloudPaged(query: String, filter: SearchFilterType = SearchFilterType.ALL, proxyUrlProvider: (String) -> String): SearchPage = withContext(Dispatchers.IO) {
         try {
             val searchFilter = when (filter) {
                 SearchFilterType.ALL -> ""
@@ -214,17 +228,107 @@ class SoundCloudRepository @Inject constructor() {
                 SearchFilterType.PLAYLISTS -> "playlists"
             }
 
+            val page = performSoundCloudSearch(query, searchFilter, filter, proxyUrlProvider)
+            SearchPage(
+                results = page.results,
+                hasMore = page.hasMore,
+                continuation = page.continuation
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Error searching SoundCloud for query: $query")
+            SearchPage(emptyList())
+        }
+    }
+
+    /**
+     * IMPROVE(search-load-more): loads the NEXT page of a SoundCloud search
+     * started by [searchSoundCloudPaged] — [previousPage] is the page the UI
+     * holds; its continuation token is the opaque NewPipe `Page` this
+     * repository produced.
+     */
+    suspend fun getMoreSoundCloudSearchResults(
+        query: String,
+        filter: SearchFilterType,
+        previousPage: SearchPage,
+        proxyUrlProvider: (String) -> String
+    ): SearchPage = withContext(Dispatchers.IO) {
+        val continuation = previousPage.continuation as? org.schabi.newpipe.extractor.Page
+            ?: return@withContext SearchPage(emptyList())
+        try {
+            val searchFilter = when (filter) {
+                SearchFilterType.ALL -> ""
+                SearchFilterType.SONGS -> "tracks"
+                SearchFilterType.ALBUMS -> "playlists"
+                SearchFilterType.ARTISTS -> "users"
+                SearchFilterType.PLAYLISTS -> "playlists"
+            }
             val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
                 ServiceList.SoundCloud.getSearchExtractor(query, listOf(searchFilter), "")
             } else {
                 ServiceList.SoundCloud.getSearchExtractor(query)
             }
-
             extractor.fetchPage()
+            val next = extractor.getPage(continuation)
+            SearchPage(
+                results = mapSoundCloudSearchItems(
+                    items = next.items,
+                    filter = filter,
+                    proxyUrlProvider = proxyUrlProvider
+                ),
+                hasMore = next.nextPage != null,
+                continuation = next.nextPage
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Error continuing SoundCloud search for query: $query")
+            SearchPage(emptyList())
+        }
+    }
 
-            val results = mutableListOf<SearchResultItem>()
+    /**
+     * IMPROVE(search-load-more): runs one NewPipe SoundCloud search page
+     * (initial page only — continuations go through
+     * [getMoreSoundCloudSearchResults]) and maps the raw items for the
+     * requested UI [filter].
+     */
+    private fun performSoundCloudSearch(
+        query: String,
+        searchFilter: String,
+        filter: SearchFilterType,
+        proxyUrlProvider: (String) -> String
+    ): SearchPage {
+        val extractor: SearchExtractor = if (searchFilter.isNotEmpty()) {
+            ServiceList.SoundCloud.getSearchExtractor(query, listOf(searchFilter), "")
+        } else {
+            ServiceList.SoundCloud.getSearchExtractor(query)
+        }
 
-            extractor.initialPage.items.forEach { item ->
+        extractor.fetchPage()
+
+        val initialPage = extractor.initialPage
+        return SearchPage(
+            results = mapSoundCloudSearchItems(
+                items = initialPage.items,
+                filter = filter,
+                proxyUrlProvider = proxyUrlProvider
+            ),
+            hasMore = initialPage.nextPage != null,
+            continuation = initialPage.nextPage
+        )
+    }
+
+    /**
+     * IMPROVE(search-load-more): maps raw NewPipe SoundCloud search [items] to
+     * [SearchResultItem]s — shared by the initial page and every "Load more"
+     * continuation page so both map identically.
+     */
+    private fun mapSoundCloudSearchItems(
+        items: List<org.schabi.newpipe.extractor.InfoItem>,
+        filter: SearchFilterType,
+        proxyUrlProvider: (String) -> String
+    ): List<SearchResultItem> {
+        val results = mutableListOf<SearchResultItem>()
+
+        items.forEach { item ->
                 when (item) {
                     is StreamInfoItem -> {
                         if (filter == SearchFilterType.ALL || filter == SearchFilterType.SONGS) {
@@ -325,11 +429,7 @@ class SoundCloudRepository @Inject constructor() {
                     }
                 }
             }
-            results
-        } catch (e: Exception) {
-            Timber.e(e, "Error searching SoundCloud for query: $query")
-            emptyList()
-        }
+        return results
     }
 
     /**

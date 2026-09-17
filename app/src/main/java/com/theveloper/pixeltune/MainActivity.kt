@@ -635,7 +635,19 @@ class MainActivity : ComponentActivity() {
                 Screen.DelimiterConfig.route,
                 Screen.PaletteStyle.route,
                 Screen.RecentlyPlayed.route,
-                Screen.DeviceCapabilities.route
+                Screen.DeviceCapabilities.route,
+                // FIX(cloud-load-more-visibility): the cloud catalog detail
+                // screen (online playlists / albums / artists opened from the
+                // online search's filter chips) is a DETAIL screen exactly
+                // like AlbumDetail / ArtistDetail / PlaylistDetail — but its
+                // route was missing from this list, so the bottom navigation
+                // bar stayed visible and overlapped the bottom of the track
+                // list, covering the "Load more tracks" button (unreachable
+                // behind the nav bar AND the miniplayer). Hiding the nav bar
+                // here matches the other detail screens and frees the full
+                // bottom area; the screen's list padding already reserves the
+                // miniplayer space.
+                Screen.CloudCatalog.route
             )
         }
         val shouldHideNavigationBar by remember(currentRoute, isSearchBarActive) {

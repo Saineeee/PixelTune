@@ -426,9 +426,33 @@ fun PlaylistItem(
                             modifier = Modifier.size(18.dp)
                         )
                     }
+                    // IMPROVE(cloud-playlist-import): playlists imported from an
+                    // online cloud streaming provider carry a provider badge so
+                    // the user can see WHERE each playlist came from (YouTube /
+                    // SoundCloud).
+                    if (playlist.source == "YOUTUBE") {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            painter = painterResource(R.drawable.ic_youtube_provider),
+                            contentDescription = "Imported from YouTube",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    if (playlist.source == "SOUNDCLOUD") {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            painter = painterResource(R.drawable.ic_soundcloud_provider),
+                            contentDescription = "Imported from SoundCloud",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
                 Text(
-                    text = "${playlist.songIds.size} Songs",
+                    // IMPROVE(cloud-playlist-import): imported playlists say
+                    // which cloud streaming provider they came from.
+                    text = playlistSourceSubtitle(playlist),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -574,5 +598,21 @@ fun CreatePlaylistDialogRedesigned(
                 }
             }
         }
+    }
+}
+
+/**
+ * IMPROVE(cloud-playlist-import): subtitle of a library playlist row.
+ *
+ * Playlists imported from an online cloud streaming provider explicitly name
+ * that provider ("12 Songs • from YouTube") so the user can always tell where
+ * a playlist came from; everything else keeps the plain "N Songs" label.
+ */
+private fun playlistSourceSubtitle(playlist: Playlist): String {
+    val songCount = if (playlist.songIds.size == 1) "1 Song" else "${playlist.songIds.size} Songs"
+    return when (playlist.source) {
+        "YOUTUBE" -> "$songCount • from YouTube"
+        "SOUNDCLOUD" -> "$songCount • from SoundCloud"
+        else -> songCount
     }
 }

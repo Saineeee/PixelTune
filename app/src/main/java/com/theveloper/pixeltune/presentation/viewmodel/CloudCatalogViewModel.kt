@@ -300,11 +300,12 @@ class CloudCatalogViewModel @Inject constructor(
             }
             current.artist != null -> {
                 val provider = providerLabel(current.artist.provider)
-                val followers = refreshed ?: formatCount(
-                    current.artist.subscriberCount,
-                    followerUnitFor(current.artist.provider)
-                )
-                return if (followers != null) "$provider • $followers" else provider
+                // FIX(youtube-subscriber-count): prefer the extraction-refreshed
+                // label (real channel subscriber count when available), falling
+                // back to the search-time metrics with honest labels (never
+                // mislabeling the monthly-audience metric as subscribers).
+                val audience = refreshed ?: artistAudienceLabel(current.artist)
+                return if (audience != null) "$provider • $audience" else provider
             }
             else -> current.headerSubtitle
         }
@@ -318,8 +319,31 @@ class CloudCatalogViewModel @Inject constructor(
 
     private fun buildArtistSubtitle(artist: CloudArtist): String {
         val provider = providerLabel(artist.provider)
-        val followers = formatCount(artist.subscriberCount, followerUnitFor(artist.provider))
-        return if (followers != null) "$provider • $followers" else provider
+        val audience = artistAudienceLabel(artist)
+        return if (audience != null) "$provider • $audience" else provider
+    }
+
+    /**
+     * FIX(youtube-subscriber-count): the audience label for an artist header.
+     *
+     * YouTube Music artist search now reports a "monthly audience" metric
+     * (monthly listeners) instead of subscriber counts for artist entries,
+     * which NewPipe misparses into `subscriberCount` — the header then showed
+     * e.g. "313M subscribers" for Coldplay (real channel count: ~28.6M). The
+     * repository keeps the metrics apart now, so:
+     *   - "28.6M subscribers" is shown ONLY when the provider labeled the
+     *     count as subscribers/followers;
+     *   - "313M monthly listeners" otherwise (the honest label — exactly what
+     *     YouTube Music itself shows on artist search results).
+     */
+    private fun artistAudienceLabel(artist: CloudArtist): String? {
+        if (artist.subscriberCount >= 0) {
+            return formatCount(artist.subscriberCount, followerUnitFor(artist.provider))
+        }
+        if (artist.monthlyAudienceCount >= 0) {
+            return formatCount(artist.monthlyAudienceCount, "monthly listeners")
+        }
+        return null
     }
 
     private fun providerLabel(provider: CloudStreamProvider): String =
