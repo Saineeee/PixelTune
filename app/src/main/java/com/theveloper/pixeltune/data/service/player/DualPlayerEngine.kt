@@ -101,7 +101,25 @@ class DualPlayerEngine @Inject constructor(
     var userVolume: Float = 1f
 
     private lateinit var playerA: ExoPlayer
-    private lateinit var playerB: ExoPlayer
+
+    // PERF(startup/memory): player B exists ONLY for crossfade transitions, but
+    // it used to be built eagerly at app start (init{} -> initialize() built
+    // BOTH players) — a full ExoPlayer construction (renderers factory, codec
+    // enumeration, loader threads) before any playback, held forever even for
+    // users who never enable crossfade. It is now created on first use
+    // (prepareNext / performOverlapTransition) and dropped after each
+    // transition instead of being immediately rebuilt: the next prepareNext()
+    // constructs a FRESH player on demand, which preserves the "fresh
+    // player" OEM-stale-session workaround while releasing the second
+    // player's threads/buffers between transitions.
+    //
+    // All access happens on the main thread (engine scope is Main; the audio
+    // focus listener and Hilt construction also run on main).
+    @Volatile
+    private var playerBInstance: ExoPlayer? = null
+
+    private val playerB: ExoPlayer
+        get() = playerBInstance ?: buildPlayer(handleAudioFocus = false).also { playerBInstance = it }
 
     private val onPlayerSwappedListeners = mutableListOf<(Player) -> Unit>()
     
@@ -120,21 +138,21 @@ class DualPlayerEngine @Inject constructor(
                 Timber.tag("TransitionDebug").d("AudioFocus LOSS. Pausing.")
                 isFocusLossPause = false
                 playerA.playWhenReady = false
-                playerB.playWhenReady = false
+                playerBInstance?.playWhenReady = false
                 abandonAudioFocus()
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 Timber.tag("TransitionDebug").d("AudioFocus LOSS_TRANSIENT. Pausing.")
                 isFocusLossPause = true
                 playerA.playWhenReady = false
-                playerB.playWhenReady = false
+                playerBInstance?.playWhenReady = false
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
                 Timber.tag("TransitionDebug").d("AudioFocus GAIN. Resuming if paused by loss.")
                 if (isFocusLossPause) {
                     isFocusLossPause = false
                     playerA.playWhenReady = true
-                    if (transitionRunning) playerB.playWhenReady = true
+                    if (transitionRunning) playerBInstance?.playWhenReady = true
                 }
             }
         }
@@ -245,14 +263,13 @@ class DualPlayerEngine @Inject constructor(
         if (::playerA.isInitialized) {
             try { playerA.release() } catch (e: Exception) { /* Ignore */ }
         }
-        if (::playerB.isInitialized) {
-            try { playerB.release() } catch (e: Exception) { /* Ignore */ }
-        }
+        try { playerBInstance?.release() } catch (e: Exception) { /* Ignore */ }
+        playerBInstance = null
 
         // We initialize BOTH players with NO internal focus handling.
         // We manage Audio Focus manually via AudioFocusManager.
+        // (Player B is NOT built here — see the lazy playerB getter above.)
         playerA = buildPlayer(handleAudioFocus = false)
-        playerB = buildPlayer(handleAudioFocus = false)
 
         // Attach listener to initial master
         playerA.addListener(masterPlayerListener)
@@ -704,10 +721,12 @@ class DualPlayerEngine @Inject constructor(
     fun cancelNext() {
         transitionJob?.cancel()
         transitionRunning = false
-        if (playerB.mediaItemCount > 0) {
+        // PERF: nullable access — must not lazily create player B just to
+        // discover there is nothing to cancel.
+        playerBInstance?.takeIf { it.mediaItemCount > 0 }?.let { b ->
             Timber.tag("TransitionDebug").d("Engine: Cancelling next player")
-            playerB.stop()
-            playerB.clearMediaItems()
+            b.stop()
+            b.clearMediaItems()
         }
         // Ensure master player is at the user's selected volume if we cancel
         // and reset the transition machinery (was a hardcoded 1f reset —
@@ -732,7 +751,7 @@ class DualPlayerEngine @Inject constructor(
                 // Fallback: Restore the user's volume and reset logic
                 playerA.volume = userVolume
                 setPauseAtEndOfMediaItems(false)
-                playerB.stop()
+                playerBInstance?.stop()
             } finally {
                 transitionRunning = false
             }
@@ -742,7 +761,7 @@ class DualPlayerEngine @Inject constructor(
     private suspend fun performOverlapTransition(settings: TransitionSettings) {
         Timber.tag("TransitionDebug").d("Starting Overlap/Crossfade. Duration: %d ms", settings.durationMs)
 
-        if (playerB.mediaItemCount == 0) {
+        if (playerBInstance?.mediaItemCount ?: 0 == 0) {
             Timber.tag("TransitionDebug").w("Skipping overlap - next player not prepared (count=0)")
             playerA.volume = userVolume
             setPauseAtEndOfMediaItems(false)
@@ -840,7 +859,7 @@ class DualPlayerEngine @Inject constructor(
 
         // 4. Swap References
         playerA = incomingPlayer
-        playerB = outgoingPlayer
+        playerBInstance = outgoingPlayer
         
         // Critical: Reset pauseAtEndOfMediaItems on both players after swap.
         // The outgoing player (now B) had pauseAtEndOfMediaItems=true set before the transition started.
@@ -923,10 +942,14 @@ class DualPlayerEngine @Inject constructor(
         playerB.stop()
         playerB.clearMediaItems()
 
-        // Fresh Player Strategy: Release and recreate playerB to avoid OEM "stale session" tracking
+        // Fresh Player Strategy — release the outgoing player and drop the slot;
+        // the next prepareNext() lazily builds a FRESH replacement, preserving the
+        // OEM "stale session" workaround while releasing the second player's
+        // threads/buffers between transitions (it used to be rebuilt immediately
+        // and then sit idle).
         playerB.release()
-        playerB = buildPlayer(handleAudioFocus = false)
-        Timber.tag("TransitionDebug").d("Old Player (B) released and recreated fresh.")
+        playerBInstance = null
+        Timber.tag("TransitionDebug").d("Old Player (B) released; will be rebuilt on next prepareNext().")
 
         // Ensure New Player (A) is fully active and unrestricted
         setPauseAtEndOfMediaItems(false)
@@ -1008,7 +1031,8 @@ class DualPlayerEngine @Inject constructor(
             playerA.removeListener(masterPlayerListener)
             playerA.release()
         }
-        if (::playerB.isInitialized) playerB.release()
+        try { playerBInstance?.release() } catch (e: Exception) { /* already released */ }
+        playerBInstance = null
         isReleased = true
     }
 }
