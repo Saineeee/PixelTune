@@ -121,7 +121,9 @@ import com.theveloper.pixeltune.utils.CrashHandler
 import com.theveloper.pixeltune.utils.LogUtils
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.collections.immutable.persistentListOf
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -273,8 +275,16 @@ class MainActivity : ComponentActivity() {
 
             // Check for crash log when app starts
             LaunchedEffect(Unit) {
-                if (!isBenchmarkMode && CrashHandler.hasCrashLog()) {
-                    crashLogData = CrashHandler.getCrashLog()
+                // PERF(startup): hasCrashLog()/getCrashLog() are synchronous
+                // SharedPreferences disk reads — moved off the main thread (they
+                // ran on main during the first composition).
+                val crashLog = withContext(Dispatchers.IO) {
+                    if (!isBenchmarkMode && CrashHandler.hasCrashLog()) {
+                        CrashHandler.getCrashLog()
+                    } else null
+                }
+                if (crashLog != null) {
+                    crashLogData = crashLog
                     showCrashReportDialog = true
                 }
             }

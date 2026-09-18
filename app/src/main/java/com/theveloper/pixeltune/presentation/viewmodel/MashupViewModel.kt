@@ -119,9 +119,15 @@ class MashupViewModel @Inject constructor(
         progressJob?.cancel()
         progressJob = viewModelScope.launch {
             while (isActive) {
-                updateDeckState(1) { it.copy(progress = deck1Controller.getProgress()) }
-                updateDeckState(2) { it.copy(progress = deck2Controller.getProgress()) }
-                delay(100)
+                // PERF(battery): only poll while a deck is actually audible — the
+                // 10 Hz loop used to run free while the screen sat idle with both
+                // decks paused, waking the CPU 10x/second for identical values.
+                val anyPlaying = _uiState.value.deck1.isPlaying || _uiState.value.deck2.isPlaying
+                if (anyPlaying) {
+                    updateDeckState(1) { it.copy(progress = deck1Controller.getProgress()) }
+                    updateDeckState(2) { it.copy(progress = deck2Controller.getProgress()) }
+                }
+                delay(if (anyPlaying) 100 else 500)
             }
         }
     }

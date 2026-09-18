@@ -59,8 +59,13 @@ fun PlayingEqIcon(
         }
     }
 
-    val phase = phaseAnim.value
-    val wander = wanderAnim.value
+    // PERF(recomposition): phase/wander are read inside the Canvas draw
+    // lambda (draw-phase observation) instead of in composition. Reading
+    // Animatable.value here used to recompose this composable at the
+    // animation frame rate (60 Hz) wherever the “now playing” icon is shown
+    // (song rows, queue, home, lyrics). Now the animation only invalidates
+    // the draw pass.
+    // (activity is likewise only read inside the draw lambda below.)
 
     // Factor de actividad: 1 = barras, 0 = puntitos (morph suave)
     val activity by animateFloatAsState(
@@ -74,6 +79,8 @@ fun PlayingEqIcon(
     val shifts = remember(bars) { List(bars) { i -> i * 0.9f } }
 
     Canvas(modifier = modifier) {
+        val phase = phaseAnim.value
+        val wander = wanderAnim.value
         val w = size.width
         val h = size.height
 
