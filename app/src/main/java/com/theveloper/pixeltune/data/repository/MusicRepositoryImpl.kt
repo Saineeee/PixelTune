@@ -647,11 +647,10 @@ class MusicRepositoryImpl @Inject constructor(
      */
     private suspend fun ensureCloudSongRow(song: Song, id: Long) {
         // ---- Resolve artist (merge with existing by name, else synthetic) ----
+        // PERF: was getAllArtistsListRaw() — loaded EVERY artist row (mapped to
+        // entities) per cloud-song like, just to find one name match.
         val artistName = song.artist.trim().ifBlank { "Unknown Artist" }
-        val existingArtists = musicDao.getAllArtistsListRaw()
-        val existingArtist = existingArtists.firstOrNull {
-            it.name.trim().equals(artistName, ignoreCase = true)
-        }
+        val existingArtist = musicDao.findArtistByNameTrimmed(artistName)
         val artistId = existingArtist?.id
             ?: com.theveloper.pixeltune.utils.CloudUriUtils.stableSyntheticIdFromName(artistName)
         if (existingArtist == null) {
@@ -670,13 +669,10 @@ class MusicRepositoryImpl @Inject constructor(
         // YouTube/SoundCloud search results have no album information; all such
         // likes are grouped under a single shared "Online Favorites" album so the
         // Albums tab stays tidy.
+        // PERF: was getAllAlbumsList(emptyList(), false) — loaded EVERY album
+        // (mapped to entities) per cloud-song like.
         val albumName = song.album.trim().ifBlank { "Online Favorites" }
-        val existingAlbums = musicDao.getAllAlbumsList(emptyList(), false)
-        val existingAlbum = existingAlbums.firstOrNull {
-            it.title.trim().equals(albumName, ignoreCase = true) &&
-                (it.artistName?.trim()?.equals(artistName, ignoreCase = true) == true ||
-                    albumName.equals("Online Favorites", ignoreCase = true))
-        }
+        val existingAlbum = musicDao.findAlbumWithTitleAndArtist(albumName, artistName)
         val albumId = existingAlbum?.id
             ?: com.theveloper.pixeltune.utils.CloudUriUtils.stableSyntheticIdFromName(
                 "${albumName}_$artistName"

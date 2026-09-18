@@ -730,6 +730,38 @@ interface MusicDao {
     @Query("SELECT * FROM artists ORDER BY name ASC")
     suspend fun getAllArtistsListRaw(): List<ArtistEntity>
 
+    /**
+     * Trimmed, case-insensitive exact artist lookup (first by name order).
+     * PERF: used by ensureCloudSongRow instead of loading ALL artists into
+     * memory per cloud-song like. TRIM mirrors the previous in-Kotlin
+     * `name.trim().equals(..., ignoreCase = true)` comparison exactly.
+     */
+    @Query("SELECT * FROM artists WHERE TRIM(name) = :name COLLATE NOCASE ORDER BY name ASC LIMIT 1")
+    suspend fun findArtistByNameTrimmed(name: String): ArtistEntity?
+
+    /**
+     * Trimmed, case-insensitive album lookup by title + artist, restricted to
+     * albums that have at least one song (INNER JOIN songs) — mirroring
+     * getAllAlbumsList's row set, which ensureCloudSongRow previously scanned
+     * in full per cloud-song like. The 'Online Favorites' escape hatch matches
+     * the previous in-Kotlin condition.
+     */
+    @Query("""
+        SELECT DISTINCT albums.* FROM albums
+        INNER JOIN songs ON albums.id = songs.album_id
+        WHERE TRIM(albums.title) = :albumName COLLATE NOCASE
+          AND (
+              TRIM(albums.artist_name) = :artistName COLLATE NOCASE
+              OR :albumName = 'Online Favorites' COLLATE NOCASE
+          )
+        ORDER BY albums.title ASC
+        LIMIT 1
+    """)
+    suspend fun findAlbumWithTitleAndArtist(
+        albumName: String,
+        artistName: String
+    ): com.theveloper.pixeltune.data.database.AlbumEntity?
+
     @Query("""
         SELECT artists.id, artists.name, artists.image_url, artists.custom_image_uri,
                COUNT(DISTINCT songs.id) AS track_count
