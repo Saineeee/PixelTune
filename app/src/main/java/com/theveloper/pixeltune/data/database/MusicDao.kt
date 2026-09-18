@@ -293,6 +293,26 @@ interface MusicDao {
     @Query("SELECT COUNT(*) FROM songs")
     fun getSongCount(): Flow<Int>
 
+    /**
+     * Cheap emptiness check for the (optionally directory-filtered) library.
+     *
+     * Mirrors the row set of [getAllSongs] (cloud songs with negative ids bypass
+     * the directory filter) without materializing any entities. Used for the
+     * startup "library empty" gate instead of mapping the whole table to
+     * List<Song> just to check isEmpty().
+     */
+    @Query("""
+        SELECT NOT EXISTS(
+            SELECT 1 FROM songs
+            WHERE (:applyDirectoryFilter = 0 OR id < 0 OR parent_directory_path IN (:allowedParentDirs))
+            LIMIT 1
+        )
+    """)
+    fun isLibraryEmpty(
+        allowedParentDirs: List<String> = emptyList(),
+        applyDirectoryFilter: Boolean = false
+    ): Flow<Boolean>
+
     @Query("SELECT COUNT(*) FROM songs")
     suspend fun getSongCountOnce(): Int
 

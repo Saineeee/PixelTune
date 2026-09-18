@@ -176,6 +176,30 @@ class MusicRepositoryImpl @Inject constructor(
         return musicDao.getSongCount()
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun isLibraryEmptyFlow(): Flow<Boolean> {
+        // Same allowed/blocked directory combination as getAudioFiles(), but the
+        // terminal query is a SELECT EXISTS — no full-table read, no per-row
+        // SongEntity.toSong() mapping, on every songs-table invalidation.
+        return combine(
+            userPreferencesRepository.allowedDirectoriesFlow,
+            userPreferencesRepository.blockedDirectoriesFlow
+        ) { allowedDirs, blockedDirs ->
+            allowedDirs to blockedDirs
+        }.flatMapLatest { (allowedDirs, blockedDirs) ->
+            flow {
+                val (allowedParentDirs, applyDirectoryFilter) =
+                    computeAllowedDirs(allowedDirs, blockedDirs)
+                emit(
+                    musicDao.isLibraryEmpty(
+                        allowedParentDirs = allowedParentDirs,
+                        applyDirectoryFilter = applyDirectoryFilter
+                    )
+                )
+            }.flatMapLatest { it }
+        }.flowOn(Dispatchers.IO)
+    }
+
     override suspend fun getRandomSongs(limit: Int): List<Song> = withContext(Dispatchers.IO) {
         // Use DAO's optimized random query with filter support
         val allowed = userPreferencesRepository.allowedDirectoriesFlow.first()

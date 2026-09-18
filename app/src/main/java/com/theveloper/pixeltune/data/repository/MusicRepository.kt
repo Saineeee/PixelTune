@@ -57,6 +57,14 @@ interface MusicRepository {
     fun getSongCountFlow(): Flow<Int>
 
     /**
+     * Cheap reactive emptiness check of the (directory-filtered) library.
+     *
+     * Same row set as [getAudioFiles] but via SELECT EXISTS — no entity
+     * mapping. Use instead of `getAudioFiles().map { it.isEmpty() }`.
+     */
+    fun isLibraryEmptyFlow(): Flow<Boolean>
+
+    /**
      * Returns a random selection of songs for efficient shuffle.
      * Uses database-level RANDOM() for performance.
      * @param limit Maximum number of songs to return.

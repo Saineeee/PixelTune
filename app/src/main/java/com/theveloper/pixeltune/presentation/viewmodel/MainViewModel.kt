@@ -62,10 +62,13 @@ class MainViewModel @Inject constructor(
     /**
      * Un Flow que emite `true` si la base de datos de Room no tiene canciones.
      * Nos ayuda a saber si es la primera vez que se abre la app.
+     *
+     * Uses the cheap SELECT EXISTS DAO query — mapping the whole library to
+     * List<Song> just to call isEmpty() cost a full-table read + one Song
+     * allocation per row at startup and on every songs-table change.
      */
     val isLibraryEmpty: StateFlow<Boolean> = musicRepository
-        .getAudioFiles()
-        .map { it.isEmpty() }
+        .isLibraryEmptyFlow()
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
