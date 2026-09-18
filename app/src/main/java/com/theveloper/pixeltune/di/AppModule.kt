@@ -534,8 +534,17 @@ object AppModule {
     @Singleton
     @FastOkHttpClient
     fun provideFastOkHttpClient(): OkHttpClient {
+        // PERF: gate on DEBUG like every other client in this module. Logging
+        // HEADERS in release builds costs a formatted String per request and
+        // leaks request metadata to logcat.
         val loggingInterceptor = HttpLoggingInterceptor()
-        loggingInterceptor.setLevel(HttpLoggingInterceptor.Level.HEADERS)
+        loggingInterceptor.setLevel(
+            if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.HEADERS
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
+        )
         
         // Connection pool to reuse connections for better performance
         val connectionPool = okhttp3.ConnectionPool(

@@ -26,6 +26,7 @@ import kotlin.text.get
 import kotlin.text.set
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -979,8 +980,14 @@ constructor(
             }
 
     val userPlaylistsFlow: Flow<List<Playlist>> =
-            dataStore.data.map { preferences ->
-                val jsonString = preferences[PreferencesKeys.USER_PLAYLISTS]
+            dataStore.data.map { preferences -> preferences[PreferencesKeys.USER_PLAYLISTS] }
+            // PERF: DataStore re-emits the whole preferences map on ANY write
+            // (volume change, play count, settings toggles...). Without this guard
+            // every unrelated preference write re-parsed the full playlists JSON
+            // and re-emitted a fresh List<Playlist> to every collector. Compare the
+            // serialized string first; only decode when the playlists actually changed.
+            .distinctUntilChanged()
+            .map { jsonString ->
                 if (jsonString != null) {
                     try {
                         json.decodeFromString<List<Playlist>>(jsonString)
