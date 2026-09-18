@@ -82,13 +82,28 @@ class MusicRepositoryImpl @Inject constructor(
     private val musicDao: MusicDao,
     private val lyricsRepository: LyricsRepository,
     private val telegramDao: TelegramDao,
-    private val telegramCacheManager: com.theveloper.pixeltune.data.telegram.TelegramCacheManager,
-    override val telegramRepository: com.theveloper.pixeltune.data.telegram.TelegramRepository,
+    // PERF(startup): both Telegram dependencies sit on the TDLib native chain
+    // (TelegramCacheManager / TelegramRepository -> TelegramClientManager ->
+    // System.loadLibrary("tdjni") + Client.create()). Injecting them directly
+    // made MainViewModel's construction — which runs on the MAIN thread before
+    // the first frame — load TDLib and start its threads there, defeating the
+    // Application's dagger.Lazy deferral. dagger.Lazy keeps the public
+    // `telegramRepository` property working for callers while deferring the
+    // native init to first actual Telegram use (the Application's IO-dispatcher
+    // proxy start still owns the warmup).
+    private val telegramCacheManagerLazy: dagger.Lazy<com.theveloper.pixeltune.data.telegram.TelegramCacheManager>,
+    private val telegramRepositoryLazy: dagger.Lazy<com.theveloper.pixeltune.data.telegram.TelegramRepository>,
     private val songRepository: SongRepository,
     private val favoritesDao: FavoritesDao,
     private val artistImageRepository: ArtistImageRepository,
     private val folderTreeBuilder: FolderTreeBuilder
 ) : MusicRepository {
+
+    private val telegramCacheManager: com.theveloper.pixeltune.data.telegram.TelegramCacheManager
+        get() = telegramCacheManagerLazy.get()
+
+    override val telegramRepository: com.theveloper.pixeltune.data.telegram.TelegramRepository
+        get() = telegramRepositoryLazy.get()
 
     companion object {
         /** Maximum number of search results to load at once to avoid memory issues with large libraries. */

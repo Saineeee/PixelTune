@@ -63,10 +63,17 @@ import java.io.File
 @Singleton
 class DualPlayerEngine @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val telegramRepository: TelegramRepository,
-    private val telegramStreamProxy: com.theveloper.pixeltune.data.telegram.TelegramStreamProxy,
+    // PERF(startup): the three Telegram dependencies below sit on the TDLib
+    // native chain (System.loadLibrary("tdjni") + Client.create() in
+    // TelegramClientManager). DualPlayerEngine is constructed by the first
+    // PlayerViewModel BEFORE the first frame; direct injection loaded TDLib on
+    // the main thread at startup. They are now lazy — resolved at first actual
+    // Telegram playback use, by which time the Application's IO-dispatcher
+    // proxy start has already constructed the chain off the main thread.
+    private val telegramRepositoryLazy: dagger.Lazy<TelegramRepository>,
+    private val telegramStreamProxyLazy: dagger.Lazy<com.theveloper.pixeltune.data.telegram.TelegramStreamProxy>,
     private val neteaseStreamProxy: NeteaseStreamProxy,
-    private val telegramCacheManager: com.theveloper.pixeltune.data.telegram.TelegramCacheManager,
+    private val telegramCacheManagerLazy: dagger.Lazy<com.theveloper.pixeltune.data.telegram.TelegramCacheManager>,
     private val connectivityStateHolder: com.theveloper.pixeltune.presentation.viewmodel.ConnectivityStateHolder,
     // FIX(cloud-favorites): YouTube + SoundCloud proxies are required so that
     // URIs persisted as `youtube://<videoId>` or `soundcloud://<encoded>` (e.g.
@@ -81,6 +88,15 @@ class DualPlayerEngine @Inject constructor(
     // localhost proxy — this is what makes downloaded songs work offline.
     private val downloadedSongsRepository: DownloadedSongsRepository
 ) {
+    private val telegramRepository: TelegramRepository
+        get() = telegramRepositoryLazy.get()
+
+    private val telegramStreamProxy: com.theveloper.pixeltune.data.telegram.TelegramStreamProxy
+        get() = telegramStreamProxyLazy.get()
+
+    private val telegramCacheManager: com.theveloper.pixeltune.data.telegram.TelegramCacheManager
+        get() = telegramCacheManagerLazy.get()
+
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var transitionJob: Job? = null
     private var transitionRunning = false

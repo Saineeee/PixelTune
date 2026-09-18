@@ -187,7 +187,10 @@ class PlayerViewModel @Inject constructor(
 
     private val dualPlayerEngine: DualPlayerEngine,
     private val appShortcutManager: AppShortcutManager,
-    private val telegramCacheManager: com.theveloper.pixeltune.data.telegram.TelegramCacheManager,
+    // PERF(startup): lazy — TelegramCacheManager sits on the TDLib native
+    // chain; direct injection loaded tdjni on the main thread before the
+    // first frame. The collector below resolves it on a background dispatcher.
+    private val telegramCacheManagerLazy: dagger.Lazy<com.theveloper.pixeltune.data.telegram.TelegramCacheManager>,
     private val listeningStatsTracker: ListeningStatsTracker,
     private val dailyMixStateHolder: DailyMixStateHolder,
     private val lyricsStateHolder: LyricsStateHolder,
@@ -417,9 +420,12 @@ class PlayerViewModel @Inject constructor(
         .cachedIn(viewModelScope)
     
     // Observe embedded art updates for Telegram songs - refresh colors when available
-    private val embeddedArtObserverJob = viewModelScope.launch {
+    // PERF(startup): resolved on Dispatchers.Default so the TDLib native chain
+    // (if not yet constructed) is never initialized on the main thread from
+    // this collector.
+    private val embeddedArtObserverJob = viewModelScope.launch(Dispatchers.Default) {
         launch {
-            telegramCacheManager.embeddedArtUpdated.collect { updatedArtUri ->
+            telegramCacheManagerLazy.get().embeddedArtUpdated.collect { updatedArtUri ->
                 refreshArtwork(updatedArtUri)
             }
         }
