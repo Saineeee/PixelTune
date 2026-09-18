@@ -126,7 +126,8 @@ object AppModule {
             PixelTuneDatabase.MIGRATION_20_21,
             PixelTuneDatabase.MIGRATION_21_22,
             PixelTuneDatabase.MIGRATION_22_23,
-            PixelTuneDatabase.MIGRATION_23_24
+            PixelTuneDatabase.MIGRATION_23_24,
+            PixelTuneDatabase.MIGRATION_24_25
         )
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()

@@ -2,10 +2,17 @@ package com.theveloper.pixeltune.data.database
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.theveloper.pixeltune.data.model.Song
 
-@Entity(tableName = "netease_songs")
+@Entity(
+    tableName = "netease_songs",
+    indices = [
+        // Serves "WHERE playlist_id = ? ORDER BY date_added DESC" (playlist detail).
+        Index(value = ["playlist_id", "date_added"])
+    ]
+)
 data class NeteaseSongEntity(
     @PrimaryKey val id: String,                          // Netease song ID as string
     @ColumnInfo(name = "netease_id") val neteaseId: Long, // Raw Netease numeric ID

@@ -13,7 +13,9 @@ import androidx.room.PrimaryKey
 @Entity(
     tableName = "song_engagements",
     indices = [
-        Index(value = ["play_count"], unique = false)
+        Index(value = ["play_count"], unique = false),
+        // Serves "WHERE last_played_timestamp > 0 ORDER BY ... DESC" (recently played).
+        Index(value = ["last_played_timestamp"], unique = false)
     ]
 )
 data class SongEngagementEntity(

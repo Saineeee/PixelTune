@@ -2,11 +2,18 @@ package com.theveloper.pixeltune.data.database
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.theveloper.pixeltune.data.model.Song
 import kotlin.math.absoluteValue
 
-@Entity(tableName = "gdrive_songs")
+@Entity(
+    tableName = "gdrive_songs",
+    indices = [
+        // Serves "WHERE folder_id = ? ORDER BY title ASC" (folder song lists).
+        Index(value = ["folder_id", "title"])
+    ]
+)
 data class GDriveSongEntity(
     @PrimaryKey val id: String,                                    // "{folderId}_{driveFileId}"
     @ColumnInfo(name = "drive_file_id") val driveFileId: String,   // Google Drive file ID

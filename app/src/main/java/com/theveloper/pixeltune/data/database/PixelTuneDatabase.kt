@@ -24,7 +24,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GDriveSongEntity::class,
         GDriveFolderEntity::class
     ],
-    version = 24, // Incremented for query performance indexes
+    version = 25, // Incremented for query performance indexes
 
     exportSchema = false
 )
@@ -457,6 +457,19 @@ abstract class PixelTuneDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_duration ON songs(duration)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_favorites_timestamp ON favorites(timestamp)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_song_engagements_play_count ON song_engagements(play_count)")
+            }
+        }
+
+        val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Query-performance indices (schema parity with the @Entity declarations).
+                // Index names follow Room's default convention: index_<table>_<cols>.
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_telegram_songs_chat_id_date_added ON telegram_songs(chat_id, date_added)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_netease_songs_playlist_id_date_added ON netease_songs(playlist_id, date_added)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_gdrive_songs_folder_id_title ON gdrive_songs(folder_id, title)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_song_engagements_last_played_timestamp ON song_engagements(last_played_timestamp)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_search_history_timestamp ON search_history(timestamp)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_file_path ON songs(file_path)")
             }
         }
     }

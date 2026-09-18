@@ -2,10 +2,17 @@ package com.theveloper.pixeltune.data.database
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.theveloper.pixeltune.data.model.SearchHistoryItem
 
-@Entity(tableName = "search_history")
+@Entity(
+    tableName = "search_history",
+    indices = [
+        // Serves "ORDER BY timestamp DESC" (recent searches).
+        Index(value = ["timestamp"])
+    ]
+)
 data class SearchHistoryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     @ColumnInfo(name = "query") val query: String,

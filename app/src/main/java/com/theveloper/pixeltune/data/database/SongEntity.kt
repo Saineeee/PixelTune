@@ -21,7 +21,9 @@ import com.theveloper.pixeltune.utils.normalizeMetadataTextOrEmpty
         Index(value = ["parent_directory_path"], unique = false), // Índice para filtrado por directorio
         Index(value = ["content_uri_string"], unique = false),
         Index(value = ["date_added"], unique = false),
-        Index(value = ["duration"], unique = false)
+        Index(value = ["duration"], unique = false),
+        // Serves "WHERE file_path = ? LIMIT 1" (metadata editor lookups).
+        Index(value = ["file_path"], unique = false)
     ],
     foreignKeys = [
         ForeignKey(

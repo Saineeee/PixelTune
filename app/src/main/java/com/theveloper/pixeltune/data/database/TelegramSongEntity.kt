@@ -2,11 +2,19 @@ package com.theveloper.pixeltune.data.database
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.theveloper.pixeltune.data.model.Song
 import kotlin.math.absoluteValue
 
-@Entity(tableName = "telegram_songs")
+@Entity(
+    tableName = "telegram_songs",
+    indices = [
+        // Serves "WHERE chat_id = ? ORDER BY date_added DESC" (channel song lists)
+        // as an index seek instead of a full-table scan + sort.
+        Index(value = ["chat_id", "date_added"])
+    ]
+)
 data class TelegramSongEntity(
     @PrimaryKey
     @ColumnInfo(name = "id") val id: String, // format: "chatId_messageId"
