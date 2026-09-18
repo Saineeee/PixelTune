@@ -45,6 +45,16 @@ data class Song(
     @IgnoredOnParcel
     private val defaultArtistDelimiters = listOf("/", ";", ",", "+", "&")
 
+    // PERF: displayArtist is read during composition of every song row
+    // (and MediaSession metadata builds). Computing it allocates a sorted list
+    // + a joined String on EVERY access; during scrolling that ran per visible
+    // row per recomposition. Song is immutable, so the value is memoized per
+    // instance after the first read. The benign race (two threads computing
+    // the same deterministic value) is fine; String's final fields make its
+    // racy publication safe on the JVM.
+    @IgnoredOnParcel
+    private var displayArtistCache: String? = null
+
     /**
      * Returns the display string for artists.
      * If multiple artists exist, joins them with ", ".
@@ -53,12 +63,17 @@ data class Song(
      */
     val displayArtist: String
         get() {
-            if (artists.isNotEmpty()) {
-                return artists.sortedByDescending { it.isPrimary }.joinToString(", ") { it.name }
-            }
-            val split = artist.splitArtistsByDelimiters(defaultArtistDelimiters)
-            return if (split.isNotEmpty()) split.joinToString(", ") else artist
+            displayArtistCache?.let { return it }
+            return computeDisplayArtist().also { displayArtistCache = it }
         }
+
+    private fun computeDisplayArtist(): String {
+        if (artists.isNotEmpty()) {
+            return artists.sortedByDescending { it.isPrimary }.joinToString(", ") { it.name }
+        }
+        val split = artist.splitArtistsByDelimiters(defaultArtistDelimiters)
+        return if (split.isNotEmpty()) split.joinToString(", ") else artist
+    }
 
     /**
      * Returns the primary artist from the artists list,
