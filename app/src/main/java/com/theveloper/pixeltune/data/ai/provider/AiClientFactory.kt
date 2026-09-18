@@ -38,7 +38,7 @@ class AiClientFactory @Inject constructor() {
             } else {
                 CachedClient(apiKey, buildClient(provider, apiKey))
             }
-        }
+        } ?: error("AiClientFactory.compute never returns null")
         return entry.client
     }
 
