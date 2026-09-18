@@ -1150,8 +1150,13 @@ fun SearchResultsList(
                             }
 
                             is SearchResultItem.PlaylistItem -> {
+                                // PERF: songIds is a List<String>, so `it.id in songIds`
+                                // was a linear scan per library song (O(songs x playlist)
+                                // per playlist row). Build the HashSet once per
+                                // (playlist, library) pair instead.
                                 val playlistSongs = remember(item.playlist.songIds, allSongs) {
-                                    allSongs.filter { it.id in item.playlist.songIds }
+                                    val songIdSet = item.playlist.songIds.toHashSet()
+                                    allSongs.filter { it.id in songIdSet }
                                 }
                                 val coroutineScope = rememberCoroutineScope()
                                 val onPlayClick: () -> Unit = {
