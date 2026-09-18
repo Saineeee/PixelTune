@@ -1871,12 +1871,20 @@ class PlayerViewModel @Inject constructor(
         // position the user left off. The position flow only ticks while
         // playback is active, so this is effectively idle when paused.
         //
-        // NOTE: the no-arg (throttled) overload is used on purpose — it reads
-        // the live position itself; passing the tick position explicitly would
-        // make every 250ms tick an unthrottled DataStore write.
+        // PERF(battery): the MusicService's engine snapshot ticker (started in
+        // its onCreate) already persists this exact snapshot every 4s while the
+        // LOCAL engine plays — keeping this collector unguarded meant TWO
+        // 33-song JSON serializations + DataStore writes every 4s during normal
+        // local playback. This collector now only handles the case the service
+        // ticker cannot see: CAST playback, where the local engine is paused
+        // and the position comes from the RemoteMediaClient ticks fed into
+        // [PlaybackStateHolder.currentPosition]. Pause/transition/teardown
+        // writes are unaffected (they use the immediate unthrottled path).
         viewModelScope.launch {
             playbackStateHolder.currentPosition.collect { position ->
-                if (position > 0L) {
+                if (position > 0L &&
+                    castStateHolder.castSession.value?.remoteMediaClient != null
+                ) {
                     saveLastPlaybackSnapshot()
                 }
             }
