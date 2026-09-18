@@ -6,7 +6,6 @@ import com.theveloper.pixeltune.presentation.navigation.navigateSafely
 // import androidx.core.view.WindowInsetsCompat // No longer needed for this
 import android.Manifest
 import android.content.ActivityNotFoundException
-import android.content.ComponentName
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -84,15 +83,11 @@ import androidx.compose.ui.unit.lerp
 import androidx.core.net.toUri
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.session.MediaController
-import androidx.media3.session.SessionToken
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
-import com.google.common.util.concurrent.ListenableFuture
-import com.google.common.util.concurrent.MoreExecutors
 import com.theveloper.pixeltune.data.github.GitHubAnnouncementPropertiesService
 import com.theveloper.pixeltune.data.github.PlayStoreAnnouncementRemoteConfig
 import com.theveloper.pixeltune.data.preferences.AppThemeMode
@@ -159,7 +154,6 @@ class MainActivity : ComponentActivity() {
 
     private val playerViewModel: PlayerViewModel by viewModels()
     private val mainViewModel: MainViewModel by viewModels()
-    private var mediaControllerFuture: ListenableFuture<MediaController>? = null
     @Inject
     lateinit var userPreferencesRepository: UserPreferencesRepository // Inject here
     // For handling shortcut navigation - using StateFlow so composables can observe changes
@@ -1095,18 +1089,10 @@ class MainActivity : ComponentActivity() {
             // Benchmark mode no longer loads dummy data - uses real library data instead
         }
 
-        val sessionToken = SessionToken(this, ComponentName(this, MusicService::class.java))
-        mediaControllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
-        mediaControllerFuture?.addListener({
-        }, MoreExecutors.directExecutor())
-    }
-
-    override fun onStop() {
-        super.onStop()
-        LogUtils.d(this, "onStop")
-        mediaControllerFuture?.let {
-            MediaController.releaseFuture(it)
-        }
+        // NOTE(perf): this previously built a second, listener-less MediaController
+        // on every onStart (binder bind + duplicate event dispatch), released in
+        // onStop. PlayerViewModel owns the app's real MediaController, so the extra
+        // one was pure overhead and has been removed.
     }
 
     override fun onResume() {
