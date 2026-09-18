@@ -360,6 +360,34 @@ fun CloudCatalogScreen(
                 label = "fabPadding"
             )
 
+            // FIX(cloud-detail-spacing): the track list's bottom reservation,
+            // matching how the Search results list keeps its own "Load more"
+            // row fully visible above the miniplayer. Two things eat into this
+            // list's visible bottom edge:
+            //   1. The miniplayer floats at the bottom of the screen above the
+            //      system navigation-bar inset — its top edge sits
+            //      (systemNavBarInset + MiniPlayerHeight + MiniPlayerBottomSpacer)
+            //      above the screen bottom.
+            //   2. This list is drawn OFFSET DOWN by the collapsing header (the
+            //      .offset on the LazyColumn below). When the list is fully
+            //      scrolled the header rests at minTopBarHeight, so the list's
+            //      last visible row effectively ends minTopBarHeight BELOW the
+            //      screen bottom — that offset has to be reserved too, or the
+            //      bottom rows (the "Load more tracks" button included) slide
+            //      behind the miniplayer.
+            // The previous flat reservation (fabBottomPadding + spacer + 96.dp)
+            // ignored the header offset and the real miniplayer overlay, so on
+            // typical devices the "Load more tracks" button ended up partially
+            // hidden behind the miniplayer bar.
+            val listBottomPadding by animateDpAsState(
+                targetValue = minTopBarHeight + systemNavBarInset + if (isMiniPlayerVisible) {
+                    MiniPlayerHeight + MiniPlayerBottomSpacer + 24.dp
+                } else {
+                    24.dp
+                },
+                label = "cloudListBottomPadding"
+            )
+
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -377,15 +405,23 @@ fun CloudCatalogScreen(
                         end = if ((lazyListState.canScrollForward || lazyListState.canScrollBackward) &&
                             collapseFraction > 0.95f
                         ) 24.dp else 16.dp,
-                        // FIX(cloud-load-more-visibility): reserve the miniplayer
-                        // overlay (+ its spacer) plus generous breathing room so
-                        // the "Load more tracks" row at the bottom of the list is
-                        // always fully visible and comfortably tappable. The app
-                        // navigation bar no longer overlays this screen (its route
-                        // joined the hidden-nav-bar set in MainActivity), so the
-                        // miniplayer is the only bottom overlay to clear.
-                        bottom = fabBottomPadding + MiniPlayerBottomSpacer + 96.dp
-                    )
+                        // FIX(cloud-detail-spacing): reserve the full bottom
+                        // overlay — collapsing-header offset + system nav inset +
+                        // miniplayer (+ spacer) + breathing room — so the
+                        // "Load more tracks" row is always fully visible and
+                        // comfortably tappable above the miniplayer, exactly
+                        // like the Search results list does. The app navigation
+                        // bar no longer overlays this screen (its route joined
+                        // the hidden-nav-bar set in MainActivity), so the
+                        // miniplayer is the only floating bar to clear.
+                        bottom = listBottomPadding
+                    ),
+                    // FIX(cloud-detail-spacing): lay every track out as its own
+                    // clearly spaced card — the same 12.dp gap the Search
+                    // results list puts between its result cards — instead of
+                    // the song cards stacking flush against (visually
+                    // overlapping) each other.
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     if (songs.isEmpty()) {
                         item(key = "cloud_empty") {
