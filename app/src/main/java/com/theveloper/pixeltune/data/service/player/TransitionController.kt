@@ -144,8 +144,7 @@ class TransitionController @Inject constructor(
             }
 
             val targetIndex = if (repeatMode == Player.REPEAT_MODE_ONE) player.currentMediaItemIndex else nextIndex
-            Timber.tag("TransitionDebug").d("Preparing next track: %s (Index: %d)", nextMediaItem.mediaId, targetIndex)
-            engine.prepareNext(nextMediaItem)
+            Timber.tag("TransitionDebug").d("Next track candidate: %s (Index: %d)", nextMediaItem.mediaId, targetIndex)
 
             val playlistId = currentMediaItem.mediaMetadata.extras?.getString("playlistId")
             val fromTrackId = currentMediaItem.mediaId
@@ -195,6 +194,16 @@ class TransitionController @Inject constructor(
                     engine.setPauseAtEndOfMediaItems(false)
                     return@collectLatest
                 }
+
+                // PERF: only pre-buffer player B once we KNOW a crossfade will actually
+                // run. prepareNext() makes player B prepare() the next track, which per
+                // the LoadControl buffers up to minBufferMs (30 s) of audio. When
+                // crossfade is disabled (the default) that buffer was downloaded and
+                // then discarded on every track change — doubling network traffic and
+                // CPU for cloud queues. performOverlapTransition already handles a
+                // not-prepared player B gracefully (falls back to the default gap), so
+                // gating here is safe even if a settings change races the schedule.
+                engine.prepareNext(nextMediaItem)
 
                 // Wait for the player to report a valid duration.
                 var duration = player.duration
