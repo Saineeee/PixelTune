@@ -4400,6 +4400,20 @@ class PlayerViewModel @Inject constructor(
         remoteQueueLoadJob?.cancel()
         castSongUiSyncJob?.cancel()
         stopProgressUpdates()
+        // PERF(fix): release the app's MediaController. It was previously never
+        // released here, so every ViewModel teardown (config change recreation
+        // aside, activity finish included) left a live binder connection with
+        // registered listeners until process death — the PlaybackStateHolder
+        // singleton held a strong ref and the next PlayerViewModel would build a
+        // new controller, orphaning the old one.
+        runCatching {
+            mediaController?.removeListener(mediaControllerListener)
+        }
+        runCatching {
+            MediaController.releaseFuture(mediaControllerFuture)
+        }
+        playbackStateHolder.clearMediaController(mediaController)
+        mediaController = null
         // IMPROVE(playback-restore): best-effort final snapshot persist. The
         // viewModelScope is already cancelled by the time onCleared runs, so
         // a dedicated short-lived IO scope is used instead. The periodic +

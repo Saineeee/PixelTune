@@ -68,6 +68,18 @@ class PlaybackStateHolder @Inject constructor(
     fun setMediaController(controller: MediaController?) {
         this.mediaController = controller
     }
+
+    /**
+     * Drops the strong reference to the controller when the owning ViewModel
+     * is torn down. The singleton would otherwise keep a released controller
+     * reachable (and, before release, a live binder connection) until the
+     * next ViewModel sets a new one.
+     */
+    fun clearMediaController(controller: MediaController?) {
+        if (this.mediaController === controller) {
+            this.mediaController = null
+        }
+    }
     
     fun updateStablePlayerState(update: (StablePlayerState) -> StablePlayerState) {
         _stablePlayerState.update(update)
