@@ -336,7 +336,7 @@ class PlaylistViewModel @Inject constructor(
 
     /**
      * IMPROVE(cloud-playlist-source-filter): selects the Local / Cloud source
-     * filter of the library Playlists tab (the chip row beside the sort
+     * filter of the library Playlists tab (the filter button beside the sort
      * button) and re-derives the visible list from the FULL playlist set.
      */
     fun setPlaylistSourceFilter(filter: PlaylistSourceFilter) {
@@ -347,6 +347,21 @@ class PlaylistViewModel @Inject constructor(
             _uiState.value.currentPlaylistSortOption
         )
         _uiState.update { it.copy(playlists = applyPlaylistSourceFilter(sorted)) }
+    }
+
+    /**
+     * IMPROVE(cloud-playlist-source-filter): cycles the Playlists tab source
+     * filter All -> Local -> Cloud -> All — the same one-tap cycling convention
+     * the storage filter button of the Songs / Albums / Artists / Liked tabs
+     * uses ([PlayerViewModel.toggleStorageFilter]).
+     */
+    fun togglePlaylistSourceFilter() {
+        val next = when (_uiState.value.currentPlaylistSourceFilter) {
+            PlaylistSourceFilter.ALL -> PlaylistSourceFilter.LOCAL
+            PlaylistSourceFilter.LOCAL -> PlaylistSourceFilter.CLOUD
+            PlaylistSourceFilter.CLOUD -> PlaylistSourceFilter.ALL
+        }
+        setPlaylistSourceFilter(next)
     }
 
     // Nueva función para cargar canciones para el selector de forma paginada

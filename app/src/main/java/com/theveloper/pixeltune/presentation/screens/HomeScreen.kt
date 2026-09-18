@@ -417,12 +417,16 @@ fun HomeScreen(
     }
     if (showStreamingProviderSheet) {
         val isNeteaseLoggedIn by neteaseViewModel.isLoggedIn.collectAsStateWithLifecycle()
+        // IMPROVE(provider-indicator): the live provider selection, so the
+        // sheet can badge the active YouTube / SoundCloud card in real time.
+        val currentOnlineProvider by playerViewModel.currentOnlineProvider.collectAsStateWithLifecycle()
         StreamingProviderSheet(
             onDismissRequest = { showStreamingProviderSheet = false },
             isNeteaseLoggedIn = isNeteaseLoggedIn,
             onNavigateToNeteaseDashboard = {
                 navController.navigateSafely(Screen.NeteaseDashboard.route)
             },
+            activeProvider = currentOnlineProvider,
             onProviderSelected = { provider ->
                 playerViewModel.setOnlineProvider(provider)
                 // IMPROVE(streaming-toast): surface a Material 3 toast via the

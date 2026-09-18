@@ -49,6 +49,7 @@ data class PlayerUiState(
     val currentAlbumSortOption: SortOption = SortOption.AlbumTitleAZ,
     val currentArtistSortOption: SortOption = SortOption.ArtistNameAZ,
     val currentFolderSortOption: SortOption = SortOption.FolderNameAZ,
+    val currentDownloadSortOption: SortOption = SortOption.DownloadDateNewest,
     val folderBackGestureNavigationEnabled: Boolean = false,
     val currentSongSortOption: SortOption = SortOption.SongTitleAZ,
     // val songCount: Int = 0, // REMOVED

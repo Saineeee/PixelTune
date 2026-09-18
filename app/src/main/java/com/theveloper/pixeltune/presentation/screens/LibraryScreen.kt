@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -58,8 +57,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material.icons.rounded.ViewModule
 import com.theveloper.pixeltune.presentation.components.ToggleSegmentButton
 import androidx.compose.material3.LoadingIndicator
@@ -152,7 +149,6 @@ import com.theveloper.pixeltune.presentation.viewmodel.PlayerViewModel
 import com.theveloper.pixeltune.presentation.viewmodel.StablePlayerState
 import com.theveloper.pixeltune.presentation.viewmodel.PlaylistUiState
 import com.theveloper.pixeltune.presentation.viewmodel.PlaylistViewModel
-import com.theveloper.pixeltune.presentation.viewmodel.PlaylistSourceFilter
 import com.theveloper.pixeltune.data.model.LibraryTabId
 import com.theveloper.pixeltune.data.model.toLibraryTabIdOrNull
 import com.theveloper.pixeltune.data.preferences.LibraryNavigationMode
@@ -244,6 +240,7 @@ private data class LibraryScreenPlayerProjection(
     val currentArtistSortOption: SortOption = SortOption.ArtistNameAZ,
     val currentFavoriteSortOption: SortOption = SortOption.LikedSongDateLiked,
     val currentFolderSortOption: SortOption = SortOption.FolderNameAZ,
+    val currentDownloadSortOption: SortOption = SortOption.DownloadDateNewest,
     val isAlbumsListView: Boolean = false,
     val isSdCardAvailable: Boolean = false,
     val musicFolders: ImmutableList<MusicFolder> = persistentListOf(),
@@ -265,6 +262,7 @@ private fun PlayerUiState.toLibraryScreenProjection(): LibraryScreenPlayerProjec
         currentArtistSortOption = currentArtistSortOption,
         currentFavoriteSortOption = currentFavoriteSortOption,
         currentFolderSortOption = currentFolderSortOption,
+        currentDownloadSortOption = currentDownloadSortOption,
         isAlbumsListView = isAlbumsListView,
         isSdCardAvailable = isSdCardAvailable,
         musicFolders = musicFolders,
@@ -811,9 +809,10 @@ fun LibraryScreen(
                             LibraryTabId.PLAYLISTS -> playlistUiState.currentPlaylistSortOption
                             LibraryTabId.LIKED -> playerUiState.currentFavoriteSortOption
                             LibraryTabId.FOLDERS -> playerUiState.currentFolderSortOption
-                            // IMPROVE(downloads-chip): fixed newest-first ordering,
-                            // same curated behaviour as the history page.
-                            LibraryTabId.DOWNLOADS -> null
+                            // IMPROVE(downloads-sort): the Downloads chip now has
+                            // its own persisted sort option, surfaced in the sort
+                            // bottom sheet like every other tab.
+                            LibraryTabId.DOWNLOADS -> playerUiState.currentDownloadSortOption
                         }
 
                         val showLocateButton = when (currentTabId) {
@@ -838,9 +837,9 @@ fun LibraryScreen(
                                     LibraryTabId.PLAYLISTS -> playlistViewModel.sortPlaylists(option)
                                     LibraryTabId.LIKED -> playerViewModel.sortFavoriteSongs(option)
                                     LibraryTabId.FOLDERS -> playerViewModel.sortFolders(option)
-                                    // IMPROVE(downloads-chip): no sort menu on the
-                                    // downloads chip (curated newest-first list).
-                                    LibraryTabId.DOWNLOADS -> Unit
+                                    // IMPROVE(downloads-sort): sort the offline
+                                    // downloads list with the chosen option.
+                                    LibraryTabId.DOWNLOADS -> playerViewModel.sortDownloads(option)
                                 }
                             }
                         }
@@ -935,10 +934,7 @@ fun LibraryScreen(
                                         }
                                     },
                                     iconRotation = iconRotation,
-                                    showSortButton = sanitizedSortOptions.isNotEmpty() &&
-                                        // IMPROVE(downloads-chip): curated newest-first
-                                        // list — the sort menu is hidden entirely.
-                                        currentTabId != LibraryTabId.DOWNLOADS,
+                                    showSortButton = sanitizedSortOptions.isNotEmpty(),
                                     showLocateButton = showLocateButton,
                                     onSortClick = { playerViewModel.showSortingSheet() },
                                     onLocateClick = { locateAction?.invoke() },
@@ -959,59 +955,16 @@ fun LibraryScreen(
                                         currentTabId == LibraryTabId.LIKED ||
                                         (ENABLE_FOLDERS_STORAGE_FILTER && currentTabId == LibraryTabId.FOLDERS),
                                     currentStorageFilter = playerUiState.currentStorageFilter,
-                                    onStorageFilterClick = { playerViewModel.toggleStorageFilter() }
+                                    onStorageFilterClick = { playerViewModel.toggleStorageFilter() },
+                                    // IMPROVE(cloud-playlist-source-filter): the
+                                    // Playlists tab's Local / Cloud filter now uses
+                                    // the same filter-button affordance as the
+                                    // other library tabs, placed beside the Sort
+                                    // button (the old filter chip row is gone).
+                                    showPlaylistSourceFilterButton = currentTabId == LibraryTabId.PLAYLISTS,
+                                    currentPlaylistSourceFilter = playlistUiState.currentPlaylistSourceFilter,
+                                    onPlaylistSourceFilterClick = { playlistViewModel.togglePlaylistSourceFilter() }
                                 )
-                            }
-                        }
-
-                        // IMPROVE(cloud-playlist-source-filter): the Playlists
-                        // tab's Local / Cloud source filter — the same kind of
-                        // affordance the other library tabs have (storage
-                        // filter / grid-list toggle). Material 3 filter chips,
-                        // hidden while a multi-selection action row is active.
-                        if (currentTabId == LibraryTabId.PLAYLISTS &&
-                            !isPlaylistSelectionMode &&
-                            !isSelectionMode &&
-                            !isAlbumSelectionMode
-                        ) {
-                            val currentSourceFilter = playlistUiState.currentPlaylistSourceFilter
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                PlaylistSourceFilter.entries.forEach { filter ->
-                                    FilterChip(
-                                        selected = currentSourceFilter == filter,
-                                        onClick = { playlistViewModel.setPlaylistSourceFilter(filter) },
-                                        label = { Text(filter.displayName) },
-                                        shape = CircleShape,
-                                        border = BorderStroke(
-                                            width = 0.dp,
-                                            color = Color.Transparent
-                                        ),
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                            labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                                            selectedLeadingIconColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                        ),
-                                        leadingIcon = if (currentSourceFilter == filter) {
-                                            {
-                                                Icon(
-                                                    painter = painterResource(R.drawable.rounded_check_circle_24),
-                                                    contentDescription = "Selected",
-                                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                                    modifier = Modifier.size(FilterChipDefaults.IconSize)
-                                                )
-                                            }
-                                        } else {
-                                            null
-                                        }
-                                    )
-                                }
                             }
                         }
 
@@ -1271,12 +1224,16 @@ fun LibraryScreen(
                                         // IMPROVE(downloads-chip): the offline
                                         // downloads page — active downloads with
                                         // live progress on top, completed
-                                        // app-private downloads below (newest
-                                        // first), fully matching the Library's
-                                        // Material 3 expressive design language.
+                                        // app-private downloads below, fully
+                                        // matching the Library's Material 3
+                                        // expressive design language.
+                                        // IMPROVE(downloads-sort): the completed
+                                        // list is ordered by the tab's persisted
+                                        // sort option (newest-first by default).
                                         LibraryDownloadsTab(
                                             playerViewModel = playerViewModel,
                                             bottomBarHeight = bottomBarHeightDp,
+                                            sortOption = playerUiState.currentDownloadSortOption,
                                             onMoreOptionsClick = stableOnMoreOptionsClick
                                         )
                                     }
@@ -2705,6 +2662,7 @@ fun LibraryFavoritesTab(
 fun LibraryDownloadsTab(
     playerViewModel: PlayerViewModel,
     bottomBarHeight: Dp,
+    sortOption: SortOption = SortOption.DownloadDateNewest,
     onMoreOptionsClick: (Song) -> Unit
 ) {
     val stablePlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
@@ -2712,11 +2670,24 @@ fun LibraryDownloadsTab(
     val downloadStates by playerViewModel.downloadStates.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
-    // Completed offline downloads, newest first, mapped to playable Songs.
-    val completedDownloads = remember(downloadedSongs) {
-        downloadedSongs.values
-            .sortedByDescending { it.downloadedAtMs }
-            .map { it.toSong() }
+    // Completed offline downloads, ordered by the tab's sort option
+    // (IMPROVE(downloads-sort): newest-first by default, matching the other
+    // library tabs' sort affordance), mapped to playable Songs.
+    val completedDownloads = remember(downloadedSongs, sortOption) {
+        val downloads = downloadedSongs.values
+        val sorted = when (sortOption) {
+            SortOption.DownloadDateOldest -> downloads.sortedBy { it.downloadedAtMs }
+            SortOption.DownloadTitleAZ -> downloads.sortedBy { it.title.lowercase() }
+            SortOption.DownloadTitleZA -> downloads.sortedByDescending { it.title.lowercase() }
+            SortOption.DownloadArtist -> downloads.sortedWith(
+                compareBy({ it.artist.lowercase() }, { it.title.lowercase() })
+            )
+            SortOption.DownloadDuration -> downloads.sortedByDescending { it.durationMs }
+            // DownloadDateNewest (and any unknown value) keep the curated
+            // newest-first behaviour.
+            else -> downloads.sortedByDescending { it.downloadedAtMs }
+        }
+        sorted.map { it.toSong() }
     }
 
     // In-flight downloads (songId → live state, stable keys for the lazy
