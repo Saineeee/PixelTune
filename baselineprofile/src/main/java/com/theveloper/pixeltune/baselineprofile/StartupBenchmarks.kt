@@ -36,7 +36,10 @@ class StartupBenchmarks {
     )
 
     private fun startup(compilationMode: CompilationMode) = benchmarkRule.measureRepeated(
-        packageName = "com.theveloper.pixeltune",
+        // PERF FIX: must be the applicationId (com.saine.pixeltune), not the
+        // namespace. With the namespace the benchmark could not resolve the
+        // target package and every run failed before producing numbers.
+        packageName = "com.saine.pixeltune",
         metrics = listOf(StartupTimingMetric()),
         compilationMode = compilationMode,
         iterations = 5, // Reducido a 5 para acelerar la validación
