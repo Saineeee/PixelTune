@@ -328,11 +328,16 @@ private class AlbumArtPlaceholderPainter(
             val w = intrinsic.width * scale
             val h = intrinsic.height * scale
             translate(left = (size.width - w) / 2f, top = (size.height - h) / 2f) {
-                delegate.draw(
-                    size = androidx.compose.ui.geometry.Size(w, h),
-                    alpha = alphaFactor,
-                    colorFilter = iconTint
-                )
+                // Painter.draw is a member-extension (fun DrawScope.draw declared
+                // inside Painter) — the dispatch receiver must be implicit via
+                // `with`, the DrawScope receiver comes from this scope.
+                with(delegate) {
+                    draw(
+                        size = androidx.compose.ui.geometry.Size(w, h),
+                        alpha = alphaFactor,
+                        colorFilter = iconTint
+                    )
+                }
             }
         }
     }

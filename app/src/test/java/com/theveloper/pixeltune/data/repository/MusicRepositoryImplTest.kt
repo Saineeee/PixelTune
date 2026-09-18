@@ -99,8 +99,8 @@ class MusicRepositoryImplTest {
             musicDao = mockMusicDao,
             lyricsRepository = mockLyricsRepository,
             telegramDao = mockTelegramDao,
-            telegramCacheManager = mockTelegramCacheManager,
-            telegramRepository = mockTelegramRepository,
+            telegramCacheManagerLazy = com.theveloper.pixeltune.utils.daggerLazyOf(mockTelegramCacheManager),
+            telegramRepositoryLazy = com.theveloper.pixeltune.utils.daggerLazyOf(mockTelegramRepository),
             songRepository = mockSongRepository,
 
             favoritesDao = mockFavoritesDao,

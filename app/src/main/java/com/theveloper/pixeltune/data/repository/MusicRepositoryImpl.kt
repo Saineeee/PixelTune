@@ -164,9 +164,19 @@ class MusicRepositoryImpl @Inject constructor(
                     )
                 )
             }.flatMapLatest { it }
-        }.map { entities ->
-            entities.map { it.toSong() }
-        }.flowOn(Dispatchers.IO)
+        }
+            // PERF(scroll): any songs-table write (favorite toggle, lyric save,
+            // sync chunks) re-emits the FULL library; each emission re-maps 5k+
+            // entities and re-sorts in LibraryStateHolder. Bursts — e.g. a sync
+            // writing chunked transactions — made the collector process N
+            // intermediate full-library states that were already stale.
+            // conflate keeps only the latest pending emission: collectors always
+            // converge to the current DB state while skipping the redundant
+            // intermediate full-table mappings + re-sorts.
+            .conflate()
+            .map { entities ->
+                entities.map { it.toSong() }
+            }.flowOn(Dispatchers.IO)
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -282,7 +292,11 @@ class MusicRepositoryImpl @Inject constructor(
             val (allowedParentDirs, applyFilter) = computeAllowedDirs(allowedDirs, blockedDirs)
             musicDao.getAlbums(allowedParentDirs, applyFilter, storageFilter.toFilterMode())
                 .map { entities -> entities.map { it.toAlbum() } }
-        }.flowOn(Dispatchers.IO)
+        }
+            // PERF(scroll): same rationale as getAudioFiles() — burst emissions
+            // of the full album list collapse to the latest.
+            .conflate()
+            .flowOn(Dispatchers.IO)
     }
 
     override fun getAlbumById(id: Long): Flow<Album?> {
@@ -322,7 +336,12 @@ class MusicRepositoryImpl @Inject constructor(
                     }
                     artists
                 }
-        }.flowOn(Dispatchers.IO)
+        }
+            // PERF(scroll): same rationale as getAudioFiles() — burst emissions
+            // of the full artist list (and their prefetch kicks) collapse to
+            // the latest.
+            .conflate()
+            .flowOn(Dispatchers.IO)
     }
 
     override fun getSongsForAlbum(albumId: Long): Flow<List<Song>> {

@@ -203,7 +203,7 @@ class PlayerViewModelTest {
             mockSyncManager,
             mockDualPlayerEngine,
             mockAppShortcutManager,
-            mockTelegramCacheManager,
+            com.theveloper.pixeltune.utils.daggerLazyOf(mockTelegramCacheManager),
             mockListeningStatsTracker,
             mockDailyMixStateHolder,
             mockLyricsStateHolder,
