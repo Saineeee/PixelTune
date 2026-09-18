@@ -27,7 +27,8 @@ android {
     }
 
     androidResources {
-        noCompress.add("tflite")
+        // PERF: removed noCompress "tflite" — no .tflite assets ship anymore
+        // (TF Lite / PyTorch deps were already removed from the build).
     }
 
     packaging {
@@ -142,9 +143,6 @@ android {
 
 dependencies {
     implementation(libs.androidx.profileinstaller)
-    // Debug-only frame-timing monitor (see utils/debug/FrameJankLogger.kt);
-    // unreachable in release builds, so R8 strips it from release APKs.
-    implementation(libs.androidx.metrics.performance)
     implementation(libs.androidx.paging.common)
     "baselineProfile"(project(":baselineprofile"))
     coreLibraryDesugaring(libs.desugar.jdk.libs)
