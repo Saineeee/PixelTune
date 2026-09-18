@@ -182,3 +182,78 @@ Ordered main-thread work during cold start:
 ---
 
 *Prepared before any code change. Implementation will proceed top-down through Tier 1 (batch of small commits) then Tier 2 (one commit each, tests after each), leaving Tier 3 as proposals. Verification: `:app:testDebugUnitTest` + `:wear:testDebugUnitTest` (where present) + full-module compilation; manual on-device checklist provided at the end.*
+
+---
+
+# IMPLEMENTATION REPORT
+
+Branch: `perf/optimization-pass` (18 commits, one concern each). All changes verified against the **original baseline** via a clean worktree of `origin/main` (commit `08116f5`).
+
+## Verification (Step 4)
+
+| Check | Result |
+|---|---|
+| `:app:compileDebugKotlin` | ✅ BUILD SUCCESSFUL |
+| `:app:assembleDebug` | ✅ BUILD SUCCESSFUL — APKs produced (before disk cleanup: `app-universal-debug.apk` 257 MB / `app-armeabi-v7a-debug.apk` 156 MB debug, uncompressed, 4-ABI TDLib+ffmpeg) |
+| `:wear:assembleDebug` | ✅ BUILD SUCCESSFUL — `wear-debug.apk` |
+| `:shared:compileDebugKotlin` | ✅ BUILD SUCCESSFUL |
+| `:baselineprofile:compileBenchmarkReleaseSources` | ✅ BUILD SUCCESSFUL |
+| `:app:testDebugUnitTest` | **127 tests; 17 failures — byte-identical failure set to the pre-change baseline** (verified side-by-side worktree run: same 17, same classes). The 17 are pre-existing environmental failures: 14× `java.lang.VerifyError` on GMS Cast classes under the JVM test runner, 3× NewPipeDownloader User-Agent/ISO-8859-1 assertions. No test was added, removed or weakened. |
+| Test helper | `DaggerLazyTestUtils.daggerLazyOf()` added for constructor-signature updates only. |
+
+⚠ Build-environment notes: this sandbox has 4 GB RAM / 2 cores; builds required `-Dorg.gradle.jvmargs=-Xmx2g` (project default `-Xmx6g` exceeds the container and gets the daemon OOM-killed). Macrobenchmarks could not run (no emulator) — runtime impact below is *expected*, from measured in-repo behavior and standard platform characteristics, not new benchmark numbers.
+
+## What was changed (18 commits, in order)
+
+| # | Commit | Area | Expected impact | Risk |
+|---|--------|------|-----------------|------|
+| 1 | `perf(startup)` baseline profile casing | startup/scroll | **High.** Reactivates 7,845 dead ART rules covering all app hot paths (typical 20–40% cold-start / first-scroll gain from baseline profiles; the library rules that did work were already in the file). Rules only pre-compile existing code paths. | Low |
+| 2 | remove duplicate MainActivity MediaController | startup | Low-Med. Removes a binder bind + duplicate event dispatch per `Activity.onStart()` (dead listener). | Very low (dead code) |
+| 3 | `isLibraryEmpty` → `SELECT EXISTS` | startup/scroll | Med. Startup allocations drop from O(library) to O(1); no more full-table mapping on every songs-table write. 5k-song library: ~5k row reads + 5k `Song` allocations per emission avoided. | Low (semantics preserved: same filter incl. cloud-song negative ids) |
+| 4 | gate player-B pre-buffer on crossfade setting | battery/data | **High.** Crossfade is off by default; every track change previously downloaded ~30 s (minBuffer) of audio into player B that was discarded on natural advance — ~2× network/CPU per track for cloud queues. | Low (`performOverlapTransition` has a graceful unprepared fallback; next-track URL prefetch still warms skips) |
+| 5 | 6 missing Room indices + v25 migration | db | Med. Per-query: telegram channel lists, netease playlist detail, gdrive folder lists, recently-played, search history, metadata-editor path lookups were full scans + sorts. | Low (additive migration, Room-verified schema) |
+| 6 | FastOkHttpClient logging gated on DEBUG | network/privacy | Low. Stops per-request header formatting in release (it was the only un-gated client). | Very low |
+| 7 | contentType for mixed Lazy lists | scroll | Med. Search results (6 row types + headers), folders tab (folders+songs), cloud catalog (songs+empty+load-more) recycle composition slots type-stably now. | Very low |
+| 8 | memoize `Song.displayArtist` | scroll | Med. Sort+split+join per row per recomposition → once per `Song` instance. | Very low |
+| 9 | `userPlaylistsFlow` distinctUntilChanged | cpu/battery | Low-Med. Playlists JSON no longer re-parsed on every unrelated preference write. | Very low |
+| 10 | drop unused `androidx.metrics.performance` + tflite noCompress | APK | Low-Med. Dead dependency + vestigial resource config removed from release. | Very low |
+| 11 | gradle parallel + build cache | build time | Med for multi-module builds (`:app`+`:wear` together). | Very low |
+| 12 | benchmark targets applicationId | tooling | Unblocks startup benchmarks entirely (they never ran: wrong package). | None (test-only) |
+| 13 | O(1) songIds membership in search preview | scroll | Low-Med. O(songs×playlist) per playlist row → O(songs). | Very low |
+| 14 | **SmartImage → plain AsyncImage + hardware bitmaps** | scroll/memory | **High.** The artwork slot of ~51 call sites (every song row) left Coil's most expensive loading path (subcomposition per image, including steady-state success) and decoded all art as software bitmaps (~2× bitmap memory, CPU copies per draw). Placeholder visuals reproduced exactly via a custom painter; `placeholderModel` (2 TG call sites) keeps the old path. | Med (accepted, documented rare-path deltas: reload placeholder instead of stale image after a memory-cache miss; error placeholder instead of stale art on in-place model-change failure; pixel-readers were audited — all already used their own requests) |
+| 15 | release MediaController in `onCleared` | memory | Med. Fixes binder-connection + listener leak surviving VM teardown. | Low (identity-checked singleton clear; VM survives config changes so background playback unaffected) |
+| 16 | single queue-snapshot writer | battery | Med. Halves 4 s-periodic 33-song JSON serializations + DataStore writes during local playback (service ticker owns it; VM keeps cast playback). | Low |
+| 17 | widget/Wear pipeline gating | battery | Med-High for users without widgets/watch: per track change up to 3 full pipeline runs (art decode for 5 songs, 4 Glance state writes, Wear DataLayer item) → skipped entirely; forced follow-up coalesced. Connected watch / pinned widget behavior unchanged (existence checks fall back to running the pipeline on any error). | Low (documented: paired-but-disconnected watch now gets state on next playback event instead of a queued DataItem) |
+| 18 | lazy player B + drop between transitions | startup/memory | Med. Second ExoPlayer (renderers, codec enumeration, loader threads) no longer built pre-first-frame; released between transitions instead of rebuilt-and-idle. Crossfade path unchanged (`prepareNext` builds fresh on demand — preserves the OEM stale-session workaround). | Low-Med |
+| 19 | TDLib lazy edges (MusicRepositoryImpl / DualPlayerEngine / PlayerViewModel → `dagger.Lazy`) | startup | **High.** `System.loadLibrary("tdjni")` + `Client.create()` (native threads + SQLite) no longer run on the **main thread before the first frame** — they ran via 3 eager dependency edges despite the Application's existing deferral. Now only the Application's IO-dispatcher coroutine constructs the chain. | Low (same singletons; first Telegram use resolves lazily) |
+| 20 | conflate library flows | scroll | Med. Burst full-library re-emissions (sync chunk commits, rapid writes) collapse to the latest — skips N−1 intermediate full-table mappings + re-sorts. | Low (final state always delivered) |
+| 21 | batch: mashup poller gating, crash-log off-main, TileService runBlocking→IO, AI client caching, PlayingEqIcon draw-phase reads | battery/anr/cpu | Mashup: 10 Hz loop no longer free-runs while idle. Tile: no more DataStore disk read on the QS-panel main thread (ANR window). AI: one cached client per provider instead of one OkHttp pool per call (batch metadata = N pools before). Eq icon: now-playing animation no longer recomposes at 60 Hz (draw-phase only). | Low |
+| 22 | targeted artist/album lookups in `ensureCloudSongRow` | cpu/db | Med. Liking a cloud song loaded ALL artists + ALL albums (entity-mapped) per like → two indexed 1-row queries with identical matching semantics (trim + case-insensitive + same join row set). | Low |
+
+*(Commits 2, 5, 6 are one commit each on the branch; the table groups the batch commit 21.)*
+
+## Explicitly NOT done (proposals for maintainer sign-off — Tier 3)
+
+1. **M2 player-B rebuild + EQ churn per crossfade** — alternating without rebuild needs OEM testing; EQ re-create could be skipped when session id is unchanged.
+2. **TDLib idle-close lifecycle** — the client still lives for process lifetime (by design today); opening/closing on login-state is the biggest remaining always-on native cost but touches login flows.
+3. **R8 `-dontobfuscate` + blanket-keep slimming** (netty/ktor/coroutines keeps) — affects stack traces/crash-report tooling; needs consent. Netty is kept by rules but has zero first-party imports — likely dead APK weight.
+4. **Room FTS** for leading-wildcard `LIKE '%q%'` search + ORDER BY index alignment.
+5. **M9 duplicate audio renderer / 512 KB codec buffer** surgery in `DualPlayerEngine.buildAudioRenderers`.
+6. **M10 byte-level stream cache** keyed by mediaId (proxy URLs have ephemeral ports); back-buffer>0 for backward seeks.
+7. **Widget `ByteArray`-as-JSON-numeric-array** serialization format change (Base64/file) — touches Glance state store format.
+8. **Font subsetting** (5.8 MB variable fonts).
+9. **WearStatePublisher art caching / 2048px→watch-appropriate downsize.**
+10. **M5 stop 250 ms poller in `onStop`** — *deliberately declined*: `PlaybackStateHolder`'s tick feeds `listeningStatsTracker` (stopping it would silently stop counting listening stats in the background), and Media3 `MediaController` property reads are cache-served (no IPC per tick). Recommend instead moving listening-stats to a service-side source if background CPU ever shows up in profiles.
+11. **Dead code flagged, not removed** (per instructions): `GDriveStreamProxy` (never started/injected), `MediaStoreSongRepository.getSongs()/getPaginatedSongs()` (no callers; UI reads Room), `generativeai` catalog alias, duplicate material3/cast/mediarouter/splashscreen declarations (B7), `OptimizedAlbumArt` still on SubcomposeAsyncImage (2 cold call sites only — not worth the visual-risk).
+12. **Baseline profile extension** to cloud search/play, equalizer, folders, artist/album detail, downloads (the generator module covers startup/home/library/player today) — recommend doing it on a device farm now that the casing is fixed.
+
+## Needs manual verification on a real device (cannot be confirmed statically)
+
+- Audio focus behavior after the TDLib/`dagger.Lazy` changes (focus loss during a Telegram track crossfade).
+- MediaSession/notification behavior across the first track change with crossfade **enabled** (player B now constructed at `prepareNext` instead of at app start — `performOverlapTransition` waits up to 3 s for readiness).
+- Background playback with the app swiped away (queue snapshot restore within the 4 s window — service writer unchanged).
+- Wear OS: first metadata arrival on a watch after reconnecting mid-session (pipeline early-out change).
+- Quick Settings tile click behavior (async DataStore read now).
+- Cast: position restore after force-kill during cast playback (VM collector now cast-only).
+- Visual: SmartImage placeholder/error states in dark+light themes (custom painter reproduces box+32dp tinted icon).
+- The v24→25 Room migration on an existing install (`./gradlew` cannot validate runtime migration; schema names follow Room's default convention and `exportSchema=false`).
