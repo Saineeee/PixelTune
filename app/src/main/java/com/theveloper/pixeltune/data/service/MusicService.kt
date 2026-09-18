@@ -65,6 +65,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.ByteArrayOutputStream
@@ -1737,7 +1738,11 @@ class MusicService : MediaLibraryService() {
         followUpWidgetUpdateJob?.cancel()
         followUpWidgetUpdateJob = serviceScope.launch {
             delay(250L)
-            requestWidgetFullUpdate(force = true)
+            // PERF(battery): debounced follow-up. This refresh races the
+            // onMediaMetadataChanged fire (which typically lands within this
+            // window); forcing here ran the FULL pipeline twice back-to-back
+            // per track change. The debounce coalesces them into one.
+            requestWidgetFullUpdate(force = false)
         }
     }
 
@@ -1820,11 +1825,51 @@ class MusicService : MediaLibraryService() {
     }
 
     private suspend fun processWidgetUpdateInternal() {
+        // PERF(battery): a full update decodes album art for the current song
+        // + 4 queue items (buildPlayerInfo), serializes PlayerInfo and writes
+        // Glance state for 4 widget classes plus the Wear DataLayer item —
+        // per track change this ran up to 3x. When the user has NO pinned
+        // widgets AND no currently-connected Wear node, there is no consumer
+        // for any of that work: skip the pipeline entirely.
+        //
+        // Wear note: a paired-but-disconnected watch will simply receive the
+        // next event's state when it matters (any play/pause/track change
+        // re-publishes); connected watches are fully unaffected.
+        if (!hasAnyPinnedGlanceWidgets()) {
+            val hasConnectedNode = try {
+                com.google.android.gms.wearable.Wearable
+                    .getNodeClient(applicationContext)
+                    .connectedNodes
+                    .await()
+                    .isNotEmpty()
+            } catch (e: Exception) {
+                // GMS unavailable — fall back to running the pipeline rather
+                // than dropping Wear updates.
+                true
+            }
+            if (!hasConnectedNode) {
+                return
+            }
+        }
         val playerInfo = buildPlayerInfo()
         val currentMediaId = resolveCurrentMediaIdForWear()
         updateGlanceWidgets(playerInfo)
         // Publish state to Wear OS watch
         wearStatePublisher.publishState(currentMediaId, playerInfo)
+    }
+
+    private suspend fun hasAnyPinnedGlanceWidgets(): Boolean {
+        return try {
+            val glanceManager = androidx.glance.appwidget.GlanceAppWidgetManager(applicationContext)
+            glanceManager.getGlanceIds(PixelTuneGlanceWidget::class.java).isNotEmpty() ||
+                glanceManager.getGlanceIds(BarWidget4x1::class.java).isNotEmpty() ||
+                glanceManager.getGlanceIds(ControlWidget4x2::class.java).isNotEmpty() ||
+                glanceManager.getGlanceIds(GridWidget2x2::class.java).isNotEmpty()
+        } catch (e: Exception) {
+            // Glance unavailable — assume widgets may exist rather than
+            // dropping widget updates.
+            true
+        }
     }
 
     private suspend fun buildPlayerInfo(): PlayerInfo {
