@@ -424,7 +424,7 @@ fun CloudCatalogScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     if (songs.isEmpty()) {
-                        item(key = "cloud_empty") {
+                        item(key = "cloud_empty", contentType = "empty") {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -457,7 +457,8 @@ fun CloudCatalogScreen(
                         val displayedSongs = if (isTransitionFinished) songs else songs.take(20)
                         itemsIndexed(
                             displayedSongs,
-                            key = { index, song -> "cloud_song_${song.id}_$index" }
+                            key = { index, song -> "cloud_song_${song.id}_$index" },
+                            contentType = { _, _ -> "song" }
                         ) { _, song ->
                             EnhancedSongListItem(
                                 song = song,
@@ -484,7 +485,7 @@ fun CloudCatalogScreen(
                         if (uiState.hasMore || uiState.isLoadingMore ||
                             (uiState.error != null && songs.isNotEmpty())
                         ) {
-                            item(key = "cloud_load_more") {
+                            item(key = "cloud_load_more", contentType = "load_more") {
                                 CloudLoadMoreRow(
                                     isLoadingMore = uiState.isLoadingMore,
                                     error = uiState.error?.takeIf { songs.isNotEmpty() },

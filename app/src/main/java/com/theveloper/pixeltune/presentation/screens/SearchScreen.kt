@@ -1043,7 +1043,10 @@ fun SearchResultsList(
             val itemsForSection = groupedResults[filterType] ?: emptyList()
 
             if (itemsForSection.isNotEmpty()) {
-                item(key = "header_${filterType.name}") {
+                item(
+                    key = "header_${filterType.name}",
+                    contentType = "section_header"
+                ) {
                     SearchResultSectionHeader(
                         title = when (filterType) {
                             SearchFilterType.SONGS -> "Songs"
@@ -1067,7 +1070,15 @@ fun SearchResultsList(
                             is SearchResultItem.CloudPlaylistItem -> "cloud_playlist_${item.playlist.id}_${index}"
                             is SearchResultItem.CloudArtistItem -> "cloud_artist_${item.artist.id}_${index}"
                         }
-                    }
+                    },
+                    // PERF: each SearchResultItem variant renders a completely
+                    // different composable subtree. Without contentType the lazy
+                    // layout recycles an album row's composition for a song row
+                    // (and vice versa) while scrolling between sections, tearing
+                    // down and rebuilding the whole subtree every time the type
+                    // changes. Keying reuse on the runtime class keeps slot
+                    // recycling type-stable.
+                    contentType = { index -> itemsForSection[index]::class }
                 ) { index ->
                     val item = itemsForSection[index]
                     Box(modifier = Modifier.padding(bottom = 12.dp)) {
