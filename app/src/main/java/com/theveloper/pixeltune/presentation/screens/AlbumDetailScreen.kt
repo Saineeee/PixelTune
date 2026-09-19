@@ -196,13 +196,22 @@ fun AlbumDetailScreen(
                 val maxTopBarHeightPx = with(density) { maxTopBarHeight.toPx() }
 
                 val topBarHeight = remember { Animatable(maxTopBarHeightPx) }
-                val collapseFraction by remember(minTopBarHeightPx, maxTopBarHeightPx) {
+                // PERF(scroll): fraction State kept as an object — the screen
+                // Box scope never reads it directly (previously `by` reads +
+                // `currentTopBarHeightDp` recomposed the whole screen on every
+                // frame of the header collapse gesture). Consumed via a Boolean
+                // derived state (flips at the 95% boundary) and provider lambdas
+                // read inside the top bar / scrollbar leaves.
+                val collapseFractionState = remember(minTopBarHeightPx, maxTopBarHeightPx) {
                     derivedStateOf {
                         1f - ((topBarHeight.value - minTopBarHeightPx) / (maxTopBarHeightPx - minTopBarHeightPx)).coerceIn(
                             0f,
                             1f
                         )
                     }
+                }
+                val headerMostlyCollapsed by remember {
+                    derivedStateOf { collapseFractionState.value > 0.95f }
                 }
 
                 val nestedScrollConnection = remember {
@@ -283,7 +292,6 @@ fun AlbumDetailScreen(
                         )
                         .nestedScroll(nestedScrollConnection)
                 ) {
-                    val currentTopBarHeightDp = with(density) { topBarHeight.value.toDp() }
                     LazyColumn(
                         state = lazyListState,
                         modifier = Modifier
@@ -291,7 +299,7 @@ fun AlbumDetailScreen(
                             .offset { IntOffset(0, topBarHeight.value.toInt()) },
                         contentPadding = PaddingValues(
                             start = 16.dp,
-                            end = if (rememberCanScrollMore(lazyListState) && collapseFraction > 0.95f) 24.dp else 16.dp,
+                            end = if (rememberCanScrollMore(lazyListState) && headerMostlyCollapsed) 24.dp else 16.dp,
                             bottom = fabBottomPadding + 80.dp // To account for FAB
                         ),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -312,23 +320,23 @@ fun AlbumDetailScreen(
                         }
                     }
 
-                    if (collapseFraction > 0.95f) {
-                        ExpressiveScrollBar(
-                            listState = lazyListState,
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .padding(
-                                    top = currentTopBarHeightDp + 12.dp,
-                                    bottom = fabBottomPadding + 80.dp
-                                )
+                    if (headerMostlyCollapsed) {
+                        // PERF(scroll): leaf host — the animated top inset is read
+                        // inside this scope, so the collapse gesture relayouts only
+                        // the scrollbar, not the whole screen Box.
+                        AlbumDetailScrollBarHost(
+                            topBarHeight = topBarHeight,
+                            lazyListState = lazyListState,
+                            bottomPadding = fabBottomPadding + 80.dp,
+                            modifier = Modifier.align(Alignment.CenterEnd)
                         )
                     }
 
                     CollapsingAlbumTopBar(
                         album = album,
                         songsCount = songs.size,
-                        collapseFraction = collapseFraction,
-                        headerHeight = currentTopBarHeightDp,
+                        collapseFractionProvider = { collapseFractionState.value },
+                        headerHeightProvider = { with(density) { topBarHeight.value.toDp() } },
                         onBackPressed = { navController.popBackStack() },
                         onPlayClick = {
                             if (songs.isNotEmpty()) {
@@ -421,11 +429,17 @@ fun AlbumDetailScreen(
 private fun CollapsingAlbumTopBar(
     album: Album,
     songsCount: Int,
-    collapseFraction: Float,
-    headerHeight: Dp,
+    // PERF(scroll): provider lambdas instead of raw Float/Dp params — keeps
+    // the per-frame reads of the collapsing-header values inside this top
+    // bar's own scope instead of recomposing the whole screen Box per frame
+    // of the gesture (same recipe as CollapsingCloudCatalogTopBar).
+    collapseFractionProvider: () -> Float,
+    headerHeightProvider: () -> Dp,
     onBackPressed: () -> Unit,
     onPlayClick: () -> Unit
 ) {
+    val collapseFraction = collapseFractionProvider()
+    val headerHeight = headerHeightProvider()
     val surfaceColor = MaterialTheme.colorScheme.surface
     val statusBarColor =
         if (LocalPixelTuneDarkTheme.current) Color.Black.copy(alpha = 0.6f) else Color.White.copy(
@@ -478,7 +492,6 @@ private fun CollapsingAlbumTopBar(
                         model = album.albumArtUriString,
                         contentDescription = "Cover of ${album.title}",
                         contentScale = ContentScale.Crop,
-                        targetSize = Size(1600, 1600),
                         modifier = Modifier.fillMaxSize()
                     )
                     Box(
@@ -590,4 +603,26 @@ private fun CollapsingAlbumTopBar(
             }
         }
     }
+}
+
+/**
+ * PERF(scroll): leaf host for the album-detail expressive scrollbar —
+ * the animated top inset is read inside this scope so the collapse gesture
+ * relayouts only the scrollbar (same recipe as CloudCatalogScrollBarHost).
+ */
+@Composable
+private fun AlbumDetailScrollBarHost(
+    topBarHeight: Animatable<Float, *>,
+    lazyListState: androidx.compose.foundation.lazy.LazyListState,
+    bottomPadding: Dp,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    ExpressiveScrollBar(
+        listState = lazyListState,
+        modifier = modifier.padding(
+            top = with(density) { topBarHeight.value.toDp() } + 12.dp,
+            bottom = bottomPadding
+        )
+    )
 }

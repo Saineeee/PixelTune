@@ -286,11 +286,23 @@ fun CloudCatalogScreen(
             val maxTopBarHeightPx = with(density) { maxTopBarHeight.toPx() }
 
             val topBarHeight = remember { Animatable(maxTopBarHeightPx) }
-            val collapseFraction by remember(minTopBarHeightPx, maxTopBarHeightPx) {
+            // PERF(scroll): the fraction State is kept as an object — the Box
+            // scope never reads it directly. It used to be read via `by` + raw
+            // `topBarHeight.value` reads (`currentTopBarHeightDp`), so the
+            // ENTIRE screen Box scope recomposed on every frame of the
+            // header collapse/expand gesture. It is now consumed only through
+            // (a) a Boolean derived state that flips at the 95% boundary and
+            // (b) provider lambdas read inside the top bar / scrollbar leaves.
+            val collapseFractionState = remember(minTopBarHeightPx, maxTopBarHeightPx) {
                 derivedStateOf {
                     1f - ((topBarHeight.value - minTopBarHeightPx) /
                         (maxTopBarHeightPx - minTopBarHeightPx)).coerceIn(0f, 1f)
                 }
+            }
+            // PERF(scroll): Boolean view of the fraction — only changes when
+            // crossing the boundary, not per frame of the gesture.
+            val headerMostlyCollapsed by remember {
+                derivedStateOf { collapseFractionState.value > 0.95f }
             }
 
             val nestedScrollConnection = remember {
@@ -406,7 +418,6 @@ fun CloudCatalogScreen(
                     .background(color = MaterialTheme.colorScheme.surface)
                     .nestedScroll(nestedScrollConnection)
             ) {
-                val currentTopBarHeightDp = with(density) { topBarHeight.value.toDp() }
                 LazyColumn(
                     state = lazyListState,
                     modifier = Modifier
@@ -415,7 +426,7 @@ fun CloudCatalogScreen(
                     contentPadding = PaddingValues(
                         start = 16.dp,
                         end = if (rememberCanScrollMore(lazyListState) &&
-                            collapseFraction > 0.95f
+                            headerMostlyCollapsed
                         ) 24.dp else 16.dp,
                         // FIX(cloud-detail-spacing): reserve the full bottom
                         // overlay — collapsing-header offset + system nav inset +
@@ -512,17 +523,17 @@ fun CloudCatalogScreen(
                     }
                 }
 
-                if (collapseFraction > 0.95f &&
+                if (headerMostlyCollapsed &&
                     rememberCanScrollMore(lazyListState)
                 ) {
-                    ExpressiveScrollBar(
-                        listState = lazyListState,
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .padding(
-                                top = currentTopBarHeightDp + 12.dp,
-                                bottom = fabBottomPadding + 80.dp
-                            )
+                    // PERF(scroll): leaf host — the animated top padding is
+                    // read inside this scope, so the collapse gesture relayouts
+                    // only the scrollbar, not the whole screen Box.
+                    CloudCatalogScrollBarHost(
+                        topBarHeight = topBarHeight,
+                        lazyListState = lazyListState,
+                        bottomPadding = fabBottomPadding + 80.dp,
+                        modifier = Modifier.align(Alignment.CenterEnd)
                     )
                 }
 
@@ -533,8 +544,8 @@ fun CloudCatalogScreen(
                     artworkUrl = uiState.headerArtworkUrl
                         ?: songs.firstOrNull()?.albumArtUriString,
                     isArtist = uiState.artist != null,
-                    collapseFraction = collapseFraction,
-                    headerHeight = currentTopBarHeightDp,
+                    collapseFractionProvider = { collapseFractionState.value },
+                    headerHeightProvider = { with(density) { topBarHeight.value.toDp() } },
                     onBackPressed = { navController.popBackStack() },
                     onShuffleClick = {
                         if (songs.isNotEmpty()) {
@@ -706,8 +717,14 @@ private fun CollapsingCloudCatalogTopBar(
     trackCountLabel: String?,
     artworkUrl: String?,
     isArtist: Boolean,
-    collapseFraction: Float,
-    headerHeight: Dp,
+    // PERF(scroll): provider lambdas instead of raw Float/Dp params — the
+    // header legitimately changes every frame of the collapse gesture, but
+    // with raw params the CALLER (the whole screen Box scope) had to read
+    // the animated values to pass them down, recomposing the entire screen
+    // per gesture frame. Providers keep the per-frame reads inside this
+    // top bar's own (much smaller) recomposition scope.
+    collapseFractionProvider: () -> Float,
+    headerHeightProvider: () -> Dp,
     onBackPressed: () -> Unit,
     onShuffleClick: () -> Unit,
     // IMPROVE(cloud-playlist-import): "Add to your playlist" action — null
@@ -717,6 +734,8 @@ private fun CollapsingCloudCatalogTopBar(
     isAddToLibraryImporting: Boolean = false,
     isDarkTheme: Boolean
 ) {
+    val collapseFraction = collapseFractionProvider()
+    val headerHeight = headerHeightProvider()
     val surfaceColor = MaterialTheme.colorScheme.surface
     val statusBarColor = if (isDarkTheme) {
         Color.Black.copy(alpha = 0.6f)
@@ -776,7 +795,6 @@ private fun CollapsingCloudCatalogTopBar(
                             model = artworkUrl,
                             contentDescription = "Cover of $title",
                             contentScale = ContentScale.Crop,
-                            targetSize = Size(1600, 1600),
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
@@ -966,4 +984,30 @@ private fun CollapsingCloudCatalogTopBar(
             }
         }
     }
+}
+
+/**
+ * PERF(scroll): leaf host for the CloudCatalog expressive scrollbar.
+ *
+ * The scrollbar's top inset follows the collapsing header, so it changes on
+ * every frame of the collapse/expand gesture. Reading it inside this small
+ * scope (instead of the screen Box) means the gesture relayouts only the
+ * scrollbar — the LazyColumn parameter block and the rest of the screen no
+ * longer re-execute per frame.
+ */
+@Composable
+private fun CloudCatalogScrollBarHost(
+    topBarHeight: Animatable<Float, *>,
+    lazyListState: androidx.compose.foundation.lazy.LazyListState,
+    bottomPadding: Dp,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    ExpressiveScrollBar(
+        listState = lazyListState,
+        modifier = modifier.padding(
+            top = with(density) { topBarHeight.value.toDp() } + 12.dp,
+            bottom = bottomPadding
+        )
+    )
 }

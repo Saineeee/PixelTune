@@ -118,10 +118,20 @@ fun GenreDetailScreen(
     val maxTopBarHeightPx = with(density) { maxTopBarHeight.toPx() }
 
     val topBarHeight = remember { Animatable(maxTopBarHeightPx) }
-    val collapseFraction by remember(minTopBarHeightPx, maxTopBarHeightPx) {
+    // PERF(scroll): fraction State kept as an object — the screen scope never
+    // reads it directly (previously `by` reads + `currentTopBarHeightDp`
+    // recomposed the whole screen on every frame of the header collapse
+    // gesture). Consumed via a Boolean derived state and a provider lambda
+    // read inside the top bar's own scope.
+    val collapseFractionState = remember(minTopBarHeightPx, maxTopBarHeightPx) {
         derivedStateOf {
             1f - ((topBarHeight.value - minTopBarHeightPx) / (maxTopBarHeightPx - minTopBarHeightPx)).coerceIn(0f, 1f)
         }
+    }
+    // PERF(scroll): Boolean view — flips only when crossing the boundary,
+    // not on every frame of the gesture.
+    val headerMostlyCollapsed by remember {
+        derivedStateOf { collapseFractionState.value > 0.95f }
     }
 
     val nestedScrollConnection = remember {
@@ -245,11 +255,10 @@ fun GenreDetailScreen(
                 .nestedScroll(nestedScrollConnection)
                 .background(MaterialTheme.colorScheme.background) // Uses new theme background
         ) {
-            // Optimization: Cache Dp conversions
-            val currentTopBarHeightDp = with(density) { topBarHeight.value.toDp() }
-
             // Optimization: Use fixed padding and offset instead of dynamic contentPadding 
             // to avoid triggered remeasures of the entire list on every pixel of scroll.
+            // (PERF(scroll): the former `currentTopBarHeightDp` composition read was
+            // removed — the animated height now only feeds the top bar via a provider.)
             
             LazyColumn(
                 state = lazyListState,
@@ -332,7 +341,7 @@ fun GenreDetailScreen(
             }
 
             // Only show scrollbar when the top bar is mostly collapsed to avoid visual conflict
-            if (collapseFraction > 0.95f) {
+            if (headerMostlyCollapsed) {
                 ExpressiveScrollBar(
                     listState = lazyListState,
                     modifier = Modifier
@@ -348,8 +357,8 @@ fun GenreDetailScreen(
             // This ensures the gradient is ON TOP of the scrolling content, so content scrolls BEHIND it.
             GenreCollapsibleTopBar(
                 title = genreDisplayName,
-                collapseFraction = collapseFraction,
-                headerHeight = currentTopBarHeightDp,
+                collapseFractionProvider = { collapseFractionState.value },
+                headerHeightProvider = { with(density) { topBarHeight.value.toDp() } },
                 onBackPressed = { navController.popBackStack() },
                 startColor = startColor,
                 contentColor = contentColor,
@@ -518,14 +527,20 @@ fun GenreDetailScreen(
 @Composable
 fun GenreCollapsibleTopBar(
     title: String,
-    collapseFraction: Float,
-    headerHeight: Dp,
+    // PERF(scroll): provider lambdas instead of raw Float/Dp params — keeps
+    // the per-frame reads of the collapsing-header values inside this top
+    // bar's scope instead of recomposing the whole screen per gesture frame
+    // (same recipe as the CloudCatalog/AlbumDetail top bars).
+    collapseFractionProvider: () -> Float,
+    headerHeightProvider: () -> Dp,
     onBackPressed: () -> Unit,
     startColor: Color,
     containerColor: Color,
     contentColor: Color,
     collapsedContentColor: Color
 ) {
+    val collapseFraction = collapseFractionProvider()
+    val headerHeight = headerHeightProvider()
     val solidAlpha = (collapseFraction * 2f).coerceIn(0f, 1f)
     val animatedContentColor = androidx.compose.ui.graphics.lerp(
         start = contentColor,
