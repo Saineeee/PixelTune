@@ -320,7 +320,7 @@ class PlaylistViewModel @Inject constructor(
             compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }
         )
         SortOption.PlaylistNameZA -> playlists.sortedWith(
-            compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }.reversed()
+            compareBy<Playlist, String>(String.CASE_INSENSITIVE_ORDER) { it.name }.reversed()
         )
         SortOption.PlaylistDateCreated -> playlists.sortedByDescending { it.lastModified }
         else -> playlists.sortedWith(

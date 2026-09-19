@@ -1171,7 +1171,7 @@ fun SearchResultsList(
                                 // PERF(scroll): remembered like its sibling row
                                 // lambdas (onOpenClick below) so the row can skip
                                 // recomposition when the parent re-executes.
-                                val onPlayClick = remember(
+                                val onPlayClick: () -> Unit = remember(
                                     item.playlist,
                                     playerViewModel,
                                     playerStableState.isShuffleEnabled,

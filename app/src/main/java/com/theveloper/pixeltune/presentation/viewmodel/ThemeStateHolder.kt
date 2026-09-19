@@ -70,7 +70,7 @@ class ThemeStateHolder @Inject constructor(
                     paletteStyle = style
                 )
                 _currentAlbumArtColorSchemePair.value = refreshedScheme
-                individualAlbumColorSchemes[uri]?.value = refreshedScheme
+                individualAlbumColorSchemes[uri]?.mutable?.value = refreshedScheme
             }
         }
 
@@ -201,7 +201,7 @@ class ThemeStateHolder @Inject constructor(
          // Iterate if there is an active flow for this URI and update it
          val activeFlow = individualAlbumColorSchemes[uriString]
          if (activeFlow != null) {
-             activeFlow.value = newScheme
+             activeFlow.mutable.value = newScheme
          }
          
          // Also update the main current album art scheme if it matches the one we are tracking

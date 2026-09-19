@@ -123,6 +123,7 @@ import com.theveloper.pixeltune.data.model.FolderSource
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.model.SortOption
 import com.theveloper.pixeltune.data.model.StorageFilter
+import com.theveloper.pixeltune.data.downloads.DownloadedSong
 import com.theveloper.pixeltune.data.downloads.DownloadState
 import com.theveloper.pixeltune.data.downloads.toSong
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
@@ -2709,10 +2710,10 @@ fun LibraryDownloadsTab(
                 compareBy(String.CASE_INSENSITIVE_ORDER) { it.title }
             )
             SortOption.DownloadTitleZA -> downloads.sortedWith(
-                compareBy(String.CASE_INSENSITIVE_ORDER) { it.title }.reversed()
+                compareBy<DownloadedSong, String>(String.CASE_INSENSITIVE_ORDER) { it.title }.reversed()
             )
             SortOption.DownloadArtist -> downloads.sortedWith(
-                compareBy(String.CASE_INSENSITIVE_ORDER) { it.artist }
+                compareBy<DownloadedSong, String>(String.CASE_INSENSITIVE_ORDER) { it.artist }
                     .thenComparator { a, b -> String.CASE_INSENSITIVE_ORDER.compare(a.title, b.title) }
             )
             SortOption.DownloadDuration -> downloads.sortedByDescending { it.durationMs }

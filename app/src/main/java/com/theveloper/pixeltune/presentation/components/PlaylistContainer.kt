@@ -248,7 +248,7 @@ fun PlaylistItems(
             contentPadding = PaddingValues(bottom = bottomBarHeight + MiniPlayerHeight + 30.dp)
         ) {
             items(filteredPlaylists, key = { it.id }) { playlist ->
-                val rememberedOnClick = remember(playlist.id) {
+                val rememberedOnClick: () -> Unit = remember(playlist.id) {
                     {
                         if (isAddingToPlaylist && currentSong != null && selectedPlaylists != null) {
                             val currentSelection = selectedPlaylists[playlist.id] ?: false
