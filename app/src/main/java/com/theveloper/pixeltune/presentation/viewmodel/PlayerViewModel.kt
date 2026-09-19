@@ -3350,11 +3350,17 @@ class PlayerViewModel @Inject constructor(
                 dualPlayerEngine.resolveCloudUri(startingUri)
             }
 
-            val playSongsAction = {
-                // Use Direct Engine Access to avoid TransactionTooLargeException on Binder
-                val enginePlayer = dualPlayerEngine.masterPlayer
-
-                val mediaItems = songsToPlay.map { song ->
+            // PERF(playback-start): building one MediaItem per song (Bundle
+            // with ~14 puts + MediaMetadata + Uri parse each) used to run on
+            // the MAIN thread inside playSongsAction — "play all" on a
+            // 5 000-song library stalled the frame right at the tap for
+            // 100-300 ms, immediately before the sheet/theme work of the
+            // track change. MediaItemBuilder is a stateless object, so the
+            // map is pure computation and safe on Dispatchers.Default; the
+            // engine calls (setMediaItems/prepare/play) still run on Main at
+            // invocation time, as ExoPlayer requires.
+            val mediaItems = withContext(Dispatchers.Default) {
+                songsToPlay.map { song ->
                     // FIX(cloud-metadata): use the shared [MediaItemBuilder.build]
                     // helper instead of an inline [MediaMetadata.Builder]. The inline
                     // version was only setting title / artist / artworkUri and a
@@ -3394,6 +3400,12 @@ class PlayerViewModel @Inject constructor(
                             .build()
                     }
                 }
+            }
+
+            val playSongsAction = {
+                // Use Direct Engine Access to avoid TransactionTooLargeException on Binder
+                val enginePlayer = dualPlayerEngine.masterPlayer
+
                 val startIndex = songsToPlay.indexOfFirst { it.id == effectiveStartSong.id }.coerceAtLeast(0)
 
                 if (mediaItems.isNotEmpty()) {
