@@ -179,7 +179,12 @@ fun LyricsSheet(
 ) {
     BackHandler { onBackClick() }
     val stablePlayerState by stablePlayerStateFlow.collectAsStateWithLifecycle()
-    val playbackPosition by playbackPositionFlow.collectAsStateWithLifecycle(initialValue = 0L)
+    // PERF(lyrics): the position used to be read with `by` at THIS sheet
+    // scope — every 250 ms tick of the playback poller recomposed the whole
+    // LyricsSheet (toolbar, controls, seek bar, header). Keeping the State
+    // object unread here and passing a provider lambda down means the read
+    // happens inside PlayerSeekBar's own derived state only.
+    val playbackPositionState = playbackPositionFlow.collectAsStateWithLifecycle(initialValue = 0L)
 
     val isLoadingLyrics by remember { derivedStateOf { stablePlayerState.isLoadingLyrics } }
     val lyrics by remember { derivedStateOf { stablePlayerState.lyrics } }
@@ -714,7 +719,7 @@ fun LyricsSheet(
                         backgroundColor = backgroundColor, // Transparent as it's now inline
                         onBackgroundColor = onBackgroundColor,
                         primaryColor = accentColor,
-                        currentPosition = playbackPosition,
+                        currentPositionProvider = { playbackPositionState.value },
                         totalDuration = stablePlayerState.totalDuration,
                         onSeek = onSeekTo,
                         isPlaying = isPlaying,
@@ -879,11 +884,18 @@ fun SyncedLyricsList(
     footer: LazyListScope.() -> Unit = {}
 ) {
     val density = LocalDensity.current
-    val position by positionFlow.collectAsStateWithLifecycle(initialValue = 0L)
-    val currentLineIndex by remember(position, lines) {
+    // PERF(lyrics): previously `val position by positionFlow…` + a
+    // `remember(position, lines) { derivedStateOf {…} }` — the `by` read
+    // invalidated this whole list scope on every 250 ms tick AND the
+    // derivedStateOf was recreated per tick (keyed on its own input),
+    // defeating derivation. Reading the State inside the derived block
+    // (keyed only on `lines`) recomposes this scope only when the active
+    // lyric line actually changes.
+    val positionState = positionFlow.collectAsStateWithLifecycle(initialValue = 0L)
+    val currentLineIndex by remember(lines) {
         derivedStateOf {
             if (lines.isEmpty()) return@derivedStateOf -1
-            val currentPosition = position
+            val currentPosition = positionState.value
             lines.withIndex().lastOrNull { (index, line) ->
                 val nextTime = lines.getOrNull(index + 1)?.time ?: Int.MAX_VALUE
                 val lineEndTime = resolveLineEndTimeMs(line, nextTime)
@@ -938,7 +950,7 @@ fun SyncedLyricsList(
                         LyricLineRow(
                             line = line,
                             nextTime = nextTime,
-                            position = position,
+                            positionState = positionState,
                             distanceFromCurrent = distanceFromCurrent,
                             useAnimatedLyrics = useAnimatedLyrics,
                             immersiveMode = immersiveMode,
@@ -986,7 +998,7 @@ fun SyncedLyricsList(
 fun LyricLineRow(
     line: SyncedLine,
     nextTime: Int,
-    position: Long,
+    positionState: State<Long>,
     distanceFromCurrent: Int = 100,
     useAnimatedLyrics: Boolean = false,
     immersiveMode: Boolean = false,
@@ -1002,8 +1014,11 @@ fun LyricLineRow(
     val lineEndTime = remember(line, nextTime) {
         resolveLineEndTimeMs(line, nextTime)
     }
-    val isCurrentLine by remember(position, line.time, lineEndTime) {
-        derivedStateOf { position in line.time.toLong()..<lineEndTime }
+    // PERF(lyrics): previously a raw `position: Long` param recomposed every
+    // visible row on every 250 ms tick. The State is read inside the derived
+    // block instead, so a row only recomposes when its isCurrentLine flips.
+    val isCurrentLine by remember(line.time, lineEndTime) {
+        derivedStateOf { positionState.value in line.time.toLong()..<lineEndTime }
     }
     val unhighlightedColor = LocalContentColor.current.copy(alpha = 0.45f)
     val lineColor by animateColorAsState(
@@ -1073,11 +1088,11 @@ fun LyricLineRow(
                 .padding(vertical = verticalPadding, horizontal = 2.dp)
         )
     } else {
-        val highlightedWordIndex by remember(position, sanitizedWords, line.time, lineEndTime) {
+        val highlightedWordIndex by remember(sanitizedWords, line.time, lineEndTime) {
             derivedStateOf {
                 resolveHighlightedWordIndex(
                     words = sanitizedWords,
-                    positionMs = position,
+                    positionMs = positionState.value,
                     lineStartTimeMs = line.time.toLong(),
                     lineEndTimeMs = lineEndTime
                 )

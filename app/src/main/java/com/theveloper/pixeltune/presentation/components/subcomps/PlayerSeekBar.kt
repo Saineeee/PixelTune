@@ -17,6 +17,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -40,17 +41,26 @@ fun PlayerSeekBar(
     backgroundColor: Color,
     onBackgroundColor: Color,
     primaryColor: Color,
-    currentPosition: Long,
+    // PERF(lyrics): provider-lambda position instead of a raw Long param —
+    // the lyrics sheet feeds it a 250 ms-ticking State; with a Long param the
+    // whole bar (and its LaunchedEffect) restarted on every tick AND the
+    // caller scope recomposed to pass the new value. Reading the position
+    // inside the derived block below keeps the invalidation local to the
+    // fraction state.
+    currentPositionProvider: () -> Long,
     totalDuration: Long,
     onSeek: (Long) -> Unit,
     isPlaying: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val progressFraction = remember(currentPosition, totalDuration) {
-        if (totalDuration > 0) {
-            (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
-        } else {
-            0f
+    val progressFraction by remember(currentPositionProvider, totalDuration) {
+        derivedStateOf {
+            val currentPosition = currentPositionProvider()
+            if (totalDuration > 0) {
+                (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
+            } else {
+                0f
+            }
         }
     }
 
