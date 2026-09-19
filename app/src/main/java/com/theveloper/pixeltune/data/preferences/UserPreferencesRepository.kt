@@ -95,6 +95,7 @@ constructor(
         val PLAYLISTS_SORT_OPTION = stringPreferencesKey("playlists_sort_option")
         val FOLDERS_SORT_OPTION = stringPreferencesKey("folders_sort_option")
         val LIKED_SONGS_SORT_OPTION = stringPreferencesKey("liked_songs_sort_option")
+        val DOWNLOADS_SORT_OPTION = stringPreferencesKey("downloads_sort_option")
 
         // UI State Keys
         val LAST_LIBRARY_TAB_INDEX =
@@ -1340,6 +1341,19 @@ constructor(
                         .storageKey
             }
 
+    // IMPROVE(downloads-sort): persisted sort option of the library DOWNLOADS
+    // tab — defaults to "Recently Downloaded", the previously curated
+    // newest-first behaviour.
+    val downloadsSortOptionFlow: Flow<String> =
+            dataStore.data.map { preferences ->
+                SortOption.fromStorageKey(
+                                preferences[PreferencesKeys.DOWNLOADS_SORT_OPTION],
+                                SortOption.DOWNLOADS,
+                                SortOption.DownloadDateNewest
+                        )
+                        .storageKey
+            }
+
     // Functions to update Sort Options
     suspend fun setSongsSortOption(optionKey: String) {
         dataStore.edit { preferences ->
@@ -1375,6 +1389,14 @@ constructor(
     suspend fun setLikedSongsSortOption(optionKey: String) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.LIKED_SONGS_SORT_OPTION] = optionKey
+        }
+    }
+
+    // IMPROVE(downloads-sort): setter for the library DOWNLOADS tab's sort
+    // option (see [downloadsSortOptionFlow]).
+    suspend fun setDownloadsSortOption(optionKey: String) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.DOWNLOADS_SORT_OPTION] = optionKey
         }
     }
 
@@ -1435,6 +1457,12 @@ constructor(
                     PreferencesKeys.LIKED_SONGS_SORT_OPTION,
                     SortOption.LIKED,
                     SortOption.LikedSongDateLiked
+            )
+            migrateSortPreference(
+                    preferences,
+                    PreferencesKeys.DOWNLOADS_SORT_OPTION,
+                    SortOption.DOWNLOADS,
+                    SortOption.DownloadDateNewest
             )
         }
     }

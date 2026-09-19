@@ -49,6 +49,10 @@ data class PlayerUiState(
     val currentAlbumSortOption: SortOption = SortOption.AlbumTitleAZ,
     val currentArtistSortOption: SortOption = SortOption.ArtistNameAZ,
     val currentFolderSortOption: SortOption = SortOption.FolderNameAZ,
+    // IMPROVE(downloads-sort): the DOWNLOADS tab's sort option — persisted via
+    // DataStore like every other library tab and applied client-side to the
+    // in-memory downloads index (newest-first by default).
+    val currentDownloadSortOption: SortOption = SortOption.DownloadDateNewest,
     val folderBackGestureNavigationEnabled: Boolean = false,
     val currentSongSortOption: SortOption = SortOption.SongTitleAZ,
     // val songCount: Int = 0, // REMOVED

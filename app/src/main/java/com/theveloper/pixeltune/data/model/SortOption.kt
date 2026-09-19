@@ -48,6 +48,14 @@ sealed class SortOption(val storageKey: String, val displayName: String) {
     object FolderSubdirCountAsc : SortOption("folder_subdir_count_asc", "Fewest Subfolders")
     object FolderSubdirCountDesc : SortOption("folder_subdir_count_desc", "Most Subfolders")
 
+    // Downloads Sort Options (offline cloud downloads)
+    object DownloadDateNewest : SortOption("download_date_newest", "Recently Downloaded")
+    object DownloadDateOldest : SortOption("download_date_oldest", "Oldest Downloaded")
+    object DownloadTitleAZ : SortOption("download_title_az", "Title (A-Z)")
+    object DownloadTitleZA : SortOption("download_title_za", "Title (Z-A)")
+    object DownloadArtist : SortOption("download_artist", "Artist")
+    object DownloadDuration : SortOption("download_duration", "Duration")
+
     companion object {
 
         val SONGS: List<SortOption> by lazy {
@@ -101,6 +109,16 @@ sealed class SortOption(val storageKey: String, val displayName: String) {
                 LikedSongArtist,
                 LikedSongAlbum,
                 LikedSongDateLiked
+            )
+        }
+        val DOWNLOADS: List<SortOption> by lazy {
+            listOf(
+                DownloadDateNewest,
+                DownloadDateOldest,
+                DownloadTitleAZ,
+                DownloadTitleZA,
+                DownloadArtist,
+                DownloadDuration
             )
         }
 

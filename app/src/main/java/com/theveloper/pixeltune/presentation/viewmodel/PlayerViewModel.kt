@@ -905,6 +905,18 @@ class PlayerViewModel @Inject constructor(
     private val _isSortingSheetVisible = MutableStateFlow(false)
     val isSortingSheetVisible: StateFlow<Boolean> = _isSortingSheetVisible.asStateFlow()
 
+    // IMPROVE(downloads-sort): the Downloads chip's sort option — persisted via
+    // DataStore like every other library tab and applied client-side to the
+    // in-memory downloads index.
+    private val _currentDownloadSortOption = MutableStateFlow<SortOption>(SortOption.DownloadDateNewest)
+    val currentDownloadSortOption: StateFlow<SortOption> = _currentDownloadSortOption.asStateFlow()
+
+    // IMPROVE(provider-indicator): the currently selected cloud streaming
+    // provider (YouTube / SoundCloud), exposed so the home-screen provider
+    // selector can badge the active card in real time while the user picks.
+    val currentOnlineProvider: StateFlow<SearchStateHolder.OnlineProvider> =
+        searchStateHolder.currentProvider
+
     val availableSortOptions: StateFlow<List<SortOption>> =
         currentLibraryTabId.map { tabId ->
             Trace.beginSection("PlayerViewModel.availableSortOptionsMapping")
@@ -915,9 +927,9 @@ class PlayerViewModel @Inject constructor(
                 LibraryTabId.PLAYLISTS -> SortOption.PLAYLISTS
                 LibraryTabId.FOLDERS -> SortOption.FOLDERS
                 LibraryTabId.LIKED -> SortOption.LIKED
-                // IMPROVE(downloads-chip): the downloads list is a curated,
-                // newest-first view (like listening history) — no sort menu.
-                LibraryTabId.DOWNLOADS -> emptyList()
+                // IMPROVE(downloads-sort): the downloads list now supports the
+                // same sort affordance as the other library tabs.
+                LibraryTabId.DOWNLOADS -> SortOption.DOWNLOADS
             }
             Trace.endSection()
             options
@@ -1790,6 +1802,13 @@ class PlayerViewModel @Inject constructor(
                 SortOption.LIKED,
                 SortOption.LikedSongDateLiked
             )
+            // IMPROVE(downloads-sort): restore the persisted Downloads sort
+            // (defaults to newest-first, the previous curated behaviour).
+            val initialDownloadSort = resolveSortOption(
+                userPreferencesRepository.downloadsSortOptionFlow.first(),
+                SortOption.DOWNLOADS,
+                SortOption.DownloadDateNewest
+            )
 
             _playerUiState.update {
                 it.copy(
@@ -1797,9 +1816,11 @@ class PlayerViewModel @Inject constructor(
                     currentAlbumSortOption = initialAlbumSort,
                     currentArtistSortOption = initialArtistSort,
                     currentFolderSortOption = initialFolderSort,
-                    currentFavoriteSortOption = initialLikedSort
+                    currentFavoriteSortOption = initialLikedSort,
+                    currentDownloadSortOption = initialDownloadSort
                 )
             }
+            _currentDownloadSortOption.value = initialDownloadSort
             // Also update the dedicated flow for favorites to ensure consistency
             // _currentFavoriteSortOptionStateFlow.value = initialLikedSort // Delegated to LibraryStateHolder
 
@@ -2073,6 +2094,13 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             libraryStateHolder.currentStorageFilter.collect { filter ->
                 _playerUiState.update { it.copy(currentStorageFilter = filter) }
+            }
+        }
+        // IMPROVE(downloads-sort): keep the UI state in sync with the dedicated
+        // downloads sort flow (same convention as the storage filter above).
+        viewModelScope.launch {
+            _currentDownloadSortOption.collect { option ->
+                _playerUiState.update { it.copy(currentDownloadSortOption = option) }
             }
         }
 
@@ -4122,6 +4150,21 @@ class PlayerViewModel @Inject constructor(
 
     fun sortFolders(sortOption: SortOption, persist: Boolean = true) {
         libraryStateHolder.sortFolders(sortOption, persist)
+    }
+
+    /**
+     * IMPROVE(downloads-sort): selects the Downloads chip's sort option and
+     * persists it — mirrors the sort functions of the other library tabs.
+     * The actual (client-side) re-ordering happens in [LibraryDownloadsTab],
+     * which sorts the live downloads index by this option.
+     */
+    fun sortDownloads(sortOption: SortOption, persist: Boolean = true) {
+        viewModelScope.launch {
+            if (persist) {
+                userPreferencesRepository.setDownloadsSortOption(sortOption.storageKey)
+            }
+            _currentDownloadSortOption.value = sortOption
+        }
     }
 
     fun setFoldersPlaylistView(isPlaylistView: Boolean) {

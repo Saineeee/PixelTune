@@ -74,6 +74,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.model.MusicFolder
+import com.theveloper.pixeltune.presentation.viewmodel.PlaylistSourceFilter
 import com.theveloper.pixeltune.ui.theme.GoogleSansRounded
 import java.io.File
 
@@ -102,7 +103,13 @@ fun LibraryActionRow(
     // Storage Filter
     showStorageFilterButton: Boolean = false,
     currentStorageFilter: com.theveloper.pixeltune.data.model.StorageFilter = com.theveloper.pixeltune.data.model.StorageFilter.ALL,
-    onStorageFilterClick: () -> Unit = {}
+    onStorageFilterClick: () -> Unit = {},
+    // IMPROVE(cloud-playlist-source-filter): the Playlists tab's Local / Cloud
+    // source filter — rendered exactly like the storage filter button of the
+    // Songs / Albums / Artists / Liked tabs, placed beside the Sort button.
+    showPlaylistSourceFilterButton: Boolean = false,
+    currentPlaylistSourceFilter: PlaylistSourceFilter = PlaylistSourceFilter.ALL,
+    onPlaylistSourceFilterClick: () -> Unit = {}
 ) {
     Row(
         modifier = modifier
@@ -264,10 +271,16 @@ fun LibraryActionRow(
 
         if (showSortButton) {
             val outerCorner = 26.dp
-            
+
+            // IMPROVE(cloud-playlist-source-filter): either filter button
+            // (storage or playlist source) occupies the same middle slot, so
+            // they share the corner / gap logic. Only one is ever visible at
+            // a time (they belong to different tabs).
+            val showSourceFilterButton = showStorageFilterButton || showPlaylistSourceFilterButton
+
             // Logic for Sort Button (Rightmost)
             val sortStartCorner by animateDpAsState(
-                targetValue = if (showLocateButton || showStorageFilterButton) 8.dp else outerCorner,
+                targetValue = if (showLocateButton || showSourceFilterButton) 8.dp else outerCorner,
                 label = "SortStartCorner"
             )
 
@@ -294,7 +307,7 @@ fun LibraryActionRow(
                 label = "GapLocate"
             )
             val gapBetweenFilterAndSort by animateDpAsState(
-                targetValue = if (showStorageFilterButton) 4.dp else 0.dp,
+                targetValue = if (showSourceFilterButton) 4.dp else 0.dp,
                 label = "GapFilter"
             )
 
@@ -366,6 +379,58 @@ fun LibraryActionRow(
                              Icon(
                                 imageVector = finalIcon,
                                 contentDescription = tooltipText
+                            )
+                        }
+                    }
+                }
+
+                // IMPROVE(cloud-playlist-source-filter): Playlist Source
+                // Filter Button — the Playlists tab counterpart of the storage
+                // filter button above. Occupies the exact same middle slot
+                // (beside the Sort button): same size, shape animation, slide +
+                // fade reveal and tooltip convention, so the tab feels native
+                // next to its siblings. Only one of the two filter buttons is
+                // ever visible at a time (they belong to different tabs).
+                AnimatedVisibility(
+                    visible = showPlaylistSourceFilterButton,
+                    enter = slideInHorizontally(initialOffsetX = { it / 2 }) + fadeIn(),
+                    exit = slideOutHorizontally(targetOffsetX = { it / 2 }) + fadeOut()
+                ) {
+                    val playlistFilterIcon = when (currentPlaylistSourceFilter) {
+                        PlaylistSourceFilter.ALL -> Icons.Rounded.Dataset
+                        PlaylistSourceFilter.LOCAL -> Icons.Rounded.PhoneAndroid
+                        PlaylistSourceFilter.CLOUD -> Icons.Rounded.Cloud
+                    }
+                    val playlistFilterTooltip = when (currentPlaylistSourceFilter) {
+                        PlaylistSourceFilter.ALL -> "All Playlists"
+                        PlaylistSourceFilter.LOCAL -> "Local Playlists"
+                        PlaylistSourceFilter.CLOUD -> "Cloud Playlists"
+                    }
+                    val playlistFilterTooltipState = rememberTooltipState()
+
+                    @OptIn(ExperimentalMaterial3Api::class)
+                    TooltipBox(
+                        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+                        tooltip = {
+                            PlainTooltip {
+                                Text(playlistFilterTooltip)
+                            }
+                        },
+                        state = playlistFilterTooltipState
+                    ) {
+                        FilledTonalIconButton(
+                            onClick = onPlaylistSourceFilterClick,
+                            shape = RoundedCornerShape(
+                                topStart = filterStartCorner,
+                                bottomStart = filterStartCorner,
+                                topEnd = filterEndCorner,
+                                bottomEnd = filterEndCorner
+                            ),
+                            modifier = Modifier.size(genHeight)
+                        ) {
+                            Icon(
+                                imageVector = playlistFilterIcon,
+                                contentDescription = playlistFilterTooltip
                             )
                         }
                     }

@@ -1,6 +1,13 @@
 package com.theveloper.pixeltune.presentation.components
 
 import android.content.Intent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -12,6 +19,7 @@ import androidx.compose.material.icons.rounded.CloudQueue
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +39,7 @@ import com.theveloper.pixeltune.presentation.viewmodel.SearchStateHolder.OnlineP
 import com.theveloper.pixeltune.presentation.netease.auth.NeteaseLoginActivity
 import com.theveloper.pixeltune.presentation.telegram.auth.TelegramLoginActivity
 import com.theveloper.pixeltune.ui.theme.GoogleSansRounded
+import kotlinx.coroutines.launch
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
 
 /**
@@ -39,6 +48,14 @@ import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
  *
  * For Netease: if already logged in, navigates to dashboard.
  * If not logged in, launches WebView login activity.
+ *
+ * IMPROVE(provider-indicator): [activeProvider] badges the streaming provider
+ * (YouTube / SoundCloud) the app is currently using, updating in real time as
+ * the selection changes.
+ *
+ * IMPROVE(provider-sheet-dismiss): selecting any provider now closes the sheet
+ * with the same animated `sheetState.hide()` convention the app's other bottom
+ * sheets use, instead of removing it from composition abruptly.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,11 +64,26 @@ fun StreamingProviderSheet(
     isNeteaseLoggedIn: Boolean = false,
     onNavigateToNeteaseDashboard: () -> Unit = {},
     onProviderSelected: (OnlineProvider) -> Unit = {},
+    activeProvider: OnlineProvider? = null,
     sheetState: SheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true
     )
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // IMPROVE(provider-sheet-dismiss): the app-wide smooth-dismiss pattern —
+    // animate the sheet down first, then remove it from composition (same
+    // convention as HomeScreen's other bottom sheets).
+    fun dismissWithAnimation() {
+        scope.launch {
+            sheetState.hide()
+        }.invokeOnCompletion {
+            if (!sheetState.isVisible) {
+                onDismissRequest()
+            }
+        }
+    }
 
     val cardShape = AbsoluteSmoothCornerShape(
         cornerRadiusTR = 20.dp, cornerRadiusTL = 20.dp,
@@ -106,7 +138,7 @@ fun StreamingProviderSheet(
                 shape = cardShape,
                 onClick = {
                     context.startActivity(Intent(context, TelegramLoginActivity::class.java))
-                    onDismissRequest()
+                    dismissWithAnimation()
                 }
             )
 
@@ -121,9 +153,12 @@ fun StreamingProviderSheet(
                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
                 iconColor = MaterialTheme.colorScheme.errorContainer,
                 shape = cardShape,
+                // IMPROVE(provider-indicator): real-time active badge —
+                // only shown for the switchable streaming providers.
+                isActive = activeProvider == OnlineProvider.YOUTUBE,
                 onClick = {
                     onProviderSelected(OnlineProvider.YOUTUBE)
-                    onDismissRequest()
+                    dismissWithAnimation()
                 }
             )
 
@@ -138,9 +173,12 @@ fun StreamingProviderSheet(
                 contentColor = Color(0xFFCC5500),
                 iconColor = Color(0xFFFFDAB9),
                 shape = cardShape,
+                // IMPROVE(provider-indicator): real-time active badge —
+                // only shown for the switchable streaming providers.
+                isActive = activeProvider == OnlineProvider.SOUNDCLOUD,
                 onClick = {
                     onProviderSelected(OnlineProvider.SOUNDCLOUD)
-                    onDismissRequest()
+                    dismissWithAnimation()
                 }
             )
 
@@ -181,7 +219,7 @@ fun StreamingProviderSheet(
                     } else {
                         context.startActivity(Intent(context, NeteaseLoginActivity::class.java))
                     }
-                    onDismissRequest()
+                    dismissWithAnimation()
                 }
             )
         }
@@ -199,6 +237,7 @@ private fun ProviderCard(
     iconColor: Color,
     shape: AbsoluteSmoothCornerShape,
     enabled: Boolean = true,
+    isActive: Boolean = false,
     onClick: () -> Unit
 ) {
     Card(
@@ -244,7 +283,7 @@ private fun ProviderCard(
 
             Spacer(Modifier.width(16.dp))
 
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleMedium,
@@ -259,6 +298,61 @@ private fun ProviderCard(
                     fontFamily = GoogleSansRounded,
                     color = contentColor.copy(alpha = 0.7f)
                 )
+            }
+
+            Spacer(Modifier.width(12.dp))
+
+            // IMPROVE(provider-indicator): animated "Active" badge for the
+            // currently selected streaming provider (YouTube / SoundCloud).
+            // Follows the app's expressive animation language — fade + horizontal
+            // expansion with a spring, the same family of motion the library
+            // action-row buttons use — and its Material 3 pill styling matches
+            // the check-circle affordance of the library's selection states.
+            AnimatedVisibility(
+                visible = isActive,
+                enter = fadeIn() + expandHorizontally(
+                    expandFrom = Alignment.End,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMedium
+                    )
+                ),
+                exit = fadeOut() + shrinkHorizontally(
+                    shrinkTowards = Alignment.End,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMedium
+                    )
+                )
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(percent = 50),
+                    color = contentColor.copy(alpha = 0.16f),
+                    contentColor = contentColor
+                ) {
+                    Row(
+                        modifier = Modifier.padding(
+                            start = 12.dp,
+                            end = 14.dp,
+                            top = 6.dp,
+                            bottom = 6.dp
+                        ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.rounded_check_circle_24),
+                            contentDescription = "Active provider",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Active",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontFamily = GoogleSansRounded,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
         }
     }

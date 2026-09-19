@@ -15,9 +15,10 @@ enum class LibraryTabId(
     FOLDERS("FOLDERS", "FOLDERS", SortOption.FolderNameAZ),
     LIKED("LIKED", "LIKED", SortOption.LikedSongDateLiked),
     // IMPROVE(downloads-chip): dedicated Library chip for offline downloads
-    // (Netflix-style, app-private copies of cloud-streamed songs). Sorted by
-    // download date (newest first) — the sort button is hidden for this tab.
-    DOWNLOADS("DOWNLOADS", "DOWNLOADS", SortOption.SongDateAdded);
+    // (Netflix-style, app-private copies of cloud-streamed songs). Default
+    // ordering is by download date (newest first); the sort button now offers
+    // the same affordance the other library tabs have.
+    DOWNLOADS("DOWNLOADS", "DOWNLOADS", SortOption.DownloadDateNewest);
 
     companion object {
         fun fromStorageKey(key: String): LibraryTabId =
