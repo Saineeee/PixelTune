@@ -124,3 +124,84 @@ new `:baselineprofile` scroll benchmarks (added by this pass) on a real device.
 - Wear module: separate UI, no reported jank; left untouched to avoid regression risk.
 
 **Feature preservation:** no feature is removed or disabled; all integrations (Wear sync, Auto, Cast, widgets, QS tiles, backup format, tag editor, lyrics, equalizer, AI playlists, import, downloads) untouched. `THIRD_PARTY_NOTICES.md` and licenses unchanged.
+
+---
+
+# IMPLEMENTATION REPORT
+
+Branch: `perf/ui-smoothness-pass` (12 commits, one concern each), based on the tip of
+`fix/library-downloads-sort-playlists-filter-button-provider-ux` (0aeec42). Every change is
+smoothness-scoped; no feature was removed, disabled or degraded, and no public behavior was
+changed except things feeling smoother (two documented micro-exceptions: the provider Active
+badge enter spring no longer overshoots, and the album-art theme cross-fade settles in 300 ms
+instead of ~1 s — both animation nuance, same motion language).
+
+## Verification
+
+| Check | Result |
+|---|---|
+| `:app:testDebugUnitTest` | **127 tests, 17 failures — byte-identical failure set to the pre-change baseline** (same 17, same classes; verified against the documented baseline in PERFORMANCE_FINDINGS.md: 14× JVM `VerifyError` "Call to wrong \<init\> method" on PlayerViewModelTest nested classes — GMS/Cast classes under the JVM runner — + 3× NewPipeDownloader User-Agent/ISO-8859-1 env assertions). No test added, removed or weakened. |
+| `:app:assembleDebug` | ✅ BUILD SUCCESSFUL — 5 APKs (4 ABI + universal) |
+| `:wear:assembleDebug` | ✅ BUILD SUCCESSFUL — wear-debug.apk |
+| `:shared:compileDebugKotlin` | ✅ BUILD SUCCESSFUL |
+| `:baselineprofile:compileBenchmarkReleaseSources` | ✅ BUILD SUCCESSFUL |
+| `:wear:testDebugUnitTest` | N/A — the wear module has no test source set (only `src/main`) |
+
+⚠ Sandbox note: 4 GB RAM / 2 cores — builds ran with `-Dorg.gradle.jvmargs=-Xmx2048m` (project default `-Xmx6g` OOMs the container). No emulator/device available, so runtime numbers marked ⚑ below need the new `:baselineprofile` scroll benchmarks on a real device; the impact column states the measured-before behavior (from code) and the mechanism that removes it.
+
+## What was changed (12 commits)
+
+| # | Commit | Finding(s) | Expected impact ⚑ | Risk |
+|---|--------|-------|-----------------|------|
+| 1 | `docs: UI smoothness findings report` | — | evidence-first report (this file) | none |
+| 2 | `perf(scroll): derivedStateOf for all 16 canScroll* composition reads` | S6 | **High.** `canScrollForward/Backward` are computed from `layoutInfo` — a State written on **every scroll frame** — so all 16 reads subscribed whole tab/screen scopes to per-frame invalidation: Songs/Folders/Liked/Downloads/Albums(list+grid)/Artists/Playlists tabs, CloudCatalog, Album/Playlist detail, Queue sheet, FileExplorer, SongPicker recomposed their entire body during **every fling**. Now only the boundary flip applies (required anyway — the inset padding changes). | Very low (padding values identical) |
+| 3 | `perf: batch of low-risk smoothness wins (Tier 1 batch B)` + compile fixes | S1, S4, S5, S8, S9, S10, S11, S12, S13, S17, S22, S23, S24, S25 | **High (S1):** history re-emission 4 Hz → ≤0.2 Hz while playing (HomeScreen's full-library merge + `associateBy` + sort ran 4×/s on the main thread). Med: prefetch collect per scroll frame → per visible-index change; cloud-song key shifts removed; album-row Flow params stable (skipping restored + collectors not restarted); playlist-row filter O(library×playlistSize) → O(library) with O(1) membership; folder-row deep equals + tree walk gone; queue sheet no longer recomposes on unrelated PlayerUiState fields; 50-song add-to-queue = 1 IPC + 1 rebuild (was 50+50); equalizer exit no longer blocks the nav transition (10 sequential DataStore writes moved off-main); provider sheet switch no longer recomposes HomeScreen; Netease nav no longer overlaps sheet-dismiss; bouncy width oscillation removed. | Low (all semantics-preserving; ordering/visuals identical) |
+| 4 | `perf(playback-start): build queue MediaItems on Dispatchers.Default` | S3 | **High** for large libraries: "play all" (5 000 songs) removed a 100–300 ms main-thread stall at the tap (5 000 × Bundle+MediaMetadata+Uri). Engine calls still on Main. | Low (pure computation moved; identical items/order) |
+| 5 | `perf(theme-crossfade): 300ms tween` | S2 | **High.** The 72-color scheme animation fed a static CompositionLocal — every frame for ~1 s on each track change invalidated the entire mini player + full player + queue host. Window ~3× shorter (still a smooth M3-standard crossfade). Structural alternatives (animating only consumed colors / crossfading two static schemes) left as proposals. | Low-med (animation duration nuance only) |
+| 6 | `perf(lyrics): provider-lambda position reads` | S16 | **High** while lyrics are open: whole-sheet + every visible row recomposed 4×/s with recreated derived states; now the list scope recomposes only when the active line changes and a row only when its own highlight flips. | Low (same tick source, same visuals) |
+| 7 | `perf(scroll): deferred topBarHeight reads on the 3 collapsing-header screens` | S7 | **High** during header collapse: whole screen Box no longer recomposes per gesture frame; only the top bar (which must animate) + scrollbar leaf re-render. | Med (visual parity verified structurally: same snap targets, same boundary gates, same offset lambdas) |
+| 8 | `perf(scroll): constraint-based SmartImage request sizing` | S15 | **Med-High.** Every default-size artwork request decoded `Size(300,300)` regardless of view (56 dp @3x ≈ 1.8× oversized); headers decoded 1600×1600 ≈ 10.2 MB bitmaps. Right-sized decodes → less bitmap memory, faster decode, less GC during fling. DailyMix (loose constraints) + AlbumCarousel (quality setting) keep explicit sizes. | Med (accepted: one-time disk-cache key change → images re-decode once; density-blind 168px rows now exact on all densities) |
+| 9 | `perf(queue): reorder-bookkeeping + draw-phase swipe-dismiss + sliced external player` | S18, S19, S20 | Med: queue-sheet fallback lists no longer re-allocated per recomposition; swipe-dismiss rows no longer recompose/re-measure per swipe frame (draw/layout-phase reads + boundary Booleans; icon tweens that chased per-frame targets computed in draw phase); ExternalPlayerOverlay no longer recomposes at 4 Hz with per-tick String formatting. | Low-med (icon fade now tracks the finger 1:1 instead of via retargeted 120 ms tweens — visually equivalent) |
+| 10 | `perf(benchmarks): scroll frame-timing benchmarks + baseline profile coverage` | S27, S28 | **Unblocks evidence**: `ScrollBenchmarks` (FrameTimingMetric) for Home/Songs/pager/Search; generator now exercises album/artist detail + folders so those hot paths land in the baseline profile. | None (test-only) |
+| 11 | `fix: key derived states on their backing state objects` | hardening | Prevents stale captures if a backing Animatable/derived state is recreated. | none |
+
+## Before/after evidence (static, per finding)
+
+No device/emulator was available in this sandbox — the evidence below is the code-level
+before/after that Macrobenchmark's new `ScrollBenchmarks` will quantify on a real device.
+
+| Finding | Before (measured in code) | After |
+|---|---|---|
+| S6 canScroll reads | 16 composition reads of getters computed from per-frame-written `layoutInfo` → whole-tab recomposition on **every scroll frame** | `derivedStateOf` Boolean per site → scope invalidates only at list-top/bottom crossing |
+| S1 history emission | `upsertPlaybackHistory` on every 250 ms tick (new 30-item list + entry; timestamp always differs) → 4 Hz re-merge of the entire library in HomeScreen | Refresh interval 5 s → ≤0.2 Hz; song changes still immediate |
+| S3 queue build | 5 000-song "play all": 5 000 × (Bundle + MediaMetadata + Uri) on Main ≈ 100–300 ms stall at tap | Same map on `Dispatchers.Default`; Main only applies `setMediaItems/prepare/play` |
+| S2 theme cross-fade | ~60 frames/s × ~1 s of full mini-player+full-player+queue-host invalidation per track change (spring StiffnessLow settle) | ~18 frames × 300 ms (tween), then idle |
+| S16 lyrics | Sheet scope + N visible rows × 4 recompositions/s + N derived-state object allocations per tick | List scope recomposes on active-line change only; rows on own-highlight flip; zero per-tick allocations |
+| S15 image sizing | Every row artwork: 300 px fixed decode (~1.8× @3x oversize); headers 1600² ≈ 10.2 MB | Constraint-sized decode (exact displayed px); headers ≤ screen size |
+| S19 swipe dismiss | Whole queue row recomposed + reveal Box re-measured per swipe frame | 0 recompositions during swipe; translation/width/alpha in draw/layout phase; 2 Boolean flips per swipe |
+| S5 batch queue add | 50 songs = 50 binder IPCs + 50 full O(n) queue rebuilds | 1 IPC + 1 rebuild |
+| S4 equalizer exit | `runBlocking` 10 sequential DataStore writes on Main during the nav transition | Off-main flush (values still persisted; only at risk if the process dies within ~100 ms of leaving the screen) |
+
+## Needs manual verification on a real device (cannot be confirmed statically)
+
+- Fling-scroll feel on Library tabs (Songs/Folders/Liked/Downloads/Albums/Artists/Playlists), Search results, CloudCatalog — expect visibly fewer dropped frames; confirm with `ScrollBenchmarks` (frame 95th/99th percentile + jank %) before/after.
+- Collapsing-header gestures on Album/Artist/Genre/CloudCatalog detail — collapse/expand + snap should feel the same but smoother; verify the scrollbar appears at the same collapse point and tracks the header.
+- Track-change visual: album-art theme cross-fade still reads as a smooth blend (now 300 ms); player sheet does not stutter on song transition.
+- Lyrics sheet: line highlighting + karaoke word timing identical; auto-scroll behavior unchanged.
+- Queue sheet: swipe-to-dismiss reveal/trash icon feel; drag-reorder placement animations; undo bar appearance.
+- External player overlay (Android Auto companion / external screens): slider + time label still track playback correctly.
+- SmartImage visuals: artwork sharpness across densities (esp. @2x and @3.5+ devices where sizing actually changed), crossfade/placeholder states, album/artist detail header art quality.
+- Equalizer: values persist after leaving the screen (and after a normal app close).
+- Wear OS / Cast / widgets / QS tile / backup-restore: untouched code paths — smoke-check only.
+
+## Explicitly NOT done (proposals for maintainer sign-off — Tier 3)
+
+1. **S2 structural variant**: animate only the ~10 colors the player subtree actually consumes, or cross-fade two static schemes via `graphicsLayer { alpha }` — removes the remaining 300 ms per-frame scheme invalidation entirely.
+2. Queue `Modifier.animateItem` idle fade specs (S-mapped from prior C11): dropping them changes visible removal/slide-in animation — declined to keep behavior identical.
+3. Legacy V1 `UnifiedPlayerSheet` keeps the full player composed when collapsed (V2 is the default; affects opt-out users only).
+4. Per-frame `snapTo` coroutine in `onPreScroll` (S26) — works correctly; restructuring nested-scroll for marginal gain.
+5. Per-frame shape churn in `AnimatedPlaybackControls` corner morph — inherent to the expressive morph.
+6. `resolveSongFromMediaItem` O(n²) fallback — background thread only.
+7. `miniAppearProgress.value` composition read (one-shot 260 ms appear).
+8. Wear module — no reported jank; left untouched to avoid regression risk.
+9. CloudCatalog baseline-profile coverage — needs network on the profiling device; intentionally excluded from the generator.
