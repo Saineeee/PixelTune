@@ -177,7 +177,6 @@ private fun StackedAlbumCovers(
                         model = album.albumArtUriString,
                         contentDescription = album.title,
                         shape = CircleShape,
-                        targetSize = Size(160, 160),
                         modifier = Modifier.fillMaxSize()
                     )
                 }

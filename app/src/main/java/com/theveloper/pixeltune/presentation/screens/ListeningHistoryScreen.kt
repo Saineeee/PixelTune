@@ -59,7 +59,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
-import coil.size.Size
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
@@ -506,7 +505,6 @@ private fun HistorySongOptionsSheet(
                         model = song.albumArtUriString,
                         contentDescription = song.title,
                         shape = RoundedCornerShape(14.dp),
-                        targetSize = Size(168, 168),
                         modifier = Modifier.fillMaxSize()
                     )
                 }

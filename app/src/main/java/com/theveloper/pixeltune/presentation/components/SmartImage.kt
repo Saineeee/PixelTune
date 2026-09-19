@@ -54,7 +54,15 @@ fun SmartImage(
     useDiskCache: Boolean = true,
     useMemoryCache: Boolean = true,
     allowHardware: Boolean = true,
-    targetSize: Size = Size(300, 300),
+    // PERF(scroll): null = let Coil resolve the request size from the
+    // composable's constraints (exactly the displayed pixel size — no
+    // oversized decodes, no density blindness). The old fixed default
+    // Size(300, 300) pinned EVERY default-size request to 300 px regardless
+    // of the view: a 56 dp row at @3x (~168 px) decoded ~1.8x oversized —
+    // extra bitmap memory + decode time + GC pressure while fling-scrolling.
+    // Call sites with intentionally loose constraints (DailyMix thumbnails)
+    // pass an explicit size.
+    targetSize: Size? = null,
     colorFilter: ColorFilter? = null,
     alpha: Float = 1f,
     placeholderModel: Any? = null,
@@ -106,7 +114,7 @@ fun SmartImage(
                 .memoryCachePolicy(if (useMemoryCache) CachePolicy.ENABLED else CachePolicy.DISABLED)
                 .allowHardware(allowHardware)
                 .apply {
-                    size(targetSize)
+                    if (targetSize != null) size(targetSize)
                 }
                 .build()
         }

@@ -45,7 +45,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.size.Size
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.presentation.components.AutoScrollingTextOnDemand
 import com.theveloper.pixeltune.presentation.components.ShimmerBox
@@ -301,7 +300,10 @@ fun EnhancedSongListItem(
                             model = song.albumArtUriString,
                             contentDescription = song.title,
                             shape = albumShape,
-                            targetSize = Size(168, 168),
+                            // PERF(scroll): constraint-based sizing — the 56 dp
+                            // box resolves to exactly the displayed pixel size
+                            // on every density (the old fixed 168 px was exact
+                            // only @3x: oversized @2x, blurry @3.5+).
                             modifier = Modifier.fillMaxSize()
                         )
                         

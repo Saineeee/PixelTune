@@ -227,7 +227,6 @@ private fun StackedCoverArts(
                     model = song.albumArtUriString,
                     contentDescription = song.title,
                     shape = CircleShape,
-                    targetSize = Size(144, 144),
                     modifier = Modifier.matchParentSize()
                 )
             }

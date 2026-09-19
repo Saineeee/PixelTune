@@ -23,7 +23,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.unit.dp
-import coil.size.Size
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.model.Song
 import kotlin.math.floor
@@ -66,7 +65,6 @@ fun PlaylistArtCollage(
                         model = songs[0].albumArtUriString,
                         contentDescription = songs[0].title,
                         contentScale = ContentScale.Crop,
-                        targetSize = Size(256, 256),
                         modifier = imageModifier
                             .fillMaxSize()
                             .clip(CircleShape)
@@ -82,7 +80,6 @@ fun PlaylistArtCollage(
                             model = songs[0].albumArtUriString,
                             contentDescription = songs[0].title,
                             contentScale = ContentScale.Crop,
-                            targetSize = Size(128, 128),
                             modifier = imageModifier
                                 .weight(1f)
                                 .aspectRatio(1f)
@@ -92,7 +89,6 @@ fun PlaylistArtCollage(
                             model = songs[1].albumArtUriString,
                             contentDescription = songs[1].title,
                             contentScale = ContentScale.Crop,
-                            targetSize = Size(128, 128),
                             modifier = imageModifier
                                 .weight(1f)
                                 .aspectRatio(1f)
@@ -108,7 +104,6 @@ fun PlaylistArtCollage(
                                     model = song.albumArtUriString,
                                     contentDescription = song.title,
                                     contentScale = ContentScale.Crop,
-                                    targetSize = Size(128, 128),
                                     modifier = imageModifier.clip(CircleShape)
                                 )
                             }
@@ -173,7 +168,6 @@ fun PlaylistArtCollage(
                                 model = songs[0].albumArtUriString,
                                 contentDescription = songs[0].title,
                                 contentScale = ContentScale.Crop,
-                                targetSize = Size(128, 128),
                                 modifier = imageModifier
                                     .weight(1f)
                                     .aspectRatio(1f)
@@ -183,7 +177,6 @@ fun PlaylistArtCollage(
                                 model = songs[1].albumArtUriString,
                                 contentDescription = songs[1].title,
                                 contentScale = ContentScale.Crop,
-                                targetSize = Size(128, 128),
                                 modifier = imageModifier
                                     .weight(1f)
                                     .aspectRatio(1f)
@@ -198,7 +191,6 @@ fun PlaylistArtCollage(
                                 model = songs[2].albumArtUriString,
                                 contentDescription = songs[2].title,
                                 contentScale = ContentScale.Crop,
-                                targetSize = Size(128, 128),
                                 modifier = imageModifier
                                     .weight(1f)
                                     .aspectRatio(1f)
@@ -208,7 +200,6 @@ fun PlaylistArtCollage(
                                 model = songs[3].albumArtUriString,
                                 contentDescription = songs[3].title,
                                 contentScale = ContentScale.Crop,
-                                targetSize = Size(128, 128),
                                 modifier = imageModifier
                                     .weight(1f)
                                     .aspectRatio(1f)

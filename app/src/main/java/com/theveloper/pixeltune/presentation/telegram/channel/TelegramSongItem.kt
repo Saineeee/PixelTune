@@ -41,7 +41,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import coil.size.Size
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.presentation.components.AutoScrollingText
@@ -136,7 +135,6 @@ fun TelegramSongItem(
                     model = song.albumArtUriString ?: R.drawable.rounded_album_24,
                     contentDescription = song.title,
                     shape = albumShape,
-                    targetSize = Size(168, 168),
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
                 )

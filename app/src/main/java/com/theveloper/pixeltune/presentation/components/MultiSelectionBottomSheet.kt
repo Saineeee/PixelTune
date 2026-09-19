@@ -436,7 +436,6 @@ private fun StackedAlbumArts(
                         model = song.albumArtUriString,
                         contentDescription = song.title,
                         shape = CircleShape,
-                        targetSize = Size(168, 168),
                         modifier = Modifier.matchParentSize()
                     )
                 }

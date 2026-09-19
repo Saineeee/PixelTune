@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import coil.size.Size
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -176,6 +177,12 @@ fun DailyMixHeader(thumbnails: ImmutableList<Song>) {
                             model = song.albumArtUriString,
                             contentDescription = null,
                             contentScale = ContentScale.Crop,
+                            // PERF(scroll): this Box has intentionally loose
+                            // constraints (overlapping thumbnails in the Daily
+                            // Mix card), so keep the explicit request size —
+                            // constraint-based resolution would fall back to
+                            // SIZE_ORIGINAL here.
+                            targetSize = Size(300, 300),
                             modifier = Modifier.fillMaxSize()
                         )
                     }

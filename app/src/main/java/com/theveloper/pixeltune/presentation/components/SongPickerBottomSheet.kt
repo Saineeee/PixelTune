@@ -47,7 +47,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.size.Size
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.presentation.components.rememberCanScrollMore
 import com.theveloper.pixeltune.ui.theme.GoogleSansRounded
@@ -270,10 +269,6 @@ fun SongPickerList(
                                 model = song.albumArtUriString,
                                 contentDescription = song.title,
                                 shape = albumShape,
-                                targetSize = Size(
-                                    168,
-                                    168
-                                ), // 56dp * 3 (para densidad xxhdpi)
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
