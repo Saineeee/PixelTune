@@ -130,7 +130,7 @@ fun GenreDetailScreen(
     }
     // PERF(scroll): Boolean view — flips only when crossing the boundary,
     // not on every frame of the gesture.
-    val headerMostlyCollapsed by remember {
+    val headerMostlyCollapsed by remember(collapseFractionState) {
         derivedStateOf { collapseFractionState.value > 0.95f }
     }
 

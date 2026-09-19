@@ -301,7 +301,7 @@ fun CloudCatalogScreen(
             }
             // PERF(scroll): Boolean view of the fraction — only changes when
             // crossing the boundary, not per frame of the gesture.
-            val headerMostlyCollapsed by remember {
+            val headerMostlyCollapsed by remember(collapseFractionState) {
                 derivedStateOf { collapseFractionState.value > 0.95f }
             }
 

@@ -1876,11 +1876,12 @@ fun QueuePlaylistSongItem(
     // texts, buttons) recomposed and the reveal Box re-measured on every
     // frame of every swipe. All per-frame consumers now read the Animatable
     // in the draw/layout phase; the composition only observes Booleans that
-    // flip at swipe start/end and at rest.
-    val hasReveal by remember {
+    // flip at swipe start/end and at rest. (Keyed on the Animatable itself —
+    // it is recreated when swipeStateIdentity changes.)
+    val hasReveal by remember(dismissOffsetAnimatable) {
         derivedStateOf { -dismissOffsetAnimatable.value > 0.5f }
     }
-    val isAtRest by remember {
+    val isAtRest by remember(dismissOffsetAnimatable) {
         derivedStateOf { dismissOffsetAnimatable.value == 0f }
     }
 

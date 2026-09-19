@@ -210,7 +210,7 @@ fun AlbumDetailScreen(
                         )
                     }
                 }
-                val headerMostlyCollapsed by remember {
+                val headerMostlyCollapsed by remember(collapseFractionState) {
                     derivedStateOf { collapseFractionState.value > 0.95f }
                 }
 
