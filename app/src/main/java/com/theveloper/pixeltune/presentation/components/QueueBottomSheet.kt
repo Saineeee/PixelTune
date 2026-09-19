@@ -174,6 +174,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MediumTopAppBar
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import com.theveloper.pixeltune.presentation.components.scoped.QueueItemDismissGestureHandler
 import androidx.compose.ui.unit.IntOffset
@@ -291,6 +292,20 @@ fun QueueBottomSheet(
     var reorderPreviewQueueSignature by remember { mutableStateOf<Int?>(null) }
     val displaySongsSignature = remember(displaySongs, queueIndexOffset) {
         (queueIndexOffset * 31) + System.identityHashCode(displaySongs)
+    }
+
+    // PERF(queue): identity/order fallbacks for the queue list. These used
+    // to be allocated inline in the LazyColumn content lambda AND in onMove
+    // on every recomposition / drag event — two N-element lists per pass,
+    // pure GC pressure on multi-thousand-song queues (the queue sheet's
+    // content scope recomposes on every stablePlayerState/queue change).
+    // Remembered on their inputs instead; identical values.
+    val fallbackDisplayOrder = remember(displaySongCount, queueIndexOffset) {
+        List(displaySongCount) { queueIndexOffset + it }
+    }
+    val fallbackDisplayKeys = remember(displaySongCount, queueIndexOffset, committedDisplayKeys) {
+        committedDisplayKeys.takeIf { it.size == displaySongCount }
+            ?: List(displaySongCount) { (queueIndexOffset + it).toLong() }
     }
 
     fun remapCommittedKeysForDisplay(newSongs: List<Song>) {
@@ -418,10 +433,8 @@ fun QueueBottomSheet(
             if (reorderPreviewOrder == null) {
                 reorderPreviewBaseQueue = queue
             }
-            val currentOrder = reorderPreviewOrder ?: List(displaySongCount) { queueIndexOffset + it }
-            val currentKeys = reorderPreviewKeys
-                ?: committedDisplayKeys.takeIf { it.size == displaySongCount }
-                ?: List(displaySongCount) { (queueIndexOffset + it).toLong() }
+            val currentOrder = reorderPreviewOrder ?: fallbackDisplayOrder
+            val currentKeys = reorderPreviewKeys ?: fallbackDisplayKeys
 
             val fromLocalIndex = mapKeyToLocalIndex(from.key, currentKeys) ?: return@rememberReorderableLazyListState
             val toLocalIndex = mapKeyToLocalIndex(to.key, currentKeys) ?: return@rememberReorderableLazyListState
@@ -739,10 +752,8 @@ fun QueueBottomSheet(
                                 Spacer(modifier = Modifier.height(6.dp))
                             }
 
-                            val activeOrder = reorderPreviewOrder ?: List(displaySongCount) { queueIndexOffset + it }
-                            val activeKeys = reorderPreviewKeys
-                                ?: committedDisplayKeys.takeIf { it.size == displaySongCount }
-                                ?: List(displaySongCount) { (queueIndexOffset + it).toLong() }
+                            val activeOrder = reorderPreviewOrder ?: fallbackDisplayOrder
+                            val activeKeys = reorderPreviewKeys ?: fallbackDisplayKeys
                             items(
                                 count = displaySongCount,
                                 key = { index -> activeKeys.getOrNull(index) ?: (queueIndexOffset + index).toLong() }
@@ -1607,7 +1618,9 @@ fun SaveQueueAsPlaylistSheet(
                                         model = song.albumArtUriString,
                                         contentDescription = song.title,
                                         shape = albumShape,
-                                        targetSize = Size(168, 168),
+                                        // PERF(scroll): constraint-based sizing
+                                        // (36 dp box — was fixed 168 px, ~1.5x
+                                        // oversized @3x).
                                         modifier = Modifier.fillMaxSize()
                                     )
                                 }
@@ -1857,32 +1870,33 @@ fun QueuePlaylistSongItem(
     }
 
     val isSwipeTargeted = dismissHandler?.isInDismissZone == true
-    val currentOffsetPx = dismissOffsetAnimatable.value
-    val revealWidthPx = (-currentOffsetPx).coerceAtLeast(0f)
-    val revealProgress = if (density.density > 0f) {
-        (revealWidthPx / (56.dp.value * density.density)).coerceIn(0f, 1f)
-    } else 0f
+    // PERF(queue): the swipe offset used to be read HERE in composition
+    // (`currentOffsetPx = dismissOffsetAnimatable.value`) and fed width /
+    // translation / icon-alpha values per frame — the whole row (Surface,
+    // texts, buttons) recomposed and the reveal Box re-measured on every
+    // frame of every swipe. All per-frame consumers now read the Animatable
+    // in the draw/layout phase; the composition only observes Booleans that
+    // flip at swipe start/end and at rest.
+    val hasReveal by remember {
+        derivedStateOf { -dismissOffsetAnimatable.value > 0.5f }
+    }
+    val isAtRest by remember {
+        derivedStateOf { dismissOffsetAnimatable.value == 0f }
+    }
 
     val dismissBackgroundColor by animateColorAsState(
         targetValue = if (isSwipeTargeted) colors.errorContainer else colors.errorContainer.copy(alpha = 0.82f),
         animationSpec = tween(durationMillis = 150),
         label = "dismissBackgroundColor"
     )
-    val dismissIconAlpha by animateFloatAsState(
-        targetValue = revealProgress * if (isSwipeTargeted) 1f else 0.88f,
-        animationSpec = tween(durationMillis = 120),
-        label = "dismissIconAlpha"
-    )
-    val dismissIconScale by animateFloatAsState(
-        targetValue = if (isSwipeTargeted) 1.08f else 0.95f,
-        animationSpec = tween(durationMillis = 120),
-        label = "dismissIconScale"
-    )
-    val dismissIconRotation by animateFloatAsState(
-        targetValue = 0f,
-        animationSpec = tween(durationMillis = 120),
-        label = "dismissIconRotation"
-    )
+    // PERF(queue): the icon's alpha/scale/rotation used to be three
+    // animateFloatAsState whose TARGETS chased the per-frame revealProgress —
+    // retargeting every frame both defeated their 120 ms tweens and
+    // recomposed this row per frame. They are computed in the draw phase
+    // (inside the Icon's graphicsLayer) from the same inputs instead, which
+    // tracks the finger 1:1 — the same feel the retargeted tweens produced.
+    val iconTargetScale = if (isSwipeTargeted) 1.08f else 0.95f
+    val iconTargetAlphaMul = if (isSwipeTargeted) 1f else 0.88f
 
     // Track the actual rendered height of the Surface (foreground item) to size the background exactly.
     var surfaceHeightPx by remember { mutableStateOf(0f) }
@@ -1897,15 +1911,25 @@ fun QueuePlaylistSongItem(
     ) {
         // Background reveal: stretches horizontally like before, height matches Surface exactly,
         // clipped to CircleShape for fully-rounded ends.
-        if (revealWidthPx > 0f && surfaceHeightPx > 0f) {
-            val revealWidthDp = with(density) { revealWidthPx.toDp() }
+        // PERF(queue): gated on a derived Boolean (flips at swipe start/end)
+        // and sized in the LAYOUT phase reading the Animatable — previously
+        // the row recomposed and the Box re-measured on every swipe frame.
+        if (hasReveal && surfaceHeightPx > 0f) {
             val surfaceHeightDp = with(density) { surfaceHeightPx.toDp() }
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .padding(end = 12.dp)
                     .height(surfaceHeightDp)
-                    .width(revealWidthDp)
+                    .layout { measurable, constraints ->
+                        val revealPx =
+                            (-dismissOffsetAnimatable.value).coerceAtLeast(0f).roundToInt()
+                        val width = revealPx.coerceIn(0, constraints.maxWidth)
+                        val placeable = measurable.measure(
+                            constraints.copy(minWidth = width, maxWidth = width)
+                        )
+                        layout(width, placeable.height) { placeable.place(0, 0) }
+                    }
                     .clip(CircleShape)
                     .background(dismissBackgroundColor),
                 contentAlignment = Alignment.CenterEnd
@@ -1916,10 +1940,15 @@ fun QueuePlaylistSongItem(
                     modifier = Modifier
                         .padding(end = 16.dp)
                         .graphicsLayer {
-                            alpha = dismissIconAlpha
-                            scaleX = dismissIconScale
-                            scaleY = dismissIconScale
-                            rotationZ = dismissIconRotation
+                            val revealPx =
+                                (-dismissOffsetAnimatable.value).coerceAtLeast(0f)
+                            val progress = if (density.density > 0f) {
+                                (revealPx / (56.dp.toPx())).coerceIn(0f, 1f)
+                            } else 0f
+                            alpha = progress * iconTargetAlphaMul
+                            scaleX = iconTargetScale
+                            scaleY = iconTargetScale
+                            rotationZ = 0f
                         },
                     tint = colors.onErrorContainer
                 )
@@ -1929,7 +1958,9 @@ fun QueuePlaylistSongItem(
         // Foreground content with horizontal offset
         Surface(
             modifier = Modifier
-                .graphicsLayer { translationX = currentOffsetPx }
+                // PERF(queue): translation read in the DRAW phase — no
+                // per-frame recomposition of the row while swiping.
+                .graphicsLayer { translationX = dismissOffsetAnimatable.value }
                 .onGloballyPositioned { coordinates ->
                     val h = coordinates.size.height.toFloat()
                     if (h != surfaceHeightPx) surfaceHeightPx = h
@@ -1937,7 +1968,7 @@ fun QueuePlaylistSongItem(
                 .padding(horizontal = 12.dp)
                 .clip(itemShape)
                 .clickable(
-                    enabled = currentOffsetPx == 0f
+                    enabled = isAtRest
                 ) {
                     onClick()
                 },
