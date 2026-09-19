@@ -416,35 +416,55 @@ fun HomeScreen(
         }
     }
     if (showStreamingProviderSheet) {
-        val isNeteaseLoggedIn by neteaseViewModel.isLoggedIn.collectAsStateWithLifecycle()
-        // IMPROVE(provider-indicator): the live provider selection, so the
-        // sheet can badge the active YouTube / SoundCloud card in real time.
-        val currentOnlineProvider by playerViewModel.currentOnlineProvider.collectAsStateWithLifecycle()
-        StreamingProviderSheet(
-            onDismissRequest = { showStreamingProviderSheet = false },
-            isNeteaseLoggedIn = isNeteaseLoggedIn,
-            onNavigateToNeteaseDashboard = {
-                navController.navigateSafely(Screen.NeteaseDashboard.route)
-            },
-            activeProvider = currentOnlineProvider,
-            onProviderSelected = { provider ->
-                playerViewModel.setOnlineProvider(provider)
-                // IMPROVE(streaming-toast): surface a Material 3 toast via the
-                // existing _toastEvents flow so the user gets clear feedback that
-                // the cloud streaming provider was switched. The actual snackbar
-                // rendering is centralized in UnifiedPlayerSheet/V2 which
-                // collects toastEvents and forwards them to a M3 SnackbarHost.
-                playerViewModel.sendToast(
-                    when (provider) {
-                        com.theveloper.pixeltune.presentation.viewmodel.SearchStateHolder.OnlineProvider.YOUTUBE ->
-                            "Switched to YouTube streaming"
-                        com.theveloper.pixeltune.presentation.viewmodel.SearchStateHolder.OnlineProvider.SOUNDCLOUD ->
-                            "Switched to SoundCloud streaming"
-                    }
-                )
-            }
+        // PERF(sheet-transition): the provider StateFlow reads used to live in
+        // the HomeScreen body — a provider switch (which also starts the
+        // sheet-hide animation + badge springs + optional cloud hand-off)
+        // recomposed the ENTIRE ~450-line HomeScreen body on the same frames.
+        // Hoisted into a small host so the reads invalidate only the sheet.
+        StreamingProviderSheetHost(
+            neteaseViewModel = neteaseViewModel,
+            playerViewModel = playerViewModel,
+            navController = navController,
+            onDismissRequest = { showStreamingProviderSheet = false }
         )
     }
+}
+
+@Composable
+private fun StreamingProviderSheetHost(
+    neteaseViewModel: NeteaseDashboardViewModel,
+    playerViewModel: PlayerViewModel,
+    navController: NavController,
+    onDismissRequest: () -> Unit
+) {
+    val isNeteaseLoggedIn by neteaseViewModel.isLoggedIn.collectAsStateWithLifecycle()
+    // IMPROVE(provider-indicator): the live provider selection, so the
+    // sheet can badge the active YouTube / SoundCloud card in real time.
+    val currentOnlineProvider by playerViewModel.currentOnlineProvider.collectAsStateWithLifecycle()
+    StreamingProviderSheet(
+        onDismissRequest = onDismissRequest,
+        isNeteaseLoggedIn = isNeteaseLoggedIn,
+        onNavigateToNeteaseDashboard = {
+            navController.navigateSafely(Screen.NeteaseDashboard.route)
+        },
+        activeProvider = currentOnlineProvider,
+        onProviderSelected = { provider ->
+            playerViewModel.setOnlineProvider(provider)
+            // IMPROVE(streaming-toast): surface a Material 3 toast via the
+            // existing _toastEvents flow so the user gets clear feedback that
+            // the cloud streaming provider was switched. The actual snackbar
+            // rendering is centralized in UnifiedPlayerSheet/V2 which
+            // collects toastEvents and forwards them to a M3 SnackbarHost.
+            playerViewModel.sendToast(
+                when (provider) {
+                    com.theveloper.pixeltune.presentation.viewmodel.SearchStateHolder.OnlineProvider.YOUTUBE ->
+                        "Switched to YouTube streaming"
+                    com.theveloper.pixeltune.presentation.viewmodel.SearchStateHolder.OnlineProvider.SOUNDCLOUD ->
+                        "Switched to SoundCloud streaming"
+                }
+            )
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)

@@ -314,10 +314,18 @@ class PlaylistViewModel @Inject constructor(
         playlists: List<Playlist>,
         sortOption: SortOption
     ): List<Playlist> = when (sortOption) {
-        SortOption.PlaylistNameAZ -> playlists.sortedBy { it.name.lowercase() }
-        SortOption.PlaylistNameZA -> playlists.sortedByDescending { it.name.lowercase() }
+        // PERF: String.CASE_INSENSITIVE_ORDER avoids the per-comparison
+        // lowercase() String allocations of sortedBy { it.name.lowercase() }.
+        SortOption.PlaylistNameAZ -> playlists.sortedWith(
+            compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+        )
+        SortOption.PlaylistNameZA -> playlists.sortedWith(
+            compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }.reversed()
+        )
         SortOption.PlaylistDateCreated -> playlists.sortedByDescending { it.lastModified }
-        else -> playlists.sortedBy { it.name.lowercase() } // Default to NameAZ
+        else -> playlists.sortedWith(
+            compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+        ) // Default to NameAZ
     }
 
     /**

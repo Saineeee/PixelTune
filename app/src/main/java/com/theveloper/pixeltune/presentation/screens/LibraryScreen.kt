@@ -384,7 +384,9 @@ fun LibraryScreen(
     val selectedSongIds by multiSelectionState.selectedSongIds.collectAsStateWithLifecycle()
     var showMultiSelectionSheet by remember { mutableStateOf(false) }
     var selectedAlbums by remember { mutableStateOf<List<Album>>(emptyList()) }
-    val selectedAlbumIds = selectedAlbums.map { it.id }.toSet()
+    // PERF(scroll): remembered so the id Set isn't re-mapped on every
+    // recomposition of the whole Library screen scope.
+    val selectedAlbumIds = remember(selectedAlbums) { selectedAlbums.map { it.id }.toSet() }
     val isAlbumSelectionMode = selectedAlbums.isNotEmpty()
     var showAlbumMultiSelectionSheet by remember { mutableStateOf(false) }
 
@@ -2370,7 +2372,16 @@ fun LibraryFoldersTab(
 
 @Composable
 fun FolderPlaylistItem(folder: MusicFolder, onClick: () -> Unit) {
-    val previewSongs = remember(folder) { folder.collectAllSongs().take(9) }
+    // PERF(scroll): previously `remember(folder)` — MusicFolder is a nested data
+    // class, so every recomposition of this row paid a deep structural equals
+    // over the whole folder subtree (every Song of every subfolder), and any
+    // content change re-ran the recursive collectAllSongs() tree walk on the
+    // main thread. Key on the folder path + its (lazy, cached) song count
+    // instead: identity-stable for skipping, and the preview only recomputes
+    // when the folder's content size actually changes.
+    val previewSongs = remember(folder.path, folder.totalSongCount) {
+        folder.collectAllSongs().take(9)
+    }
 
     Card(
         onClick = onClick,
@@ -2688,12 +2699,21 @@ fun LibraryDownloadsTab(
     // library tabs' sort affordance), mapped to playable Songs.
     val completedDownloads = remember(downloadedSongs, sortOption) {
         val downloads = downloadedSongs.values
+        // PERF(scroll): String.CASE_INSENSITIVE_ORDER compares without the
+        // per-comparison lowercase() String allocations that sortedBy
+        // { it.title.lowercase() } paid (O(n log n) × 2 allocations per sort,
+        // on the main thread whenever the sort or the download set changed).
         val sorted = when (sortOption) {
             SortOption.DownloadDateOldest -> downloads.sortedBy { it.downloadedAtMs }
-            SortOption.DownloadTitleAZ -> downloads.sortedBy { it.title.lowercase() }
-            SortOption.DownloadTitleZA -> downloads.sortedByDescending { it.title.lowercase() }
+            SortOption.DownloadTitleAZ -> downloads.sortedWith(
+                compareBy(String.CASE_INSENSITIVE_ORDER) { it.title }
+            )
+            SortOption.DownloadTitleZA -> downloads.sortedWith(
+                compareBy(String.CASE_INSENSITIVE_ORDER) { it.title }.reversed()
+            )
             SortOption.DownloadArtist -> downloads.sortedWith(
-                compareBy({ it.artist.lowercase() }, { it.title.lowercase() })
+                compareBy(String.CASE_INSENSITIVE_ORDER) { it.artist }
+                    .thenComparator { a, b -> String.CASE_INSENSITIVE_ORDER.compare(a.title, b.title) }
             )
             SortOption.DownloadDuration -> downloads.sortedByDescending { it.durationMs }
             // DownloadDateNewest (and any unknown value) keep the curated
@@ -3236,12 +3256,16 @@ fun LibraryAlbumsTab(
     LaunchedEffect(albums, gridState, listState, isListView) {
         if (isListView) {
             // Prefetch logic for List View
-            snapshotFlow { listState.layoutInfo }
+            // PERF(scroll): LazyListLayoutInfo doesn't implement equals, so
+            // snapshotFlow { layoutInfo }.distinctUntilChanged() emitted a new
+            // instance on EVERY scroll frame and the collect body ran per frame.
+            // Deriving the last visible index (an Int) makes distinctUntilChanged
+            // actually work — the body now runs only when the visible range edge
+            // changes, which is all the prefetch logic needs.
+            snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
                 .distinctUntilChanged()
-                .collect { layoutInfo ->
-                    val visibleItemsInfo = layoutInfo.visibleItemsInfo
-                    if (visibleItemsInfo.isNotEmpty() && albums.isNotEmpty()) {
-                        val lastVisibleItemIndex = visibleItemsInfo.last().index
+                .collect { lastVisibleItemIndex ->
+                    if (lastVisibleItemIndex >= 0 && albums.isNotEmpty()) {
                         val totalItemsCount = albums.size
                         val prefetchThreshold = 5
                         val prefetchCount = 10
@@ -3265,12 +3289,13 @@ fun LibraryAlbumsTab(
                 }
         } else {
             // Prefetch logic for Grid View
-            snapshotFlow { gridState.layoutInfo }
+            // PERF(scroll): same derived-index fix as the list view above —
+            // LazyGridLayoutInfo also lacks equals, so the raw layoutInfo flow
+            // fired on every scroll frame.
+            snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
                 .distinctUntilChanged()
-                .collect { layoutInfo ->
-                    val visibleItemsInfo = layoutInfo.visibleItemsInfo
-                    if (visibleItemsInfo.isNotEmpty() && albums.isNotEmpty()) {
-                        val lastVisibleItemIndex = visibleItemsInfo.last().index
+                .collect { lastVisibleItemIndex ->
+                    if (lastVisibleItemIndex >= 0 && albums.isNotEmpty()) {
                         val totalItemsCount = albums.size
                         val prefetchThreshold = 5
                         val prefetchCount = 10

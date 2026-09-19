@@ -120,20 +120,29 @@ class ThemeStateHolder @Inject constructor(
         }
     }
 
-    // LRU Cache for individual album schemes
-    private val individualAlbumColorSchemes = object : LinkedHashMap<String, MutableStateFlow<ColorSchemePair?>>(
+    // LRU Cache for individual album schemes.
+    // PERF(scroll): caches BOTH the mutable flow and its read-only
+    // StateFlow view. Returning `flow.asStateFlow()` directly allocated a new
+    // wrapper instance on every call — AlbumListItem / AlbumGridItemRedesigned
+    // received a brand-new Flow param on every item recomposition, defeating
+    // skipping and restarting their collectAsStateWithLifecycle collectors.
+    private val individualAlbumColorSchemes = object : LinkedHashMap<String, CachedAlbumSchemeFlow>(
         32, 0.75f, true
     ) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MutableStateFlow<ColorSchemePair?>>?): Boolean {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedAlbumSchemeFlow>?): Boolean {
             return size > 30
         }
     }
 
-    fun getAlbumColorSchemeFlow(uriString: String): StateFlow<ColorSchemePair?> {
-        val existingFlow = individualAlbumColorSchemes[uriString]
-        if (existingFlow != null) return existingFlow.asStateFlow()
+    private class CachedAlbumSchemeFlow {
+        val mutable = MutableStateFlow<ColorSchemePair?>(null)
+        val readOnly: StateFlow<ColorSchemePair?> = mutable.asStateFlow()
+    }
 
-        val newFlow = MutableStateFlow<ColorSchemePair?>(null)
+    fun getAlbumColorSchemeFlow(uriString: String): StateFlow<ColorSchemePair?> {
+        individualAlbumColorSchemes[uriString]?.let { return it.readOnly }
+
+        val newFlow = CachedAlbumSchemeFlow()
         individualAlbumColorSchemes[uriString] = newFlow
 
         // Trigger generation asynchronously
@@ -143,13 +152,13 @@ class ThemeStateHolder @Inject constructor(
                     albumArtUri = uriString,
                     paletteStyle = currentPaletteStyle
                 )
-                newFlow.value = scheme
+                newFlow.mutable.value = scheme
             } catch (e: Exception) {
                 // Ignore or log
             }
         }
 
-        return newFlow.asStateFlow()
+        return newFlow.readOnly
     }
     
     suspend fun getOrGenerateColorScheme(uriString: String): ColorSchemePair? {

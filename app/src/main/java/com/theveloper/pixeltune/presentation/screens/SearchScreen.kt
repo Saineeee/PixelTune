@@ -989,18 +989,23 @@ fun SearchResultsList(
         return
     }
 
-    val groupedResults = results.groupBy { item ->
-        when (item) {
-            is SearchResultItem.SongItem -> SearchFilterType.SONGS
-            is SearchResultItem.AlbumItem -> SearchFilterType.ALBUMS
-            is SearchResultItem.ArtistItem -> SearchFilterType.ARTISTS
-            is SearchResultItem.PlaylistItem -> SearchFilterType.PLAYLISTS
-            // FIX(online-filter-chips): cloud catalog entries join the
-            // matching section — albums from the YT Music albums index group
-            // under Albums, playlists under Playlists, artists under Artists.
-            is SearchResultItem.CloudPlaylistItem ->
-                if (item.playlist.isAlbum) SearchFilterType.ALBUMS else SearchFilterType.PLAYLISTS
-            is SearchResultItem.CloudArtistItem -> SearchFilterType.ARTISTS
+    // PERF(scroll): groupBy + section order were rebuilt on every
+    // recomposition of the results list (play/pause flips, library emissions).
+    // Remembered on the results list so they only recompute when results change.
+    val groupedResults = remember(results) {
+        results.groupBy { item ->
+            when (item) {
+                is SearchResultItem.SongItem -> SearchFilterType.SONGS
+                is SearchResultItem.AlbumItem -> SearchFilterType.ALBUMS
+                is SearchResultItem.ArtistItem -> SearchFilterType.ARTISTS
+                is SearchResultItem.PlaylistItem -> SearchFilterType.PLAYLISTS
+                // FIX(online-filter-chips): cloud catalog entries join the
+                // matching section — albums from the YT Music albums index group
+                // under Albums, playlists under Playlists, artists under Artists.
+                is SearchResultItem.CloudPlaylistItem ->
+                    if (item.playlist.isAlbum) SearchFilterType.ALBUMS else SearchFilterType.PLAYLISTS
+                is SearchResultItem.CloudArtistItem -> SearchFilterType.ARTISTS
+            }
         }
     }
 
@@ -1066,9 +1071,13 @@ fun SearchResultsList(
                             is SearchResultItem.SongItem -> "song_${item.song.id}"
                             is SearchResultItem.AlbumItem -> "album_${item.album.id}"
                             is SearchResultItem.ArtistItem -> "artist_${item.artist.id}"
-                            is SearchResultItem.PlaylistItem -> "playlist_${item.playlist.id}_${index}"
-                            is SearchResultItem.CloudPlaylistItem -> "cloud_playlist_${item.playlist.id}_${index}"
-                            is SearchResultItem.CloudArtistItem -> "cloud_artist_${item.artist.id}_${index}"
+                            // PERF(scroll): no index suffix — an index-baked key
+                            // shifts every subsequent key on list mutation,
+                            // recomposing the whole visible list and losing item
+                            // state. The ids are already unique per section.
+                            is SearchResultItem.PlaylistItem -> "playlist_${item.playlist.id}"
+                            is SearchResultItem.CloudPlaylistItem -> "cloud_playlist_${item.playlist.id}"
+                            is SearchResultItem.CloudArtistItem -> "cloud_artist_${item.artist.id}"
                         }
                     },
                     // PERF: each SearchResultItem variant renders a completely
@@ -1159,20 +1168,30 @@ fun SearchResultsList(
                                     allSongs.filter { it.id in songIdSet }
                                 }
                                 val coroutineScope = rememberCoroutineScope()
-                                val onPlayClick: () -> Unit = {
-                                    coroutineScope.launch {
-                                        val songs = playerViewModel.getSongs(item.playlist.songIds)
-                                        if (songs.isNotEmpty()) {
-                                            playerViewModel.playSongs(
-                                                songs,
-                                                songs.first(),
-                                                item.playlist.name
-                                            )
-                                            if (playerStableState.isShuffleEnabled) playerViewModel.toggleShuffle()
-                                        } else {
-                                            playerViewModel.sendToast("Empty playlist")
+                                // PERF(scroll): remembered like its sibling row
+                                // lambdas (onOpenClick below) so the row can skip
+                                // recomposition when the parent re-executes.
+                                val onPlayClick = remember(
+                                    item.playlist,
+                                    playerViewModel,
+                                    playerStableState.isShuffleEnabled,
+                                    onItemSelected
+                                ) {
+                                    {
+                                        coroutineScope.launch {
+                                            val songs = playerViewModel.getSongs(item.playlist.songIds)
+                                            if (songs.isNotEmpty()) {
+                                                playerViewModel.playSongs(
+                                                    songs,
+                                                    songs.first(),
+                                                    item.playlist.name
+                                                )
+                                                if (playerStableState.isShuffleEnabled) playerViewModel.toggleShuffle()
+                                            } else {
+                                                playerViewModel.sendToast("Empty playlist")
+                                            }
+                                            onItemSelected()
                                         }
-                                        onItemSelected()
                                     }
                                 }
                                 val onOpenClick = remember(

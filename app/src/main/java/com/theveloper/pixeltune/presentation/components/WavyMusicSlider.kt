@@ -109,7 +109,11 @@ fun WavyMusicSlider(
 
     // FASE CONDICIONAL: si la onda no se muestra, no hay transición infinita ni invalidaciones.
     val phaseShiftAnim = remember { Animatable(0f) }
-    val phaseShift = phaseShiftAnim.value
+    // PERF(player): the phase used to be read here in composition
+    // (`val phaseShift = phaseShiftAnim.value`) — while the wave animates it
+    // advances every frame, so the whole slider composable recomposed at
+    // ~60 Hz. The value is now read inside the draw lambda (draw-phase
+    // invalidation only: no recomposition, no remeasure).
 
     LaunchedEffect(shouldShowWave, waveAnimationDuration) {
         if (shouldShowWave && waveAnimationDuration > 0) {
@@ -269,7 +273,7 @@ fun WavyMusicSlider(
                                         .coerceAtMost(trackHeightPx)
 
                                     fun yAt(x: Float): Float {
-                                        val s = sin(waveFrequency * x + phaseShift)
+                                        val s = sin(waveFrequency * x + phaseShiftAnim.value)
                                         return (localCenterY + waveAmplitudePxInternal * s)
                                             .coerceIn(
                                                 localCenterY - waveAmplitudePxInternal - trackHeightPx / 2f,

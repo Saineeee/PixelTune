@@ -54,6 +54,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
@@ -101,6 +102,7 @@ import com.theveloper.pixeltune.presentation.viewmodel.PlaylistViewModel
 import com.theveloper.pixeltune.ui.theme.LocalPixelTuneDarkTheme
 import com.theveloper.pixeltune.utils.shapes.RoundedStarShape
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -330,29 +332,38 @@ fun CloudCatalogScreen(
                 }
             }
 
-            LaunchedEffect(lazyListState.isScrollInProgress) {
-                if (!lazyListState.isScrollInProgress) {
-                    val shouldExpand =
-                        topBarHeight.value > (minTopBarHeightPx + maxTopBarHeightPx) / 2
-                    val canExpand =
-                        lazyListState.firstVisibleItemIndex == 0 &&
-                            lazyListState.firstVisibleItemScrollOffset == 0
+            // PERF(scroll): the effect key was `lazyListState.isScrollInProgress`,
+            // evaluated in composition — the enclosing screen scope recomposed at
+            // the start AND end of every scroll gesture. A snapshotFlow inside a
+            // single Unit-keyed effect observes the same flips without any
+            // composition-scope subscription.
+            LaunchedEffect(Unit) {
+                snapshotFlow { lazyListState.isScrollInProgress }
+                    .distinctUntilChanged()
+                    .collect { scrollInProgress ->
+                        if (!scrollInProgress) {
+                            val shouldExpand =
+                                topBarHeight.value > (minTopBarHeightPx + maxTopBarHeightPx) / 2
+                            val canExpand =
+                                lazyListState.firstVisibleItemIndex == 0 &&
+                                    lazyListState.firstVisibleItemScrollOffset == 0
 
-                    val targetValue = if (shouldExpand && canExpand) {
-                        maxTopBarHeightPx
-                    } else {
-                        minTopBarHeightPx
-                    }
+                            val targetValue = if (shouldExpand && canExpand) {
+                                maxTopBarHeightPx
+                            } else {
+                                minTopBarHeightPx
+                            }
 
-                    if (topBarHeight.value != targetValue) {
-                        coroutineScope.launch {
-                            topBarHeight.animateTo(
-                                targetValue,
-                                spring(stiffness = Spring.StiffnessMedium)
-                            )
+                            if (topBarHeight.value != targetValue) {
+                                coroutineScope.launch {
+                                    topBarHeight.animateTo(
+                                        targetValue,
+                                        spring(stiffness = Spring.StiffnessMedium)
+                                    )
+                                }
+                            }
                         }
                     }
-                }
             }
 
             val isMiniPlayerVisible = stablePlayerState.currentSong != null
@@ -458,7 +469,11 @@ fun CloudCatalogScreen(
                         val displayedSongs = if (isTransitionFinished) songs else songs.take(20)
                         itemsIndexed(
                             displayedSongs,
-                            key = { index, song -> "cloud_song_${song.id}_$index" },
+                            // PERF(scroll): keys must not bake in the index —
+                            // "cloud_song_<id>_<index>" shifted every subsequent key
+                            // when a song was removed, recomposing the whole visible
+                            // list and losing item state. Song ids are already unique.
+                            key = { _, song -> "cloud_song_${song.id}" },
                             contentType = { _, _ -> "song" }
                         ) { _, song ->
                             EnhancedSongListItem(

@@ -15,6 +15,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -72,6 +75,10 @@ class EqualizerViewModel @Inject constructor(
         private const val TAG = "EqualizerViewModel"
         private const val SLIDER_PERSIST_DEBOUNCE_MS = 150L
         private val json = Json { ignoreUnknownKeys = true } // Assuming Json is needed
+
+        // Scope for the onCleared flush (see comment there). SupervisorJob so a
+        // failed write doesn't cancel the remaining ones.
+        val equalizerFlushScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 
     private val audioManager = context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
@@ -482,22 +489,33 @@ class EqualizerViewModel @Inject constructor(
     }
     
     override fun onCleared() {
-        // Flush latest state synchronously to avoid losing debounced values when the screen/app closes.
-        runCatching {
-            kotlinx.coroutines.runBlocking {
-                val latest = _uiState.value
+        // Flush latest state to avoid losing debounced values when the screen/app closes.
+        //
+        // PERF(nav-jank): this used to be `runBlocking { …10 sequential DataStore
+        // writes… }` ON THE MAIN THREAD — exactly while the navigation
+        // transition off the equalizer screen was animating, stalling it for
+        // the duration of 10 disk writes. viewModelScope is already cancelled
+        // by the time onCleared runs, so the flush goes to a dedicated
+        // IO-dispatched scope: the process comfortably outlives the short
+        // write sequence (the values are only at risk if the process is
+        // killed within ~100 ms of leaving the screen, vs. a guaranteed
+        // visible hitch on every equalizer exit before).
+        val latest = _uiState.value
+        val bandLevels = equalizerManager.bandLevels.value
+        equalizerFlushScope.launch {
+            runCatching {
                 userPreferencesRepository.setEqualizerEnabled(latest.isEnabled)
                 userPreferencesRepository.setEqualizerPreset(latest.currentPreset.name)
-                userPreferencesRepository.setEqualizerCustomBands(equalizerManager.bandLevels.value)
+                userPreferencesRepository.setEqualizerCustomBands(bandLevels)
                 userPreferencesRepository.setBassBoostEnabled(latest.bassBoostEnabled)
                 userPreferencesRepository.setBassBoostStrength(latest.bassBoostStrength.toInt().coerceIn(0, 1000))
                 userPreferencesRepository.setVirtualizerEnabled(latest.virtualizerEnabled)
                 userPreferencesRepository.setVirtualizerStrength(latest.virtualizerStrength.toInt().coerceIn(0, 1000))
                 userPreferencesRepository.setLoudnessEnhancerEnabled(latest.loudnessEnhancerEnabled)
                 userPreferencesRepository.setLoudnessEnhancerStrength(latest.loudnessEnhancerStrength.toInt().coerceIn(0, 1000))
+            }.onFailure { error ->
+                Timber.tag(TAG).w(error, "Failed to flush equalizer state during onCleared")
             }
-        }.onFailure { error ->
-            Timber.tag(TAG).w(error, "Failed to flush equalizer state during onCleared")
         }
 
         persistBandLevelsJob?.cancel()

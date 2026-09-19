@@ -1011,56 +1011,21 @@ fun QueueBottomSheet(
                 }
             }
 
-            // Undo bar for queue item removal
-            val playerUiState by viewModel.playerUiState.collectAsStateWithLifecycle()
-            AnimatedVisibility(
-                visible = playerUiState.showQueueItemUndoBar,
+            // Undo bar for queue item removal.
+            // PERF(queue): previously the WHOLE PlayerUiState was collected at the
+            // queue-sheet scope — any unrelated field change (search results,
+            // sync/isFiltering flags, folders…) recomposed the entire open queue
+            // sheet and re-allocated the LazyColumn content-lambda state. The
+            // slice below only collects the two fields the undo bar reads.
+            QueueItemUndoBar(
+                viewModel = viewModel,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(
                         bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 96.dp
                     )
-                    .zIndex(50f),
-                enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
-                exit = fadeOut() + slideOutVertically(targetOffsetY = { it })
-            ) {
-                val removedSongTitle = playerUiState.lastRemovedQueueSong?.title ?: ""
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = colors.inverseSurface,
-                    tonalElevation = 6.dp,
-                    shadowElevation = 6.dp
-                ) {
-                    Row(
-                        modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = removedSongTitle,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colors.inverseOnSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text = "removed",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colors.inverseOnSurface.copy(alpha = 0.7f),
-                        )
-                        TextButton(
-                            onClick = { viewModel.undoRemoveSongFromQueue() }
-                        ) {
-                            Text(
-                                text = "Undo",
-                                color = colors.inversePrimary,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-            }
+                    .zIndex(50f)
+            )
         }
 
         if (showTimerOptions) {
@@ -2103,6 +2068,86 @@ fun QueuePlaylistSongItem(
                             )
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * PERF(queue): leaf host for the queue-item-removal undo bar.
+ *
+ * The undo bar only needs `showQueueItemUndoBar` and the removed song's title,
+ * but it used to collect the WHOLE [PlayerViewModel.playerUiState] at the
+ * queue-sheet scope — every unrelated PlayerUiState field change (search
+ * results, isFiltering/isSearching/isSyncingLibrary, folders, …) recomposed
+ * the entire open queue sheet, including the LazyColumn reorder bookkeeping.
+ * Slicing to just these two fields (with distinctUntilChanged) keeps the
+ * sheet's recomposition driven only by queue-relevant state.
+ */
+@Composable
+private fun QueueItemUndoBar(
+    viewModel: PlayerViewModel,
+    modifier: Modifier = Modifier
+) {
+    val colors = MaterialTheme.colorScheme
+
+    data class UndoBarSlice(
+        val visible: Boolean,
+        val removedSongTitle: String
+    )
+
+    val slice by remember(viewModel) {
+        viewModel.playerUiState
+            .map { state ->
+                UndoBarSlice(
+                    visible = state.showQueueItemUndoBar,
+                    removedSongTitle = state.lastRemovedQueueSong?.title ?: ""
+                )
+            }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(
+        initialValue = UndoBarSlice(visible = false, removedSongTitle = "")
+    )
+
+    AnimatedVisibility(
+        visible = slice.visible,
+        modifier = modifier,
+        enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
+        exit = fadeOut() + slideOutVertically(targetOffsetY = { it })
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = colors.inverseSurface,
+            tonalElevation = 6.dp,
+            shadowElevation = 6.dp
+        ) {
+            Row(
+                modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = slice.removedSongTitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.inverseOnSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = "removed",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.inverseOnSurface.copy(alpha = 0.7f),
+                )
+                TextButton(
+                    onClick = { viewModel.undoRemoveSongFromQueue() }
+                ) {
+                    Text(
+                        text = "Undo",
+                        color = colors.inversePrimary,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }

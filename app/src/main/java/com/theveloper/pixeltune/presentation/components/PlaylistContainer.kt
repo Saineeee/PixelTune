@@ -267,17 +267,27 @@ fun PlaylistItems(
                         -1
                     }
                 }
+                // PERF(scroll): remember the playlist-capturing lambdas so their
+                // identity is stable — previously fresh `{ onLongPress(playlist) }`
+                // wrappers were created on every item recomposition, so PlaylistItem
+                // could never skip and its collectAsStateWithLifecycle restarted.
+                val rememberedOnLongPress = remember(playlist, onPlaylistLongPress) {
+                    { onPlaylistLongPress(playlist) }
+                }
+                val rememberedOnSelectionToggle = remember(playlist, onPlaylistSelectionToggle) {
+                    { onPlaylistSelectionToggle(playlist) }
+                }
                 PlaylistItem(
                     playlist = playlist,
                     playerViewModel = playerViewModel,
-                    onClick = { rememberedOnClick() },
+                    onClick = rememberedOnClick,
                     isAddingToPlaylist = isAddingToPlaylist,
                     selectedPlaylists = selectedPlaylists,
                     isSelectionMode = isSelectionMode,
                     isSelected = selectedPlaylistIds.contains(playlist.id),
                     selectionIndex = selectionIndex,
-                    onLongPress = { onPlaylistLongPress(playlist) },
-                    onPlaylistSelectionToggle = { onPlaylistSelectionToggle(playlist) }
+                    onLongPress = rememberedOnLongPress,
+                    onPlaylistSelectionToggle = rememberedOnSelectionToggle
                 )
             }
         }
@@ -311,8 +321,13 @@ fun PlaylistItem(
     onPlaylistSelectionToggle: () -> Unit = {}
 ) {
     val allSongs by playerViewModel.allSongsFlow.collectAsStateWithLifecycle()
+    // PERF(scroll): songIds is a List<String>, so `it.id in songIds` was a
+    // linear scan per library song — O(library × playlistSize) per visible
+    // row on every library emission. Build the HashSet once per (playlist,
+    // library) pair instead (same fix already applied in SearchScreen).
     val playlistSongs = remember(playlist.songIds, allSongs) {
-        allSongs.filter { it.id in playlist.songIds }
+        val songIdSet = playlist.songIds.toHashSet()
+        allSongs.filter { it.id in songIdSet }
     }
 
     val selectionScale by animateFloatAsState(

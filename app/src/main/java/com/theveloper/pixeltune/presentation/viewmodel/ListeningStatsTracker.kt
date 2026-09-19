@@ -103,7 +103,8 @@ class ListeningStatsTracker @Inject constructor(
             isPlaying = isPlaying,
             isVoluntary = pendingVoluntarySongId == song.id,
             metadata = metadataSnapshot,
-            previousHistoryTimestamp = previousTimestamp
+            previousHistoryTimestamp = previousTimestamp,
+            lastLiveRefreshEpochMs = nowEpoch
         )
         if (pendingVoluntarySongId == song.id) {
             pendingVoluntarySongId = null
@@ -154,18 +155,35 @@ class ListeningStatsTracker @Inject constructor(
         // the history stays ordered by "most recently listened". The entry
         // itself was already created in onSongChanged (see
         // FIX(listening-history-liveness) there).
+        //
+        // PERF(playback-ui): onProgress is fed by the 250 ms playback poller, and
+        // each upsertPlaybackHistory allocates a new entry + a new 30-item list
+        // whose timestamp always differs, so the StateFlow re-emits on EVERY
+        // tick — 4×/s — and every consumer (HomeScreen's Recently Played merge,
+        // Recently Played / Listening History screens) re-derives its UI from
+        // scratch on each emission while music plays. The timestamp is only used
+        // for ordering (no UI renders it as a label), so refreshing it every
+        // LIVE_ENTRY_REFRESH_INTERVAL_MS preserves the exact same ordering
+        // semantics (song changes still upsert immediately via onSongChanged)
+        // while collapsing the emission rate from 4 Hz to ≤0.2 Hz.
         val totalCap = if (session.totalDurationMs > 0) session.totalDurationMs else Long.MAX_VALUE
         val listened = session.accumulatedListeningMs
             .coerceAtMost(totalCap).coerceAtLeast(0L)
         if (listened >= MIN_SESSION_LISTEN_MS) {
-            upsertPlaybackHistory(
-                songId = session.songId,
-                timestamp = session.lastUpdateEpochMs
-                    .coerceAtLeast(session.startedAtEpochMs.coerceAtLeast(0L))
-                    .coerceAtMost(System.currentTimeMillis()),
-                metadata = session.metadata
-            )
-            session.liveEntryRecorded = true
+            val nowEpoch = System.currentTimeMillis()
+            val shouldRefresh = !session.liveEntryRecorded ||
+                nowEpoch - session.lastLiveRefreshEpochMs >= LIVE_ENTRY_REFRESH_INTERVAL_MS
+            if (shouldRefresh) {
+                upsertPlaybackHistory(
+                    songId = session.songId,
+                    timestamp = session.lastUpdateEpochMs
+                        .coerceAtLeast(session.startedAtEpochMs.coerceAtLeast(0L))
+                        .coerceAtMost(nowEpoch),
+                    metadata = session.metadata
+                )
+                session.liveEntryRecorded = true
+                session.lastLiveRefreshEpochMs = nowEpoch
+            }
         }
     }
 
@@ -356,6 +374,12 @@ class ListeningStatsTracker @Inject constructor(
         // (shorter sessions get their live history entry rolled back).
         private val MIN_SESSION_LISTEN_MS = TimeUnit.SECONDS.toMillis(1)
 
+        // PERF(playback-ui): minimum interval between live-timestamp refreshes
+        // of the current song's history entry (see onProgress). 5 s keeps the
+        // "most recently listened" ordering fully up to date while avoiding a
+        // 4 Hz re-emission storm of the whole history list.
+        private val LIVE_ENTRY_REFRESH_INTERVAL_MS = TimeUnit.SECONDS.toMillis(5)
+
         // FIX(listening-history-cap): the Listening History records a total of
         // 30 songs. Older entries fall off the end as new songs are played.
         private const val MAX_INTERNAL_PLAYBACK_HISTORY_ITEMS = 30
@@ -417,5 +441,8 @@ data class ActiveSession(
     // this session. Used by [finalizeCurrentSession] to know whether to
     // upsert (replace the live entry) or rollback (remove/restore the live
     // entry) when the session ends below the MIN_SESSION_LISTEN_MS threshold.
-    var liveEntryRecorded: Boolean = false
+    var liveEntryRecorded: Boolean = false,
+    // Epoch time of the last live-timestamp refresh written by onProgress —
+    // used to throttle periodic refreshes (see LIVE_ENTRY_REFRESH_INTERVAL_MS).
+    var lastLiveRefreshEpochMs: Long = 0L
 )

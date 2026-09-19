@@ -214,12 +214,32 @@ fun StreamingProviderSheet(
                 iconColor = MaterialTheme.colorScheme.tertiaryContainer,
                 shape = cardShape,
                 onClick = {
-                    if (isNeteaseLoggedIn) {
-                        onNavigateToNeteaseDashboard()
-                    } else {
-                        context.startActivity(Intent(context, NeteaseLoginActivity::class.java))
+                    // PERF(sheet-transition): navigation used to fire BEFORE the
+                    // sheet-dismiss animation started, so the destination's
+                    // composition + nav transition overlapped the sheet sliding
+                    // down (and the concurrent Home recomposition). Navigate in
+                    // invokeOnCompletion after hide() finishes — the same
+                    // convention HomeScreen uses for its own option sheets
+                    // (HomeScreen.kt HomeOptionsBottomSheet).
+                    val navigateAfterDismiss: () -> Unit = {
+                        if (isNeteaseLoggedIn) {
+                            onNavigateToNeteaseDashboard()
+                        } else {
+                            context.startActivity(Intent(context, NeteaseLoginActivity::class.java))
+                        }
                     }
-                    dismissWithAnimation()
+                    scope.launch {
+                        sheetState.hide()
+                    }.invokeOnCompletion {
+                        if (!sheetState.isVisible) {
+                            onDismissRequest()
+                            navigateAfterDismiss()
+                        } else {
+                            // hide() was cancelled (e.g. scope left composition):
+                            // still navigate so the tap isn't swallowed.
+                            navigateAfterDismiss()
+                        }
+                    }
                 }
             )
         }
@@ -308,12 +328,21 @@ private fun ProviderCard(
             // expansion with a spring, the same family of motion the library
             // action-row buttons use — and its Material 3 pill styling matches
             // the check-circle affordance of the library's selection states.
+            //
+            // PERF(sheet-transition): the enter spec used
+            // DampingRatioMediumBouncy — an UNDERDAMPED spring animating the
+            // badge's layout WIDTH inside a weight(1f) column, so the weighted
+            // title/subtitle Texts were re-measured every frame while the width
+            // oscillated for several hundred ms, concurrent with the sibling
+            // badge's shrink AND the sheet-hide animation on the switch tap.
+            // NoBouncy (already used by the exit spec) expands once, smoothly,
+            // with the same visual language and no oscillation relayout.
             AnimatedVisibility(
                 visible = isActive,
                 enter = fadeIn() + expandHorizontally(
                     expandFrom = Alignment.End,
                     animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        dampingRatio = Spring.DampingRatioNoBouncy,
                         stiffness = Spring.StiffnessMedium
                     )
                 ),

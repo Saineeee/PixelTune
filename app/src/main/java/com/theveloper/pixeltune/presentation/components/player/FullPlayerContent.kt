@@ -130,6 +130,7 @@ import com.theveloper.pixeltune.ui.theme.GoogleSansRounded
 import com.theveloper.pixeltune.utils.AudioMetaUtils.mimeTypeToFormat
 import com.theveloper.pixeltune.utils.formatDuration
 import kotlinx.collections.immutable.ImmutableList
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
@@ -1445,8 +1446,16 @@ private fun SongMetadataDisplaySection(
             )
         }
         
-        val stablePlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
-        val isBuffering = stablePlayerState.isBuffering
+        // PERF(player): this metadata section used to collect the WHOLE
+        // StablePlayerState just to read `isBuffering` — any unrelated field
+        // change (lyrics loading flips, duration resolution, favorite toggles)
+        // recomposed the section. Sliced to the single Boolean with
+        // distinctUntilChanged so only actual buffering transitions apply.
+        val isBuffering by remember(playerViewModel) {
+            playerViewModel.stablePlayerState
+                .map { it.isBuffering }
+                .distinctUntilChanged()
+        }.collectAsStateWithLifecycle(initialValue = false)
 
 
         AnimatedVisibility(

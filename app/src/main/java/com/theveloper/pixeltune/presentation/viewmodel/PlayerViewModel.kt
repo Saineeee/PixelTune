@@ -3625,7 +3625,18 @@ class PlayerViewModel @Inject constructor(
      * Clears selection after adding.
      */
     fun addSelectedToQueue(songs: List<Song>) {
-        songs.forEach { addSongToQueue(it) }
+        // PERF(queue): previously N sequential `addMediaItem` binder IPCs — each
+        // one fired onTimelineChanged → updateCurrentPlaybackQueueFromPlayer →
+        // a full O(n) queue re-resolution + re-emit, so a 50-song selection
+        // caused 50 IPCs + 50 full queue rebuilds (visible jank while the
+        // queue sheet was open). One addMediaItems batch applies the same
+        // items with a single timeline change.
+        mediaController?.let { controller ->
+            val mediaItems = songs.map { MediaItemBuilder.build(it) }
+            if (mediaItems.isNotEmpty()) {
+                controller.addMediaItems(mediaItems)
+            }
+        }
         viewModelScope.launch {
             _toastEvents.emit("${songs.size} songs added to queue")
         }
@@ -3638,7 +3649,22 @@ class PlayerViewModel @Inject constructor(
      * Clears selection after adding.
      */
     fun addSelectedAsNext(songs: List<Song>) {
-        songs.reversed().forEach { addSongNextToQueue(it) }
+        // PERF(queue): same batching as addSelectedToQueue — one
+        // addMediaItems(index, items) call instead of N reversed single
+        // insertions (N IPCs + N full queue rebuilds before). Inserting the
+        // whole block at currentMediaItemIndex + 1 in original order yields
+        // the exact same play-next sequence.
+        mediaController?.let { controller ->
+            val mediaItems = songs.map { MediaItemBuilder.build(it) }
+            if (mediaItems.isNotEmpty()) {
+                val insertionIndex = if (controller.currentMediaItemIndex != C.INDEX_UNSET) {
+                    (controller.currentMediaItemIndex + 1).coerceAtMost(controller.mediaItemCount)
+                } else {
+                    controller.mediaItemCount
+                }
+                controller.addMediaItems(insertionIndex, mediaItems)
+            }
+        }
         viewModelScope.launch {
             _toastEvents.emit("${songs.size} songs will play next")
         }
