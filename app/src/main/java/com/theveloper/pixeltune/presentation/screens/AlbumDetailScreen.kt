@@ -82,6 +82,7 @@ import coil.size.Size
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.model.Album
 import com.theveloper.pixeltune.presentation.components.ExpressiveScrollBar
+import com.theveloper.pixeltune.presentation.components.rememberCanScrollMore
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
 import com.theveloper.pixeltune.presentation.components.NavBarContentHeight
 import com.theveloper.pixeltune.presentation.components.PlaylistBottomSheet
@@ -279,7 +280,7 @@ fun AlbumDetailScreen(
                             .offset { IntOffset(0, topBarHeight.value.toInt()) },
                         contentPadding = PaddingValues(
                             start = 16.dp,
-                            end = if ((lazyListState.canScrollForward || lazyListState.canScrollBackward) && collapseFraction > 0.95f) 24.dp else 16.dp,
+                            end = if (rememberCanScrollMore(lazyListState) && collapseFraction > 0.95f) 24.dp else 16.dp,
                             bottom = fabBottomPadding + 80.dp // To account for FAB
                         ),
                         verticalArrangement = Arrangement.spacedBy(8.dp)

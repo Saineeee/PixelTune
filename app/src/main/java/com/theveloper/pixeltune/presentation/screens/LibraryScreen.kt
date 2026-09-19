@@ -59,6 +59,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material.icons.rounded.ViewModule
 import com.theveloper.pixeltune.presentation.components.ToggleSegmentButton
+import com.theveloper.pixeltune.presentation.components.rememberCanScrollMore
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -2275,7 +2276,7 @@ fun LibraryFoldersTab(
                         Box(modifier = Modifier.fillMaxSize()) {
                             LazyColumn(
                                 modifier = Modifier
-                                    .padding(start = 12.dp, end = if (listState.canScrollForward || listState.canScrollBackward) 22.dp else 12.dp)
+                                    .padding(start = 12.dp, end = if (rememberCanScrollMore(listState)) 22.dp else 12.dp)
                                     .fillMaxSize()
                                     .clip(
                                         RoundedCornerShape(
@@ -2579,7 +2580,7 @@ fun LibraryFavoritesTab(
                     LazyColumn(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
-                            .padding(start = 12.dp, end = if (listState.canScrollForward || listState.canScrollBackward) 22.dp else 12.dp, bottom = 6.dp)
+                            .padding(start = 12.dp, end = if (rememberCanScrollMore(listState)) 22.dp else 12.dp, bottom = 6.dp)
                             .clip(
                                 RoundedCornerShape(
                                     topStart = 26.dp,
@@ -2742,7 +2743,7 @@ fun LibraryDownloadsTab(
                             .align(Alignment.TopCenter)
                             .padding(
                                 start = 12.dp,
-                                end = if (listState.canScrollForward || listState.canScrollBackward) 22.dp else 12.dp,
+                                end = if (rememberCanScrollMore(listState)) 22.dp else 12.dp,
                                 bottom = 6.dp
                             )
                             .clip(
@@ -2987,7 +2988,7 @@ fun LibrarySongsTabPaginated(
             // Initial loading - show skeleton placeholders
             LazyColumn(
                 modifier = Modifier
-                    .padding(start = 12.dp, end = if (listState.canScrollForward || listState.canScrollBackward) 22.dp else 12.dp, bottom = 6.dp)
+                    .padding(start = 12.dp, end = if (rememberCanScrollMore(listState)) 22.dp else 12.dp, bottom = 6.dp)
                     .clip(
                         RoundedCornerShape(
                             topStart = 26.dp,
@@ -3080,7 +3081,7 @@ fun LibrarySongsTabPaginated(
                     Box(modifier = Modifier.fillMaxSize()) {
                         LazyColumn(
                             modifier = Modifier
-                                .padding(start = 12.dp, end = if (listState.canScrollForward || listState.canScrollBackward) 22.dp else 12.dp, bottom = 6.dp)
+                                .padding(start = 12.dp, end = if (rememberCanScrollMore(listState)) 22.dp else 12.dp, bottom = 6.dp)
                                 .clip(
                                     RoundedCornerShape(
                                         topStart = 26.dp,
@@ -3379,7 +3380,7 @@ fun LibraryAlbumsTab(
 
                         LazyColumn(
                             modifier = Modifier
-                                .padding(start = 14.dp, end = if (listState.canScrollForward || listState.canScrollBackward) 24.dp else 14.dp, bottom = 6.dp)
+                                .padding(start = 14.dp, end = if (rememberCanScrollMore(listState)) 24.dp else 14.dp, bottom = 6.dp)
                                 .clip(
                                     RoundedCornerShape(
                                         topStart = 16.dp,
@@ -3433,7 +3434,7 @@ fun LibraryAlbumsTab(
                     } else {
                         LazyVerticalGrid(
                             modifier = Modifier
-                                .padding(start = 14.dp, end = if (gridState.canScrollForward || gridState.canScrollBackward) 24.dp else 14.dp, bottom = 6.dp)
+                                .padding(start = 14.dp, end = if (rememberCanScrollMore(gridState)) 24.dp else 14.dp, bottom = 6.dp)
                                 .clip(
                                     RoundedCornerShape(
                                         topStart = 16.dp,
@@ -3787,7 +3788,7 @@ fun LibraryArtistsTab(
                 Box(modifier = Modifier.fillMaxSize()) {
                     LazyColumn(
                         modifier = Modifier
-                            .padding(start = 12.dp, end = if (listState.canScrollForward || listState.canScrollBackward) 22.dp else 12.dp, bottom = 6.dp)
+                            .padding(start = 12.dp, end = if (rememberCanScrollMore(listState)) 22.dp else 12.dp, bottom = 6.dp)
                             .clip(
                                 RoundedCornerShape(
                                     topStart = 26.dp,

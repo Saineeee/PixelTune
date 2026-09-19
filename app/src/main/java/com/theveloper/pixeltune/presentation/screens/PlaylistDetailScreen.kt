@@ -105,6 +105,7 @@ import coil.size.Size
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
+import com.theveloper.pixeltune.presentation.components.rememberCanScrollMore
 import com.theveloper.pixeltune.presentation.components.NavBarContentHeight
 import com.theveloper.pixeltune.presentation.components.PlaylistBottomSheet
 import com.theveloper.pixeltune.presentation.components.QueuePlaylistSongItem
@@ -559,13 +560,13 @@ fun PlaylistDetailScreen(
                             contentPadding = PaddingValues(
                                 top = 12.dp,
                                 bottom = MiniPlayerHeight + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 16.dp,
-                                end = if (listState.canScrollForward || listState.canScrollBackward) 24.dp else 0.dp
+                                end = if (rememberCanScrollMore(listState)) 24.dp else 0.dp
                             ).let {
                                 PaddingValues(
                                     top = it.calculateTopPadding(),
                                     bottom = it.calculateBottomPadding(),
                                     start = it.calculateLeftPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
-                                    end = if (listState.canScrollForward || listState.canScrollBackward) 24.dp else 0.dp
+                                    end = if (rememberCanScrollMore(listState)) 24.dp else 0.dp
                                 )
                             }
                         ) {

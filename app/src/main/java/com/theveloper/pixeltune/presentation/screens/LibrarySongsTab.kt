@@ -44,6 +44,7 @@ import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.data.model.StorageFilter
 import com.theveloper.pixeltune.data.model.SortOption
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
+import com.theveloper.pixeltune.presentation.components.rememberCanScrollMore
 import com.theveloper.pixeltune.presentation.viewmodel.PlayerViewModel
 import com.theveloper.pixeltune.presentation.viewmodel.StablePlayerState
 import com.theveloper.pixeltune.presentation.components.subcomps.EnhancedSongListItem
@@ -262,7 +263,7 @@ fun LibrarySongsTab(
                     Box(modifier = Modifier.fillMaxSize()) {
                         LazyColumn(
                             modifier = Modifier
-                                .padding(start = 12.dp, end = if (listState.canScrollForward || listState.canScrollBackward) 22.dp else 12.dp, bottom = 6.dp)
+                                .padding(start = 12.dp, end = if (rememberCanScrollMore(listState)) 22.dp else 12.dp, bottom = 6.dp)
                                 .clip(
                                     RoundedCornerShape(
                                         topStart = 26.dp,

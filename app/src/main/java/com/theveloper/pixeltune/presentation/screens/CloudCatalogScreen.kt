@@ -87,6 +87,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.navigation.NavController
 import coil.size.Size
 import com.theveloper.pixeltune.presentation.components.ExpressiveScrollBar
+import com.theveloper.pixeltune.presentation.components.rememberCanScrollMore
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
 import com.theveloper.pixeltune.presentation.components.MiniPlayerBottomSpacer
 import com.theveloper.pixeltune.presentation.components.NavBarContentHeight
@@ -402,7 +403,7 @@ fun CloudCatalogScreen(
                         .offset { IntOffset(0, topBarHeight.value.toInt()) },
                     contentPadding = PaddingValues(
                         start = 16.dp,
-                        end = if ((lazyListState.canScrollForward || lazyListState.canScrollBackward) &&
+                        end = if (rememberCanScrollMore(lazyListState) &&
                             collapseFraction > 0.95f
                         ) 24.dp else 16.dp,
                         // FIX(cloud-detail-spacing): reserve the full bottom
@@ -497,7 +498,7 @@ fun CloudCatalogScreen(
                 }
 
                 if (collapseFraction > 0.95f &&
-                    (lazyListState.canScrollForward || lazyListState.canScrollBackward)
+                    rememberCanScrollMore(lazyListState)
                 ) {
                     ExpressiveScrollBar(
                         listState = lazyListState,

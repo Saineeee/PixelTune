@@ -49,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.size.Size
 import com.theveloper.pixeltune.data.model.Song
+import com.theveloper.pixeltune.presentation.components.rememberCanScrollMore
 import com.theveloper.pixeltune.ui.theme.GoogleSansRounded
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
 
@@ -231,7 +232,7 @@ fun SongPickerList(
                     bottom = contentPadding.calculateBottomPadding(),
                     top = contentPadding.calculateTopPadding(),
                     start = contentPadding.calculateLeftPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
-                    end = if (listState.canScrollForward || listState.canScrollBackward) 12.dp else 0.dp
+                    end = if (rememberCanScrollMore(listState)) 12.dp else 0.dp
                 ),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {

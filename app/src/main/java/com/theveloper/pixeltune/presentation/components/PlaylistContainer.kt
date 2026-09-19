@@ -74,6 +74,7 @@ import androidx.navigation.NavController
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.model.Playlist
 import com.theveloper.pixeltune.data.model.Song
+import com.theveloper.pixeltune.presentation.components.rememberCanScrollMore
 import com.theveloper.pixeltune.presentation.components.subcomps.SineWaveLine
 import com.theveloper.pixeltune.presentation.navigation.Screen
 import com.theveloper.pixeltune.presentation.screens.PlayerSheetCollapsedCornerRadius
@@ -232,7 +233,7 @@ fun PlaylistItems(
     Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier
-                .padding(start = 12.dp, end = if (listState.canScrollForward || listState.canScrollBackward) 22.dp else 12.dp, bottom = 6.dp)
+                .padding(start = 12.dp, end = if (rememberCanScrollMore(listState)) 22.dp else 12.dp, bottom = 6.dp)
                 .fillMaxSize()
                 .clip(
                     RoundedCornerShape(

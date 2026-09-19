@@ -137,6 +137,7 @@ import androidx.media3.common.util.UnstableApi
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.model.Song
 import com.theveloper.pixeltune.presentation.components.AutoScrollingText
+import com.theveloper.pixeltune.presentation.components.rememberCanScrollMore
 import com.theveloper.pixeltune.presentation.components.SmartImage
 import com.theveloper.pixeltune.presentation.components.subcomps.PlayingEqIcon
 import com.theveloper.pixeltune.presentation.viewmodel.PlayerViewModel
@@ -730,7 +731,7 @@ fun QueueBottomSheet(
                             contentPadding = PaddingValues(
                                 start = 0.dp, // Reduced start padding by half (12dp -> 6dp)
                                 // Reduced end padding: 16.dp when scrollable (was 22.dp), 6dp otherwise to match start
-                                end = if (listState.canScrollForward || listState.canScrollBackward) 26.dp else 0.dp,
+                                end = if (rememberCanScrollMore(listState)) 26.dp else 0.dp,
                                 bottom = MiniPlayerHeight + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 32.dp
                             )
                         ) {

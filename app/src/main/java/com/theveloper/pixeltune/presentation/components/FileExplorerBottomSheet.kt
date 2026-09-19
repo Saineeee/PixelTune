@@ -87,6 +87,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.theveloper.pixeltune.presentation.screens.TabAnimation
 import com.theveloper.pixeltune.presentation.viewmodel.DirectoryEntry
+import com.theveloper.pixeltune.presentation.components.rememberCanScrollMore
 import com.theveloper.pixeltune.ui.theme.GoogleSansRounded
 import com.theveloper.pixeltune.utils.StorageInfo
 import java.io.File
@@ -353,7 +354,7 @@ fun FileExplorerContent(
                                     ),
                                 contentPadding = PaddingValues(
                                     bottom = 24.dp,
-                                    end = if (listState.canScrollForward || listState.canScrollBackward) 24.dp else 0.dp
+                                    end = if (rememberCanScrollMore(listState)) 24.dp else 0.dp
                                 ),
                                 verticalArrangement = Arrangement.spacedBy(10.dp),
                                 state = listState
