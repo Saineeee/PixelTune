@@ -173,6 +173,74 @@ class BaselineProfileGenerator {
                 }
 
                 // =================================================================================
+                // 5.5. DETAIL SCREENS (Album / Artist deep-link + scroll)
+                // PERF(smoothness): these hot scrollable screens (collapsing
+                // header + list) were NOT covered by the generator before, so
+                // their code paths were missing from the generated baseline
+                // profile. Cloud catalog is intentionally excluded (needs
+                // network on the profiling device).
+                // =================================================================================
+                runStep("Album & Artist Detail Flow") {
+                    clickTab("Library|Biblioteca")
+                    Thread.sleep(1200)
+
+                    // Album detail: swipe the library pager to the Albums tab
+                    // (3 swipes from the default Songs tab), then open the
+                    // first album card.
+                    val swipeY = device.displayHeight / 2
+                    repeat(3) {
+                        device.swipe(
+                            (device.displayWidth * 0.85).toInt(), swipeY,
+                            (device.displayWidth * 0.15).toInt(), swipeY, 30
+                        )
+                        Thread.sleep(900)
+                    }
+
+                    val albumPattern = Pattern.compile(".*(Album|Albumes|Álbumes).*", Pattern.CASE_INSENSITIVE)
+                    val albumCard = device.wait(Until.findObject(By.text(albumPattern)), 2500)
+                        ?: device.wait(Until.findObject(By.desc(albumPattern)), 1000)
+                    if (albumCard != null) {
+                        device.click(albumCard.visibleCenter.x, albumCard.visibleCenter.y)
+                        Thread.sleep(2200)
+                        // Scroll the song list under the collapsing header.
+                        blindScroll()
+                        blindScroll()
+                        device.pressBack()
+                        Thread.sleep(1200)
+                    } else {
+                        Log.w("BaselineProfileGenerator", "Album card not found — skipping album detail")
+                    }
+
+                    // Artist detail: one more pager swipe lands on Artists.
+                    device.swipe(
+                        (device.displayWidth * 0.85).toInt(), swipeY,
+                        (device.displayWidth * 0.15).toInt(), swipeY, 30
+                    )
+                    Thread.sleep(900)
+                    val artistPattern = Pattern.compile(".*(Artist|Artista).*", Pattern.CASE_INSENSITIVE)
+                    val artistCard = device.wait(Until.findObject(By.text(artistPattern)), 2500)
+                        ?: device.wait(Until.findObject(By.desc(artistPattern)), 1000)
+                    if (artistCard != null) {
+                        device.click(artistCard.visibleCenter.x, artistCard.visibleCenter.y)
+                        Thread.sleep(2200)
+                        blindScroll()
+                        device.pressBack()
+                        Thread.sleep(1200)
+                    } else {
+                        Log.w("BaselineProfileGenerator", "Artist card not found — skipping artist detail")
+                    }
+
+                    // Folders tab (tree list + collage previews).
+                    device.swipe(
+                        (device.displayWidth * 0.15).toInt(), swipeY,
+                        (device.displayWidth * 0.85).toInt(), swipeY, 30
+                    )
+                    Thread.sleep(900)
+                    blindScroll()
+                    Thread.sleep(800)
+                }
+
+                // =================================================================================
                 // 6. PLAYER SHEET EXTENDED (Modified)
                 // =================================================================================
                 runStep("Unified Player Sheet Extended") {
