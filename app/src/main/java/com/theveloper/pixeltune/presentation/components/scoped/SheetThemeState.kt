@@ -109,8 +109,21 @@ internal fun rememberSheetThemeState(
         else -> systemColorScheme
     }
 
-    // Animate color transitions for smooth cross-song color changes
-    val colorAnimSpec = spring<Color>(stiffness = Spring.StiffnessLow)
+    // Animate color transitions for smooth cross-song color changes.
+    //
+    // PERF(theme-crossfade): this animates 2 ColorSchemes × 36 colors by
+    // reading animateColorAsState(...).value in composition — during the
+    // animation every frame builds new ColorScheme instances that are then
+    // provided through LocalMaterialTheme (a *static* CompositionLocal), so
+    // the whole mini player + full player + queue host invalidated per frame
+    // for the duration of the transition. spring(StiffnessLow) settles for
+    // roughly a full second on every track change, stacking that per-frame
+    // churn exactly on top of the queue rebuild + artwork decode. A 300 ms
+    // FastOutSlowIn tween keeps the exact same crossfade visual (Material's
+    // standard color-transition duration) with a ~3x shorter invalidation
+    // window, and it decelerates to rest instead of crawling like a
+    // low-stiffness spring.
+    val colorAnimSpec = tween<Color>(durationMillis = 300, easing = FastOutSlowInEasing)
     val albumColorScheme = animateColorScheme(rawAlbumColorScheme, colorAnimSpec)
     val miniPlayerScheme = animateColorScheme(rawMiniPlayerScheme, colorAnimSpec)
     val miniAppearProgress = remember { Animatable(0f) }
