@@ -101,7 +101,6 @@ Or Grab the latest APK from the
 
 ### Requirements
 
-| | |
 |---|---|
 | **Phone** | Android 10 (API 29) or newer |
 | **Wear OS** | Wear OS 3+ (separate APK, ships alongside) |
