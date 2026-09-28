@@ -3,7 +3,7 @@
 ![](assets/pixeltune-icon.svg)
 # 🎵 PixelTune
 
-**Your music, everywhere — local files, cloud drives, and the world's biggest
+**Your music, everywhere. local files, cloud drives, and the world's biggest
 streaming catalogs, in one expressive player for Android.**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
