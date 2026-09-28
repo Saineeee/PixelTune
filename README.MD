@@ -87,9 +87,9 @@ home-screen widgets.
 | 🏷️ **Tag editor** | Edit metadata for your local files |
 | 📱 **Everywhere** | Wear OS companion, Android Auto, Cast, Quick Settings tiles, sleep timer |
 
-## 📲 Download & install
+### 📲 Download & install
 
-## ⬇️ Store Download Links
+## Store Download Links
 
 <p align="center">
   <a href="https://f-droid.org/packages/<YOUR_PACKAGE>/"><img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" height="60" alt="Get it on F-Droid" align="middle"/></a>
