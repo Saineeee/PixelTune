@@ -87,7 +87,7 @@ home-screen widgets.
 | 🏷️ **Tag editor** | Edit metadata for your local files |
 | 📱 **Everywhere** | Wear OS companion, Android Auto, Cast, Quick Settings tiles, sleep timer |
 
-### 📲 Download & install
+### ⬇️ Download & install
 
 ## Store Download Links
 
