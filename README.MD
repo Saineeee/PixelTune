@@ -63,7 +63,7 @@ home-screen widgets.
   listening. Files are stored in private app storage (no storage permission
   creep), progress is surfaced through notifications, and a dedicated
   Downloads library keeps them organized.
-- 📥 **Playlist import with preview** — paste a playlist URL from
+- 📥 **Playlist import** — paste a playlist URL from
   **Spotify, Apple Music or YouTube**, and PixelTune resolves each track to
   YouTube using fuzzy title/artist matching (Jaccard-based scoring). A preview
   screen lists every candidate match with a *reason chip*, so you can swap or
