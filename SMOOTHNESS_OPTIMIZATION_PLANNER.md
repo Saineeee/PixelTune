@@ -3,8 +3,6 @@
 > **Execution-ready plan for a future session.** Generated 2026-09-20 by a comparative engineering analysis of
 > **PixelPlayerOSS** (optimised reference — https://github.com/PixelPlayerHQ/PixelPlayerOSS @ `4386f38`, branch `main`)
 > versus **PixelTune** (target — https://github.com/Saineeee/PixelTune @ `0aeec42`, default branch `fix/library-downloads-sort-playlists-filter-button-provider-ux`).
-> This file is pushed alone on the brand-new branch `docs/smoothness-optimization-planner`.
-
 ---
 
 ## 0. How to use this planner
