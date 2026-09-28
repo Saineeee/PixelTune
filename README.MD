@@ -93,6 +93,7 @@ home-screen widgets.
 
 <p align="center">
   <a href="https://f-droid.org/packages/<YOUR_PACKAGE>/"><img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" height="60" alt="Get it on F-Droid" align="middle"/></a>
+  <a href="obtainium://app/https://github.com/<USER>/<REPO>"><img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" height="60" alt="Get it on Obtainium" align="middle"/></a>
   <a href="https://apt.izzysoft.de/packages/<YOUR_PACKAGE>"><img src="https://gitlab.com/IzzyOnDroid/repo/-/raw/master/assets/IzzyOnDroid.png" height="60" alt="Get it on IzzyOnDroid" align="middle"/></a>
 
 Or Grab the latest APK from the
