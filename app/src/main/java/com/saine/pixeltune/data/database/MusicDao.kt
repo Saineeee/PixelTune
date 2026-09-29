@@ -417,7 +417,7 @@ interface MusicDao {
             OR (
                 :filterMode = 2
                 AND (
-                    OR songs.content_uri_string LIKE 'youtube://%'
+                    songs.content_uri_string LIKE 'youtube://%'
                     OR songs.content_uri_string LIKE 'soundcloud://%'
                 )
             )
@@ -454,7 +454,7 @@ interface MusicDao {
             OR (
                 :filterMode = 2
                 AND (
-                    OR songs.content_uri_string LIKE 'youtube://%'
+                    songs.content_uri_string LIKE 'youtube://%'
                     OR songs.content_uri_string LIKE 'soundcloud://%'
                 )
             )
@@ -484,7 +484,7 @@ interface MusicDao {
             OR (
                 :filterMode = 2
                 AND (
-                    OR songs.content_uri_string LIKE 'youtube://%'
+                    songs.content_uri_string LIKE 'youtube://%'
                     OR songs.content_uri_string LIKE 'soundcloud://%'
                 )
             )
@@ -560,7 +560,7 @@ interface MusicDao {
             OR (
                 :filterMode = 2
                 AND (
-                    OR songs.content_uri_string LIKE 'youtube://%'
+                    songs.content_uri_string LIKE 'youtube://%'
                     OR songs.content_uri_string LIKE 'soundcloud://%'
                 )
             )
@@ -970,7 +970,7 @@ interface MusicDao {
             OR (
                 :filterMode = 2
                 AND (
-                    OR songs.content_uri_string LIKE 'youtube://%'
+                    songs.content_uri_string LIKE 'youtube://%'
                     OR songs.content_uri_string LIKE 'soundcloud://%'
                 )
             )
