@@ -125,7 +125,10 @@ class SoundCloudRepository @Inject constructor() {
         limit: Int = 5
     ): List<Song> = withContext(Dispatchers.IO) {
         if (limit <= 0) return@withContext emptyList()
-        val safeLimit = limit.coerceAtMost(20)
+        // IMPROVE(next-up-queue-fetcher): cap raised 20 -> 30 to match the
+        // "Next up queue fetch count" preference's maximum (1..30, default 7).
+        // Still a single related-tracks page fetch regardless of the limit.
+        val safeLimit = limit.coerceAtMost(30)
         try {
             val trackUrl = currentSong.path.takeIf {
                 it.startsWith("http", ignoreCase = true) &&

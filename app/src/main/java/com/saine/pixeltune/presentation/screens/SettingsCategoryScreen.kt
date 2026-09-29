@@ -206,6 +206,12 @@ fun SettingsCategoryScreen(
     var minSongDurationDraft by remember(uiState.minSongDuration) {
         mutableStateOf(uiState.minSongDuration.toFloat())
     }
+    // IMPROVE(next-up-queue-fetcher): draft value for the online cloud
+    // streaming "next up" queue fetch slider (Settings -> Music Management).
+    // Snaps to whole songs (1..30); persisted only when the drag finishes.
+    var radioQueueFetchCountDraft by remember(uiState.radioQueueFetchCount) {
+        mutableStateOf(uiState.radioQueueFetchCount.toFloat())
+    }
 
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream")
@@ -408,6 +414,34 @@ fun SettingsCategoryScreen(
                                         }
                                     },
                                     valueText = { value -> "${(value / 1000).toInt()}s" }
+                                )
+                            }
+
+                            SettingsSubsection(title = "Online Streaming") {
+                                // IMPROVE(next-up-queue-fetcher): user-tunable
+                                // number of "next up" songs the endless radio
+                                // fetches ahead for online cloud streaming queues
+                                // (YouTube / SoundCloud). Default 7, range 1..30 —
+                                // a higher value keeps more songs queued ahead
+                                // (fewer network round-trips when skipping), a
+                                // lower value saves data. Applies live to
+                                // playback, no restart needed.
+                                SliderSettingsItem(
+                                    label = "Next Up Queue Fetch Count",
+                                    value = radioQueueFetchCountDraft,
+                                    valueRange = 1f..30f,
+                                    steps = 28, // Whole songs 1..30 (30 positions, 28 steps)
+                                    onValueChange = { radioQueueFetchCountDraft = it },
+                                    onValueChangeFinished = {
+                                        val selectedCount = radioQueueFetchCountDraft.toInt()
+                                        if (selectedCount != uiState.radioQueueFetchCount) {
+                                            settingsViewModel.setRadioQueueFetchCount(selectedCount)
+                                        }
+                                    },
+                                    valueText = { value ->
+                                        val count = value.toInt()
+                                        if (count == 1) "1 song" else "$count songs"
+                                    }
                                 )
                             }
 

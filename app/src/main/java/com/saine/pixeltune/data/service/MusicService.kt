@@ -158,6 +158,18 @@ class MusicService : MediaLibraryService() {
     private var radioConsecutiveFailures = 0
     private val radioRecentIds = LinkedHashSet<String>()
 
+    /**
+     * IMPROVE(next-up-queue-fetcher): user-tunable number of "next up" songs
+     * fetched ahead for online cloud streaming queues (YouTube / SoundCloud).
+     * Collected from [UserPreferencesRepository.radioQueueFetchCountFlow]
+     * (Settings -> Music Management). Starts at the preference default (7) and
+     * updates live; volatile because the DataStore collector writes it from a
+     * service coroutine while [maybeRefillRadioQueue] reads it on the main
+     * thread. Always clamped to 1..30 by the repository.
+     */
+    @Volatile
+    private var radioTargetUpcoming = UserPreferencesRepository.DEFAULT_RADIO_QUEUE_FETCH_COUNT
+
     // IMPROVE(playback-restore): service-side persistence of the playback
     // session. The ViewModel-side saves cover the app-open lifecycle; these
     // service-side saves cover the SERVICE lifecycle — most importantly the
@@ -330,12 +342,14 @@ class MusicService : MediaLibraryService() {
         private const val AUTO_CONTEXT_ARTIST = "artist"
         private const val AUTO_CONTEXT_PLAYLIST = "playlist"
 
-        // Endless-radio tuning: keep the queue topped up to ~5 upcoming songs
-        // and start refilling while 2 are still unplayed, so the network fetch
-        // (1-3 s) always completes before the queue can run dry. A failed
-        // fetch retries with exponential backoff (12s -> 96s max). The queue is
-        // bounded so a multi-hour radio session cannot grow it without limit.
-        private const val RADIO_TARGET_UPCOMING = 5
+        // Endless-radio tuning: start refilling while 2 songs are still
+        // unplayed, so the network fetch (1-3 s) always completes before the
+        // queue can run dry. How many upcoming songs the queue is topped up
+        // to (the fetch target) is user-tunable via the "Next up queue fetch
+        // count" preference (default 7, range 1..30) — see
+        // [radioTargetUpcoming]. A failed fetch retries with exponential
+        // backoff (12s -> 96s max). The queue is bounded so a multi-hour radio
+        // session cannot grow it without limit.
         private const val RADIO_REFILL_RUNWAY = 2
         private const val RADIO_RETRY_BASE_DELAY_MS = 12_000L
         private const val RADIO_MAX_CONSECUTIVE_FAILURES = 4
@@ -469,6 +483,17 @@ class MusicService : MediaLibraryService() {
         }
 
         // ReplayGain preference collectors
+        serviceScope.launch {
+            userPreferencesRepository.radioQueueFetchCountFlow.collect { count ->
+                // IMPROVE(next-up-queue-fetcher): live-update how many "next
+                // up" songs the endless radio fetches for online cloud
+                // streaming queues (YouTube / SoundCloud). The next refill
+                // (transition / retry / queue growth) picks this up
+                // immediately — no service restart needed.
+                radioTargetUpcoming = count
+            }
+        }
+
         serviceScope.launch {
             userPreferencesRepository.replayGainEnabledFlow.collect { enabled ->
                 replayGainEnabled = enabled
@@ -1224,8 +1249,16 @@ class MusicService : MediaLibraryService() {
         }
         excludeIds.addAll(radioRecentIds)
 
-        val toFetch = (RADIO_TARGET_UPCOMING - upcoming)
-            .coerceIn(1, RADIO_TARGET_UPCOMING)
+        // IMPROVE(next-up-queue-fetcher): the fetch target (how many "next
+        // up" songs the queue is topped up to per refill) is the user's
+        // preference — default 7, clamped to 1..30 by the repository — instead
+        // of the old hardcoded 5.
+        val targetUpcoming = radioTargetUpcoming.coerceIn(
+            UserPreferencesRepository.MIN_RADIO_QUEUE_FETCH_COUNT,
+            UserPreferencesRepository.MAX_RADIO_QUEUE_FETCH_COUNT
+        )
+        val toFetch = (targetUpcoming - upcoming)
+            .coerceIn(1, targetUpcoming)
 
         radioFetchJob = serviceScope.launch(Dispatchers.IO) {
             val recommendations = fetchRadioRecommendations(currentItem, excludeIds, toFetch)

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -61,7 +62,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.saine.pixeltune.R
 import com.saine.pixeltune.data.model.Song
+import com.saine.pixeltune.presentation.components.MiniPlayerBottomSpacer
 import com.saine.pixeltune.presentation.components.MiniPlayerHeight
+import com.saine.pixeltune.presentation.components.NavBarContentHeight
 import com.saine.pixeltune.presentation.components.PlaylistBottomSheet
 import com.saine.pixeltune.presentation.components.SmartImage
 import com.saine.pixeltune.presentation.components.subcomps.EnhancedSongListItem
@@ -116,6 +119,28 @@ fun ListeningHistoryScreen(
     var showPlaylistBottomSheet by remember { mutableStateOf(false) }
 
     val bottomBarHeightDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+    // FIX(history-bottom-overlay): this route keeps the bottom app navigation
+    // bar visible, and the mini player pill floats ON TOP of it (both drawn at
+    // the MainActivity level, overlaying this screen's list). The old bottom
+    // padding only reserved the mini player + gesture-inset, so after enough
+    // songs the last rows scrolled UNDER the nav bar + mini player pill and
+    // became invisible / untappable. Mirrors the proven fix from the Search
+    // results list: reserve the REAL overlay (nav bar content + system inset +
+    // mini player + its spacer) plus breathing room, floored by the legacy
+    // reservation so nothing ever scrolls under the mini player.
+    val miniPlayerVisible = stablePlayerState.currentSong?.id != null
+    val historyBottomOverlay = if (miniPlayerVisible) {
+        NavBarContentHeight + bottomBarHeightDp + MiniPlayerHeight + MiniPlayerBottomSpacer + 24.dp
+    } else {
+        NavBarContentHeight + bottomBarHeightDp + 24.dp
+    }
+    // Keep at least the legacy reservation (miniplayer + system bars + 94dp)
+    // so nothing ever scrolls UNDER the miniplayer on tall-overlay devices.
+    val historyLegacyBottomPadding =
+        MiniPlayerHeight + WindowInsets.systemBars.asPaddingValues().calculateBottomPadding() + 94.dp
+    val historyListBottomPadding =
+        if (historyBottomOverlay > historyLegacyBottomPadding) historyBottomOverlay else historyLegacyBottomPadding
 
     // Merge local library + session cloud registry. Entries that still can't be
     // resolved through this merge (e.g. cloud songs after an app restart) fall
@@ -299,12 +324,11 @@ fun ListeningHistoryScreen(
                         start = 16.dp,
                         end = 16.dp,
                         top = 8.dp,
-                        // IMPROVE(clear-history-placement): the bottom padding no
-                        // longer reserves room for the removed Clear-History FAB;
-                        // just clear the mini player + gesture navigation bar.
-                        bottom = MiniPlayerHeight +
-                            WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
-                            32.dp
+                        // FIX(history-bottom-overlay): reserve the full bottom
+                        // overlay (nav bar + mini player pill) computed above —
+                        // same strategy as the Search results list — so the last
+                        // history rows are always visible and tappable.
+                        bottom = historyListBottomPadding
                     )
                 ) {
                     groupedSongs.forEach { (header, groupItems) ->

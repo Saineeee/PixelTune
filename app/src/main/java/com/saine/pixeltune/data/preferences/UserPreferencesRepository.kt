@@ -231,6 +231,11 @@ constructor(
         // Streaming Quality
         val STREAMING_QUALITY = stringPreferencesKey("streaming_quality")
 
+        // IMPROVE(next-up-queue-fetcher): how many upcoming songs the endless
+        // radio fetches per refill for online cloud streaming queues
+        // (YouTube / SoundCloud). Default 7, clamped to 1..30.
+        val RADIO_QUEUE_FETCH_COUNT = intPreferencesKey("radio_queue_fetch_count")
+
         // IMPROVE(playback-restore): last playback session snapshot (current
         // song + position + a bounded queue window) so the player can be
         // restored after the app is closed and re-opened.
@@ -841,6 +846,31 @@ constructor(
     }
 
     // ===== End Streaming Quality =====
+
+    // ===== Online Streaming Radio Queue Fetcher =====
+
+    /**
+     * IMPROVE(next-up-queue-fetcher): how many "next up" songs the endless
+     * radio keeps fetching ahead for online cloud streaming queues
+     * (YouTube / SoundCloud). User-tunable from Settings -> Music Management
+     * ("Next up queue fetch count" slider). Default 7, clamped to 1..30 so a
+     * corrupted value can never disable the radio (0) or hammer the provider
+     * (30+). Consumed by MusicService's endless-radio refill.
+     */
+    val radioQueueFetchCountFlow: Flow<Int> =
+        dataStore.data.map { preferences ->
+            (preferences[PreferencesKeys.RADIO_QUEUE_FETCH_COUNT] ?: DEFAULT_RADIO_QUEUE_FETCH_COUNT)
+                .coerceIn(MIN_RADIO_QUEUE_FETCH_COUNT, MAX_RADIO_QUEUE_FETCH_COUNT)
+        }
+
+    suspend fun setRadioQueueFetchCount(count: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.RADIO_QUEUE_FETCH_COUNT] =
+                count.coerceIn(MIN_RADIO_QUEUE_FETCH_COUNT, MAX_RADIO_QUEUE_FETCH_COUNT)
+        }
+    }
+
+    // ===== End Online Streaming Radio Queue Fetcher =====
 
     // ===== ReplayGain =====
 
@@ -1542,6 +1572,15 @@ constructor(
     companion object {
         /** Default delimiters for splitting multi-artist tags */
         val DEFAULT_ARTIST_DELIMITERS = listOf("/", ";", ",", "+", "&")
+
+        /**
+         * IMPROVE(next-up-queue-fetcher): bounds for the "Next up queue fetch
+         * count" slider (online cloud streaming radio queues). Default 7 as
+         * requested; minimum 1 (always keep the radio alive); maximum 30.
+         */
+        const val DEFAULT_RADIO_QUEUE_FETCH_COUNT = 7
+        const val MIN_RADIO_QUEUE_FETCH_COUNT = 1
+        const val MAX_RADIO_QUEUE_FETCH_COUNT = 30
     }
 
     val navBarCornerRadiusFlow: Flow<Int> =

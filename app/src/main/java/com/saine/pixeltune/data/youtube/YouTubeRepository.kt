@@ -1021,7 +1021,11 @@ class YouTubeRepository @Inject constructor(
         limit: Int = 5
     ): List<Song> = withContext(Dispatchers.IO) {
         if (limit <= 0) return@withContext emptyList()
-        val safeLimit = limit.coerceAtMost(20)  // safety cap to avoid hammering YouTube
+        // IMPROVE(next-up-queue-fetcher): cap raised 20 -> 30 to match the
+        // "Next up queue fetch count" preference's maximum (1..30, default 7).
+        // One mix page + one music-search page still serve the whole pick, so
+        // request count stays constant regardless of the limit.
+        val safeLimit = limit.coerceAtMost(30)  // safety cap to avoid hammering YouTube
         try {
             val excludeIds = currentQueueIds.toHashSet()
             val seedTitleKey = normalizeTitleForDedup(currentSong.title)

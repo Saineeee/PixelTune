@@ -82,6 +82,10 @@ data class SettingsUiState(
     val minSongDuration: Int = 10000,
     val replayGainEnabled: Boolean = false,
     val replayGainUseAlbumGain: Boolean = false,
+    // IMPROVE(next-up-queue-fetcher): user-tunable number of "next up" songs
+    // fetched ahead for online cloud streaming radio queues (YouTube /
+    // SoundCloud). Default 7, clamped to 1..30 — mirrors the DataStore default.
+    val radioQueueFetchCount: Int = 7,
     val streamingQuality: com.saine.pixeltune.data.preferences.StreamingQuality = com.saine.pixeltune.data.preferences.StreamingQuality.NORMAL
 )
 
@@ -358,6 +362,14 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             userPreferencesRepository.minSongDurationFlow.collect { duration ->
                 _uiState.update { it.copy(minSongDuration = duration) }
+            }
+        }
+
+        // IMPROVE(next-up-queue-fetcher): collector for the online cloud
+        // streaming radio queue fetch count (Settings -> Music Management).
+        viewModelScope.launch {
+            userPreferencesRepository.radioQueueFetchCountFlow.collect { count ->
+                _uiState.update { it.copy(radioQueueFetchCount = count) }
             }
         }
 
@@ -658,6 +670,19 @@ class SettingsViewModel @Inject constructor(
             userPreferencesRepository.setMinSongDuration(durationMs)
             // Trigger a library rescan so the change takes effect in the database
             syncManager.fullSync()
+        }
+    }
+
+    /**
+     * IMPROVE(next-up-queue-fetcher): persists how many "next up" songs the
+     * endless radio fetches ahead for online cloud streaming queues
+     * (YouTube / SoundCloud). MusicService picks the new value up live via its
+     * preference collector — no playback restart needed.
+     */
+    fun setRadioQueueFetchCount(count: Int) {
+        viewModelScope.launch {
+            if (count == _uiState.value.radioQueueFetchCount) return@launch
+            userPreferencesRepository.setRadioQueueFetchCount(count)
         }
     }
 
