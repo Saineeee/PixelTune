@@ -7,6 +7,7 @@ import com.saine.pixeltune.data.model.SearchPage
 import com.saine.pixeltune.data.model.SearchResultItem
 import com.saine.pixeltune.data.model.Song
 import com.saine.pixeltune.data.repository.MusicRepository
+import com.saine.pixeltune.utils.SearchResultKeys
 import com.saine.pixeltune.data.youtube.YouTubeRepository
 import com.saine.pixeltune.data.youtube.YouTubeStreamProxy
 import com.saine.pixeltune.data.soundcloud.SoundCloudRepository
@@ -363,10 +364,9 @@ class SearchStateHolder @Inject constructor(
                     nextPage.hasMore && nextPage.continuation != null
 
                 if (nextPage.results.isNotEmpty()) {
-                    val existingIds = _searchResults.value.mapNotNull { it.stableSearchKey() }.toHashSet()
+                    val existingIds = _searchResults.value.map { it.stableSearchKey() }.toHashSet()
                     val newItems = nextPage.results.filter { item ->
-                        val key = item.stableSearchKey() ?: return@filter true
-                        existingIds.add(key)
+                        existingIds.add(item.stableSearchKey())
                     }
                     if (newItems.isNotEmpty()) {
                         _searchResults.value =
@@ -392,15 +392,13 @@ class SearchStateHolder @Inject constructor(
      * IMPROVE(search-load-more): stable dedupe key of a search result — the
      * provider occasionally repeats an item across continuation page
      * boundaries, and the appended page must not duplicate visible rows.
+     *
+     * FIX(online-search-chip-crash): delegates to
+     * [SearchResultKeys.baseKeyOf] so the load-more dedupe and the results
+     * list's LazyColumn keys can never drift apart again.
      */
-    private fun SearchResultItem.stableSearchKey(): String? = when (this) {
-        is SearchResultItem.SongItem -> "song_${song.id}"
-        is SearchResultItem.AlbumItem -> "album_${album.id}"
-        is SearchResultItem.ArtistItem -> "artist_${artist.id}"
-        is SearchResultItem.PlaylistItem -> "playlist_${playlist.id}"
-        is SearchResultItem.CloudPlaylistItem -> "cloud_playlist_${playlist.id}"
-        is SearchResultItem.CloudArtistItem -> "cloud_artist_${artist.id}"
-    }
+    private fun SearchResultItem.stableSearchKey(): String =
+        SearchResultKeys.baseKeyOf(this)
 
     fun toggleSearchMode(isOnline: Boolean) {
         _isOnlineSearch.value = isOnline

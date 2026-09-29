@@ -421,7 +421,24 @@ class SoundCloudRepository @Inject constructor() {
                     }
                 }
             }
-        return results
+
+        // FIX(online-search-chip-crash): SoundCloud's search index repeats
+        // entries (the same playlist / user in more than one result block).
+        // Two rows with the same URL carry the same id (url hashcode) and
+        // produced a duplicate LazyColumn key — a hard "Key was used multiple
+        // times" crash when the Playlists / Artists chips' results rendered.
+        // First occurrence (best rank) wins — mirroring what the search
+        // screen's "Load more" merge already does for appended pages.
+        val seen = HashSet<String>(results.size)
+        return results.filter { item ->
+            val identity = when (item) {
+                is SearchResultItem.SongItem -> "song:${item.song.path}"
+                is SearchResultItem.CloudPlaylistItem -> "playlist:${item.playlist.url}"
+                is SearchResultItem.CloudArtistItem -> "artist:${item.artist.url}"
+                else -> "item:${item.hashCode()}"
+            }
+            seen.add(identity)
+        }
     }
 
     /**
@@ -443,10 +460,16 @@ class SoundCloudRepository @Inject constructor() {
             val extractor = ServiceList.SoundCloud.getPlaylistExtractor(playlist.url)
             extractor.fetchPage()
             val page = extractor.initialPage
-            val songs = streamItemsToSongs(
-                items = page.items.filterIsInstance<StreamInfoItem>(),
-                proxyUrlProvider = proxyUrlProvider,
-                contextTitle = playlist.name
+            // FIX(online-search-chip-crash): SoundCloud playlists repeat the
+            // same track constantly — two songs with the same id produced a
+            // duplicate "cloud_song_<id>" LazyColumn key on the CloudCatalog
+            // screen and crashed the app when a playlist's tracks opened.
+            val songs = dedupeBySongId(
+                streamItemsToSongs(
+                    items = page.items.filterIsInstance<StreamInfoItem>(),
+                    proxyUrlProvider = proxyUrlProvider,
+                    contextTitle = playlist.name
+                )
             )
             val uploader = runCatching { extractor.uploaderName }.getOrNull()
             val trackCount = runCatching { extractor.streamCount }.getOrDefault(-1L)
@@ -485,10 +508,13 @@ class SoundCloudRepository @Inject constructor() {
             val extractor = ServiceList.SoundCloud.getPlaylistExtractor(playlist.url)
             extractor.fetchPage()
             val next = extractor.getPage(continuation)
-            val songs = streamItemsToSongs(
-                items = next.items.filterIsInstance<StreamInfoItem>(),
-                proxyUrlProvider = proxyUrlProvider,
-                contextTitle = playlist.name
+            // FIX(online-search-chip-crash): same dedupe as the first page.
+            val songs = dedupeBySongId(
+                streamItemsToSongs(
+                    items = next.items.filterIsInstance<StreamInfoItem>(),
+                    proxyUrlProvider = proxyUrlProvider,
+                    contextTitle = playlist.name
+                )
             )
             Result.success(
                 CloudTracksPage(
@@ -522,10 +548,14 @@ class SoundCloudRepository @Inject constructor() {
                 IllegalStateException("User ${artist.url} exposes no tracks tab")
             )
             val tabInfo = ChannelTabInfo.getInfo(ServiceList.SoundCloud, tracksTab)
-            val songs = streamItemsToSongs(
-                items = tabInfo.relatedItems.filterIsInstance<StreamInfoItem>(),
-                proxyUrlProvider = proxyUrlProvider,
-                contextTitle = artist.name
+            // FIX(online-search-chip-crash): a user's tracks tab can repeat an
+            // upload — dedupe before the list reaches the LazyColumn keys.
+            val songs = dedupeBySongId(
+                streamItemsToSongs(
+                    items = tabInfo.relatedItems.filterIsInstance<StreamInfoItem>(),
+                    proxyUrlProvider = proxyUrlProvider,
+                    contextTitle = artist.name
+                )
             )
             Result.success(
                 CloudTracksPage(
@@ -566,10 +596,13 @@ class SoundCloudRepository @Inject constructor() {
                 IllegalStateException("User ${artist.url} exposes no tracks tab")
             )
             val next = ChannelTabInfo.getMoreItems(ServiceList.SoundCloud, tracksTab, continuation)
-            val songs = streamItemsToSongs(
-                items = next.items.filterIsInstance<StreamInfoItem>(),
-                proxyUrlProvider = proxyUrlProvider,
-                contextTitle = artist.name
+            // FIX(online-search-chip-crash): same dedupe as the first page.
+            val songs = dedupeBySongId(
+                streamItemsToSongs(
+                    items = next.items.filterIsInstance<StreamInfoItem>(),
+                    proxyUrlProvider = proxyUrlProvider,
+                    contextTitle = artist.name
+                )
             )
             Result.success(
                 CloudTracksPage(
@@ -599,6 +632,18 @@ class SoundCloudRepository @Inject constructor() {
             count >= 1_000L -> "${count / 1_000L}K followers"
             else -> "$count followers"
         }
+    }
+
+    /**
+     * FIX(online-search-chip-crash): drops later songs whose id already
+     * appeared — SoundCloud playlists and user track tabs repeat the same
+     * upload, and two rows with the same id meant a duplicate
+     * "cloud_song_<id>" LazyColumn key (hard crash). Mirrors the YouTube
+     * repository's dedupeBySongId.
+     */
+    private fun dedupeBySongId(songs: List<Song>): List<Song> {
+        val seen = HashSet<String>(songs.size)
+        return songs.filter { seen.add(it.id) }
     }
 
     /**

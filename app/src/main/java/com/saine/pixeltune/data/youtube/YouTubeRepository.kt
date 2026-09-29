@@ -530,7 +530,39 @@ class YouTubeRepository @Inject constructor(
                     }
                 }
             }
-        return results
+
+        // FIX(online-search-chip-crash): the provider search index REPEATS
+        // entries — the same playlist appears in the top-result shelf AND the
+        // main list, the same channel in more than one shelf. Two rows with the
+        // same identity used to reach the results LazyColumn, whose keys are
+        // derived from these ids, and crashed the app with "Key was used
+        // multiple times" the moment both rows composed (the Playlists /
+        // Artists chips). The FIRST occurrence (the provider's best rank) is
+        // kept — exactly what the search screen's "Load more" merge already
+        // does for appended pages.
+        return dedupeSearchResults(results)
+    }
+
+    /**
+     * FIX(online-search-chip-crash): drops repeated search entries by their
+     * natural identity — the video id for songs, the canonical URL for cloud
+     * playlists / artists (the ids are url hashcodes, but the URL is the true
+     * identity, so different-URL entries are ALWAYS kept even when their
+     * hashcodes collide; the UI's key builder disambiguates those).
+     */
+    private fun dedupeSearchResults(results: List<SearchResultItem>): List<SearchResultItem> {
+        val seen = HashSet<String>(results.size)
+        return results.filter { item ->
+            val identity = when (item) {
+                is SearchResultItem.SongItem -> "song:${item.song.id}"
+                is SearchResultItem.CloudPlaylistItem -> "playlist:${item.playlist.url}"
+                is SearchResultItem.CloudArtistItem -> "artist:${item.artist.url}"
+                // mapSearchInfoItems only ever produces the three online
+                // variants above; local items flow through musicRepository.
+                else -> "item:${item.hashCode()}"
+            }
+            seen.add(identity)
+        }
     }
 
     /** IMPROVE(search-load-more): tagged continuation for the NewPipe search tier. */
@@ -739,6 +771,14 @@ class YouTubeRepository @Inject constructor(
         val shelves = mutableListOf<JSONArray>()
         var nextToken: String? = null
 
+        // FIX(online-search-chip-crash): a YT Music artists response spans
+        // MULTIPLE musicShelfRenderers (top-result-adjacent shelves + the main
+        // artists shelf), and the SAME channel regularly appears in more than
+        // one of them. Both rows used to reach the results LazyColumn with the
+        // SAME id (url hashcode) → duplicate key → hard crash the moment the
+        // Artists chip's results rendered. First occurrence wins.
+        val seenChannelUrls = HashSet<String>()
+
         if (isContinuation) {
             val shelfContinuation = response
                 .optJSONObject("continuationContents")
@@ -791,6 +831,7 @@ class YouTubeRepository @Inject constructor(
                     ?.takeIf { it.startsWith("UC") }
                     ?: continue
                 val channelUrl = "https://www.youtube.com/channel/$browseId"
+                if (!seenChannelUrls.add(channelUrl)) continue
 
                 // The subtitle runs look like ["Artist", " • ", "313m monthly audience"]
                 // or ["Artist", " • ", "350 subscribers"] or just ["Artist"].
@@ -1219,10 +1260,19 @@ class YouTubeRepository @Inject constructor(
             )
             extractor.fetchPage()
             val page = extractor.initialPage
-            val songs = playlistStreamItemsToSongs(
-                items = page.items.filterIsInstance<StreamInfoItem>(),
-                proxyUrlProvider = proxyUrlProvider,
-                contextTitle = playlist.name
+            // FIX(online-search-chip-crash): YouTube playlists regularly list
+            // the SAME video twice (deleted-video placeholders, provider
+            // quirk) — two songs with the same id produced a duplicate
+            // "cloud_song_<id>" LazyColumn key on the CloudCatalog screen and
+            // crashed the app the moment a playlist's results opened. The
+            // artist-tracks paths already deduped ([dedupeBySongId]); the
+            // playlist paths were missed. First occurrence wins.
+            val songs = dedupeBySongId(
+                playlistStreamItemsToSongs(
+                    items = page.items.filterIsInstance<StreamInfoItem>(),
+                    proxyUrlProvider = proxyUrlProvider,
+                    contextTitle = playlist.name
+                )
             )
             val uploader = runCatching { extractor.uploaderName }.getOrNull()
             val trackCount = runCatching { extractor.streamCount }.getOrDefault(-1L)
@@ -1263,10 +1313,15 @@ class YouTubeRepository @Inject constructor(
             )
             extractor.fetchPage()
             val next = extractor.getPage(continuation)
-            val songs = playlistStreamItemsToSongs(
-                items = next.items.filterIsInstance<StreamInfoItem>(),
-                proxyUrlProvider = proxyUrlProvider,
-                contextTitle = playlist.name
+            // FIX(online-search-chip-crash): same dedupe as the first page —
+            // a continuation page may repeat a video the playlist already
+            // listed (and the CloudCatalogViewModel merge would keep both).
+            val songs = dedupeBySongId(
+                playlistStreamItemsToSongs(
+                    items = next.items.filterIsInstance<StreamInfoItem>(),
+                    proxyUrlProvider = proxyUrlProvider,
+                    contextTitle = playlist.name
+                )
             )
             Result.success(
                 CloudTracksPage(
