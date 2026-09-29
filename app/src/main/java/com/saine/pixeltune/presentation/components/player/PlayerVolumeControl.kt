@@ -52,9 +52,9 @@ import androidx.compose.foundation.layout.widthIn
  *
  * Tapping the volume icon morphs the compact 42×50 button into a pill that
  * fully expands to reveal a smooth volume slider + live percentage readout —
- * mirroring the morphing-pill animation language the cast button at the top
- * of the player already uses (spring-based size + corner morphs, icon
- * crossfade, M3 `Slider` with theme-matched colors).
+ * mirroring the morphing-pill animation language of the player's top-bar
+ * buttons (spring-based size + corner morphs, icon crossfade, M3 `Slider`
+ * with theme-matched colors).
  *
  * Collapsed:        [ (icon) ]
  * Expanded:  [ (icon) ————●———— 72% ]
@@ -74,8 +74,9 @@ fun PlayerVolumeControl(
     val volume = volumeProvider().coerceIn(0f, 1f)
     val percent = (volume * 100f).toInt()
 
-    // Corner morph: collapsed mirrors the queue button's asymmetric shape,
-    // expanded becomes a full pill — same spring language as the cast button.
+    // Corner morph: collapsed keeps the asymmetric pill shape (compact start
+    // edge, fully rounded end edge), expanded becomes a full pill — the same
+    // spring language as the player's other morphing buttons.
     val cornerExpanded = 50.dp
     val cornerCompactStart = 6.dp
     val cornerCompactEnd = 50.dp

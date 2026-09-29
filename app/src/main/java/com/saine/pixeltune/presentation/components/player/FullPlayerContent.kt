@@ -8,11 +8,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -42,6 +39,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconButton
@@ -88,7 +86,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -202,8 +199,6 @@ fun FullPlayerContent(
     val immersiveLyricsEnabled by playerViewModel.immersiveLyricsEnabled.collectAsStateWithLifecycle()
     val immersiveLyricsTimeout by playerViewModel.immersiveLyricsTimeout.collectAsStateWithLifecycle()
     val isImmersiveTemporarilyDisabled by playerViewModel.isImmersiveTemporarilyDisabled.collectAsStateWithLifecycle()
-    val isBluetoothEnabled by playerViewModel.isBluetoothEnabled.collectAsStateWithLifecycle()
-    val bluetoothName by playerViewModel.bluetoothName.collectAsStateWithLifecycle()
 
     // IMPROVE(volume-slider): live player volume for the top-bar volume control.
     val trackVolume by playerViewModel.trackVolume.collectAsStateWithLifecycle()
@@ -618,87 +613,27 @@ fun FullPlayerContent(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val isBluetoothActive =
-                                isBluetoothEnabled && !bluetoothName.isNullOrEmpty()
-                            val outputIconPainter = when {
-                                isBluetoothActive -> painterResource(R.drawable.rounded_bluetooth_24)
-                                else -> painterResource(R.drawable.rounded_mobile_speaker_24)
-                            }
-                            val outputCornersExpanded = 50.dp
-                            val outputCornersCompact = 6.dp
-                            val outputTopStart by animateDpAsState(
-                                targetValue = outputCornersExpanded,
-                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
-                            )
-                            val outputTopEnd by animateDpAsState(
-                                targetValue = outputCornersCompact,
-                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
-                            )
-                            val outputBottomStart by animateDpAsState(
-                                targetValue = outputCornersExpanded,
-                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
-                            )
-                            val outputBottomEnd by animateDpAsState(
-                                targetValue = outputCornersCompact,
-                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
-                            )
-                            val outputContainerColor by animateColorAsState(
-                                targetValue = playerOnAccentColor.copy(alpha = 0.7f),
-                                animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .height(42.dp)
-                                    .align(Alignment.CenterVertically)
-                                    .animateContentSize(
-                                        animationSpec = spring(
-                                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                                            stiffness = Spring.StiffnessLow
-                                        )
-                                    )
-                                    .widthIn(min = 50.dp, max = 58.dp)
-                                    .clip(
-                                        RoundedCornerShape(
-                                            topStart = outputTopStart.coerceAtLeast(0.dp),
-                                            topEnd = outputTopEnd.coerceAtLeast(0.dp),
-                                            bottomStart = outputBottomStart.coerceAtLeast(0.dp),
-                                            bottomEnd = outputBottomEnd.coerceAtLeast(0.dp)
-                                        )
-                                    )
-                                    .background(outputContainerColor),
-                                contentAlignment = Alignment.CenterStart
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .padding(start = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Start
-                                ) {
-                                    Icon(
-                                        painter = outputIconPainter,
-                                        contentDescription = when {
-                                            isBluetoothActive -> "Bluetooth"
-                                            else -> "Local playback"
-                                        },
-                                        tint = playerAccentColor
-                                    )
-                                }
-                            }
-
                             // IMPROVE(offline-downloads): download button for
                             // online-streamed songs — taps download / cancel /
                             // confirm-remove the app-private offline copy.
                             // Local (device) songs never show it.
+                            //
+                            // IMPROVE(player-button-shapes): the download button
+                            // mirrors the volume button's asymmetric pill FLIPPED
+                            // (fully-rounded start edge, compact end edge) — the
+                            // outer-left bookend of the actions row, so the row
+                            // reads as a matched group with the volume pill on
+                            // the far right.
                             if (currentSongIsCloud) {
                                 Box(
                                     modifier = Modifier
                                         .size(height = 42.dp, width = 50.dp)
                                         .clip(
                                             RoundedCornerShape(
-                                                topStart = 6.dp,
-                                                topEnd = 50.dp,
-                                                bottomStart = 6.dp,
-                                                bottomEnd = 50.dp
+                                                topStart = 50.dp,
+                                                topEnd = 6.dp,
+                                                bottomStart = 50.dp,
+                                                bottomEnd = 6.dp
                                             )
                                         )
                                         .background(playerOnAccentColor.copy(alpha = 0.7f))
@@ -776,17 +711,17 @@ fun FullPlayerContent(
                             }
 
                             // Queue Button
+                            //
+                            // IMPROVE(player-button-shapes): a compact SQUARE
+                            // with softly rounded corners (12 dp — the app's
+                            // PlaceholderBox / M3 medium token) instead of the
+                            // old asymmetric pill, so it reads as the calm
+                            // middle anchor between the download and volume
+                            // bookend pills.
                             Box(
                                 modifier = Modifier
-                                    .size(height = 42.dp, width = 50.dp)
-                                    .clip(
-                                        RoundedCornerShape(
-                                            topStart = 6.dp,
-                                            topEnd = 50.dp,
-                                            bottomStart = 6.dp,
-                                            bottomEnd = 50.dp
-                                        )
-                                    )
+                                    .size(42.dp)
+                                    .clip(RoundedCornerShape(12.dp))
                                     .background(playerOnAccentColor.copy(alpha = 0.7f))
                                     .clickable {
                                         showSongInfoBottomSheet = true
@@ -803,8 +738,8 @@ fun FullPlayerContent(
 
                             // IMPROVE(volume-slider): morphing M3 volume control —
                             // tap the volume icon and a smooth slider expands out
-                            // of the pill (same animation language as the output
-                            // button next to it).
+                            // of the pill (same animation language as the player's
+                            // other morphing pill buttons).
                             PlayerVolumeControl(
                                 volumeProvider = { trackVolume },
                                 onVolumeChange = { playerViewModel.setTrackVolume(it) },

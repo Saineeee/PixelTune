@@ -649,9 +649,6 @@ class PlayerViewModel @Inject constructor(
     val isWifiEnabled: StateFlow<Boolean> = connectivityStateHolder.isWifiEnabled
     val isWifiRadioOn: StateFlow<Boolean> = connectivityStateHolder.isWifiRadioOn
     val wifiName: StateFlow<String?> = connectivityStateHolder.wifiName
-    val isBluetoothEnabled: StateFlow<Boolean> = connectivityStateHolder.isBluetoothEnabled
-    val bluetoothName: StateFlow<String?> = connectivityStateHolder.bluetoothName
-    val bluetoothAudioDevices: StateFlow<List<String>> = connectivityStateHolder.bluetoothAudioDevices
 
     // Connectivity is now managed by ConnectivityStateHolder
 
@@ -1757,7 +1754,7 @@ class PlayerViewModel @Inject constructor(
             }
         }, ContextCompat.getMainExecutor(context))
 
-        // Initialize connectivity monitoring (WiFi/Bluetooth)
+        // Initialize connectivity monitoring (WiFi / online-offline state)
         connectivityStateHolder.initialize()
 
         // Initialize sleep timer state holder

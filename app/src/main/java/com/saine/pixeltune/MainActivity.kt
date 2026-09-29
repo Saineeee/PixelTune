@@ -703,9 +703,9 @@ class MainActivity : ComponentActivity() {
                 // attached to any composition.
                 //
                 // This top-level host also serves as the primary surface for
-                // app-wide toasts (queue additions, favorite toggles, cast
-                // errors, etc.) so they appear regardless of which screen is
-                // currently active. The player-sheet-level SnackbarHost
+                // app-wide toasts (queue additions, favorite toggles,
+                // streaming errors, etc.) so they appear regardless of which
+                // screen is currently active. The player-sheet-level SnackbarHost
                 // remains for theming continuity when the sheet IS expanded.
                 val topSnackbarHostState = remember { SnackbarHostState() }
                 val topSnackbarScope = rememberCoroutineScope()
