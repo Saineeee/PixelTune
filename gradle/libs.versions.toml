@@ -2,8 +2,6 @@
 accompanistDrawablepainter = "0.37.3"
 agp = "8.13.2"
 app = "1.7.0"
-googleGenai = "1.11.0"
-googlePlayServicesCast = "21.5.0"
 amplituda = "2.3.0"
 animation = "1.10.4"
 appcompat = "1.7.0"
@@ -40,7 +38,6 @@ material3 = "1.5.0-alpha13"
 media = "1.7.1"
 media3Session = "1.9.2"
 media3Transformer = "1.9.2"
-mediaRouter = "1.8.1"
 navigationCompose = "2.9.7"
 paletteKtx = "1.0.0"
 protobufJavalite = "3.25.1"
@@ -80,15 +77,12 @@ wavySlider = "2.0.0"
 workRuntimeKtx = "2.10.1"
 composeTesting = "1.0.0-alpha03"
 timber = "5.0.1"
-generativeai = "0.9.0"
 mockk = "1.13.13"
 turbine = "1.1.0"
 truth = "1.4.4"
 
 retrofit = "3.0.0"
 okhttp = "5.3.2"
-mediarouterVersion = "1.8.1"
-playServicesCastFramework = "22.3.0"
 navigationRuntimeKtx = "2.9.7"
 material3Version = "1.5.0-alpha15"
 uiautomator = "2.3.0"
@@ -97,10 +91,6 @@ baselineprofile = "1.4.1"
 profileinstaller = "1.4.1"
 pagingCommon = "3.3.6"
 
-# Wear OS
-horologist = "0.7.15"
-wearCompose = "1.6.0-beta01"
-playServicesWearable = "19.0.0"
 
 [libraries]
 accompanist-drawablepainter = { module = "com.google.accompanist:accompanist-drawablepainter", version.ref = "accompanistDrawablepainter" }
@@ -114,8 +104,6 @@ androidx-app = { module = "androidx.car.app:app", version.ref = "app" }
 androidx-app-projected = { module = "androidx.car.app:app-projected", version.ref = "app" }
 androidx-media = { module = "androidx.media:media", version.ref = "media" }
 androidx-ui-text-google-fonts = { module = "androidx.compose.ui:ui-text-google-fonts" }
-google-genai = { group = "com.google.genai", name = "google-genai", version.ref = "googleGenai" }
-google-play-services-cast-framework = { group = "com.google.android.gms", name = "play-services-cast-framework", version.ref = "googlePlayServicesCast" }
 amplituda = { module = "com.github.lincollincol:amplituda", version.ref = "amplituda" }
 androidx-animation = { module = "androidx.compose.animation:animation", version.ref = "animation" }
 desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugarJdkLibs" }
@@ -137,7 +125,6 @@ androidx-media3-session = { module = "androidx.media3:media3-session", version.r
 androidx-media3-transformer = { module = "androidx.media3:media3-transformer", version.ref = "media3Transformer" }
 androidx-media3-ui = { module = "androidx.media3:media3-ui", version.ref = "media3Session" }
 androidx-media3-exoplayer-ffmpeg = { module = "org.jellyfin.media3:media3-ffmpeg-decoder", version = "1.8.0+1" }
-androidx-media-router = { module = "androidx.mediarouter:mediarouter", version.ref = "mediaRouter" }
 androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigationCompose" }
 androidx-palette-ktx = { module = "androidx.palette:palette-ktx", version.ref = "paletteKtx" }
 androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref = "roomCompiler" }
@@ -200,13 +187,10 @@ taglib = { group = "io.github.kyant0", name = "taglib", version.ref = "taglib" }
 jaudiotagger = { group = "net.jthink", name = "jaudiotagger", version.ref = "jaudiotagger" }
 vorbisjava-core = { group = "org.gagravarr", name = "vorbis-java-core", version.ref = "vorbisjava" }
 reorderables = { group = "sh.calvin.reorderable", name = "reorderable", version.ref = "reorderables" }
-generativeai = { group = "com.google.ai.client.generativeai", name = "generativeai", version.ref = "generativeai" }
 retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
 converter-gson = { group = "com.squareup.retrofit2", name = "converter-gson", version.ref = "retrofit" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 logging-interceptor = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
-androidx-mediarouter = { group = "androidx.mediarouter", name = "mediarouter", version.ref = "mediarouterVersion" }
-play-services-cast-framework = { group = "com.google.android.gms", name = "play-services-cast-framework", version.ref = "playServicesCastFramework" }
 androidx-navigation-runtime-ktx = { group = "androidx.navigation", name = "navigation-runtime-ktx", version.ref = "navigationRuntimeKtx" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3Version" }
 androidx-uiautomator = { group = "androidx.test.uiautomator", name = "uiautomator", version.ref = "uiautomator" }
@@ -223,24 +207,6 @@ turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine
 truth = { group = "com.google.truth", name = "truth", version.ref = "truth" }
 androidx-room-testing = { module = "androidx.room:room-testing", version.ref = "roomRuntime" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinx-coroutines" }
-
-# Wear OS Compose
-wear-compose-material = { module = "androidx.wear.compose:compose-material", version.ref = "wearCompose" }
-wear-compose-material3 = { module = "androidx.wear.compose:compose-material3", version.ref = "wearCompose" }
-wear-compose-foundation = { module = "androidx.wear.compose:compose-foundation", version.ref = "wearCompose" }
-wear-compose-navigation = { module = "androidx.wear.compose:compose-navigation", version.ref = "wearCompose" }
-
-# Horologist
-horologist-compose-layout = { module = "com.google.android.horologist:horologist-compose-layout", version.ref = "horologist" }
-horologist-media-ui = { module = "com.google.android.horologist:horologist-media-ui", version.ref = "horologist" }
-horologist-audio-ui = { module = "com.google.android.horologist:horologist-audio-ui", version.ref = "horologist" }
-horologist-composables = { module = "com.google.android.horologist:horologist-composables", version.ref = "horologist" }
-
-# Play Services Wearable (Data Layer API)
-play-services-wearable = { module = "com.google.android.gms:play-services-wearable", version.ref = "playServicesWearable" }
-
-# Coroutines Play Services (for .await() on GMS Tasks)
-kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "kotlinx-coroutines" }
 
 
 [plugins]

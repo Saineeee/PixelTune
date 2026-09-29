@@ -19,21 +19,18 @@
 -keep class androidx.media3.exoplayer.ffmpeg.** { *; }
 
 # Keep data classes and members to prevent R8 from removing fields
--keepclassmembers class com.theveloper.pixeltune.data.model.** { *; }
--keepclassmembers class com.theveloper.pixeltune.domain.model.** { *; }
+-keepclassmembers class com.saine.pixeltune.data.model.** { *; }
+-keepclassmembers class com.saine.pixeltune.domain.model.** { *; }
 
 -keepattributes Signature, InnerClasses, EnclosingMethod, AnnotationDefault, *Annotation*
 
-# Cast framework classes loaded via manifest/reflective entry points.
--keep class com.theveloper.pixeltune.data.service.cast.CastOptionsProvider { *; }
--keep class * implements com.google.android.gms.cast.framework.OptionsProvider
 
 # Gson generic type capture for backup/restore in release builds.
 -keep class com.google.gson.reflect.TypeToken { *; }
 -keep class * extends com.google.gson.reflect.TypeToken
--keep class com.theveloper.pixeltune.data.preferences.PreferenceBackupEntry { *; }
--keep class com.theveloper.pixeltune.data.backup.model.** { *; }
--keep class com.theveloper.pixeltune.data.backup.module.** { *; }
+-keep class com.saine.pixeltune.data.preferences.PreferenceBackupEntry { *; }
+-keep class com.saine.pixeltune.data.backup.model.** { *; }
+-keep class com.saine.pixeltune.data.backup.module.** { *; }
 
 # Netty channel classes are instantiated reflectively and require public no-arg constructors.
 -keep class io.netty.channel.socket.nio.NioServerSocketChannel { public <init>(); }
@@ -123,20 +120,20 @@
 -keepnames class io.netty.** { *; }
 
 # Cloud Streaming Proxies & Providers (Ensures internal server can start in Release)
--keep class com.theveloper.pixeltune.data.telegram.** { *; }
--keep interface com.theveloper.pixeltune.data.telegram.** { *; }
+-keep class com.saine.pixeltune.data.telegram.** { *; }
+-keep interface com.saine.pixeltune.data.telegram.** { *; }
 
--keep class com.theveloper.pixeltune.data.gdrive.** { *; }
--keep interface com.theveloper.pixeltune.data.gdrive.** { *; }
+-keep class com.saine.pixeltune.data.gdrive.** { *; }
+-keep interface com.saine.pixeltune.data.gdrive.** { *; }
 
--keep class com.theveloper.pixeltune.data.netease.** { *; }
--keep interface com.theveloper.pixeltune.data.netease.** { *; }
+-keep class com.saine.pixeltune.data.netease.** { *; }
+-keep interface com.saine.pixeltune.data.netease.** { *; }
 
--keep class com.theveloper.pixeltune.data.soundcloud.** { *; }
--keep interface com.theveloper.pixeltune.data.soundcloud.** { *; }
+-keep class com.saine.pixeltune.data.soundcloud.** { *; }
+-keep interface com.saine.pixeltune.data.soundcloud.** { *; }
 
--keep class com.theveloper.pixeltune.data.youtube.** { *; }
--keep interface com.theveloper.pixeltune.data.youtube.** { *; }
+-keep class com.saine.pixeltune.data.youtube.** { *; }
+-keep interface com.saine.pixeltune.data.youtube.** { *; }
 
 # NewPipeExtractor (YouTube + SoundCloud extraction engine)
 # Plain Java JAR from JitPack — ships NO consumer R8 rules of its own.
@@ -181,3 +178,9 @@
     public static int d(...);
     public static int i(...);
 }
+
+# slf4j 1.x API references its optional static binders (org.slf4j.impl.*) only
+# when an implementation is present on the classpath. Android does not ship
+# one, so silence the R8 "missing class" errors instead of bundling an slf4j
+# implementation.
+-dontwarn org.slf4j.impl.**

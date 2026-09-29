@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.theveloper.pixeltune.baselineprofile"
+    namespace = "com.saine.pixeltune.baselineprofile"
     compileSdk = 35
 
     compileOptions {

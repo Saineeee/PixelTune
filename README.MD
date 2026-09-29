@@ -34,8 +34,7 @@ On top of that foundation, PixelTune adds what most local players are missing:
 instant access to the **YouTube Music, YouTube and SoundCloud catalogs**, an
 **offline downloads** system, and **cross-service playlist import** from
 Spotify, Apple Music and YouTube — all inside the same polished, fully
-themeable interface, with a Wear OS companion, Android Auto, Cast and
-home-screen widgets.
+themeable interface, with Android Auto and home-screen widgets.
 
 > [!NOTE]
 > PixelTune is a community fork of
@@ -43,6 +42,14 @@ home-screen widgets.
 > base, MIT-licensed era), extended with an original streaming and cloud-catalog
 > layer. See [Credits & attribution](#-credits--attribution) and
 > [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+
+> [!IMPORTANT]
+> This is the **FOSS edition** of PixelTune, prepared for F-Droid: it contains
+> no proprietary SDKs (Google Cast / Play services / cloud AI are removed) and
+> every optional network feature is **off by default**. The only optional
+> online lookup — artist artwork from Deezer's public API — runs exclusively
+> if you enable it in *Settings → Music Management → Download online artist
+> images*. The package id is `com.saine.pixeltune`.
 
 ## ✨ Features
 
@@ -77,7 +84,7 @@ home-screen widgets.
 | 💾 **Local library** | MediaStore sync with a live change observer, folder explorer, paging for very large libraries |
 | ☁️ **Your cloud, your music** | Google Drive and Telegram channel streaming through a personal on-device proxy ([TDLib](https://core.telegram.org/tdlib) 1.8.56) |
 | 🀄 **NetEase Cloud Music** | Built-in NetEase integration |
-| 🤖 **AI playlists & metadata** | Generate playlists and metadata with Gemini or DeepSeek |
+| 🖼️ **Artist artwork (opt-in)** | Optional online artist images from Deezer's public API — disabled by default |
 | 🎨 **Material 3 Expressive UI** | Dynamic palettes, album-art theming, carousel styles, navigation-bar customization |
 | 🎼 **Lyrics** | Synced lyrics via LrcLib with source preferences |
 | 🎚️ **Audio engine** | Equalizer with presets, ReplayGain, custom crossfade and transition rules |
@@ -85,7 +92,7 @@ home-screen widgets.
 | 📊 **Playback stats** | Engagement tracking, recently played, listening history |
 | 💾 **Backup & restore** | Module-based, validated local backups |
 | 🏷️ **Tag editor** | Edit metadata for your local files |
-| 📱 **Everywhere** | Wear OS companion, Android Auto, Cast, Quick Settings tiles, sleep timer |
+| 📱 **Everywhere** | Android Auto, Quick Settings tiles, sleep timer, home-screen widgets |
 
 ## 📲 Download & install
 
@@ -97,12 +104,11 @@ Grab the latest APK from the
 | | |
 |---|---|
 | **Phone** | Android 10 (API 29) or newer |
-| **Wear OS** | Wear OS 3+ (separate APK, ships alongside) |
 | **Storage access** | Granted on first launch for the local library |
 
 ### Install steps
 
-1. Download the APK for your device (`app` for phone, `wear` for Wear OS).
+1. Download the APK for your device (the `app` phone build).
 2. If prompted, allow *Install unknown apps* for your browser or file manager.
 3. Open the APK and confirm the install.
 4. On first launch, grant storage access and let the initial library sync run.
@@ -128,9 +134,8 @@ Grab the latest APK from the
 ```bash
 git clone https://github.com/Saineeee/PixelTune.git
 cd PixelTune
-./gradlew :app:assembleDebug      # debug build (phone)
-./gradlew :wear:assembleDebug     # debug build (Wear OS)
-./gradlew :app:assembleRelease    # release build (minified)
+./gradlew :app:assembleDebug      # debug build
+./gradlew :app:assembleRelease    # release build (minified; unsigned without keystore env vars)
 ./gradlew :app:testDebugUnitTest  # unit tests
 ```
 
@@ -139,8 +144,6 @@ cd PixelTune
 | Module | Purpose |
 |---|---|
 | `:app` | Phone application (UI, data, playback engine) |
-| `:wear` | Wear OS companion application |
-| `:shared` | Models and payloads shared between phone and Wear |
 | `:baselineprofile` | Startup and scrolling benchmark profiles |
 
 ### Repository layout
@@ -150,21 +153,20 @@ PixelTune/
 ├── app/                                  # Phone application — main module
 │   └── src/
 │       ├── main/
-│       │   ├── java/com/theveloper/pixeltune/
+│       │   ├── java/com/saine/pixeltune/
 │       │   │   ├── data/                 # Data layer
-│       │   │   │   ├── ai/               #   AI playlist providers (Gemini, DeepSeek)
 │       │   │   │   ├── backup/           #   Module-based backup & restore
 │       │   │   │   ├── database/         #   Room database, entities & DAOs
 │       │   │   │   ├── downloads/        #   Offline download manager
 │       │   │   │   ├── gdrive/           #   Google Drive streaming
-│       │   │   │   ├── github/           #   Release announcements & contributors
+│       │   │   │   ├── github/           #   Contributors screen service
 │       │   │   │   ├── media/            #   MediaStore sync & library indexing
 │       │   │   │   ├── netease/          #   NetEase Cloud Music integration
 │       │   │   │   ├── network/          #   OkHttp stack, IPv4-preferred DNS
 │       │   │   │   ├── playlist/         #   Cross-service playlist import
 │       │   │   │   ├── preferences/      #   DataStore settings repository
 │       │   │   │   ├── repository/       #   Repository implementations
-│       │   │   │   ├── service/          #   Playback engine, MediaSession, Cast, Auto
+│       │   │   │   ├── service/          #   Playback engine, MediaSession, Android Auto
 │       │   │   │   ├── soundcloud/       #   SoundCloud streaming
 │       │   │   │   ├── stats/            #   Playback stats & engagement
 │       │   │   │   ├── stream/           #   On-device Ktor streaming proxy
@@ -186,13 +188,9 @@ PixelTune/
 │       ├── debug/                        # Debug-only resources & network config
 │       ├── benchmark/                    # Startup macrobenchmarks
 │       └── test/                         # JVM unit tests
-├── wear/                                 # Wear OS companion (Wear OS 3+)
-├── shared/                               # Phone ↔ Wear models (Wear* DTOs, intents)
 ├── baselineprofile/                      # Baseline-profile generation module
 ├── gradle/
 │   └── libs.versions.toml                # Version catalog — single source of versions
-├── remote-config/
-│   └── app-announcements.properties      # Remote announcement toggles (fetched at runtime)
 ├── assets/                               # README screenshots
 ├── build.gradle.kts                      # Root build script
 ├── settings.gradle.kts                   # Module declarations
@@ -229,9 +227,8 @@ the most valuable contributions right now.
 ## ⬇️ Store Download Links
 
 <p align="center">
-  <a href="https://f-droid.org/packages/<YOUR_PACKAGE>/"><img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" height="60" alt="Get it on F-Droid" align="middle"/></a>
-  <a href="https://apt.izzysoft.de/packages/<YOUR_PACKAGE>"><img src="https://gitlab.com/IzzyOnDroid/repo/-/raw/master/assets/IzzyOnDroid.png" height="60" alt="Get it on IzzyOnDroid" align="middle"/></a>
-  <a href="https://github.com/<USER>/<REPO>/releases/latest"><img src="https://img.shields.io/badge/Direct_APK-Download-blue.svg?logo=github&logoColor=white" height="60" alt="Direct APK Download" align="middle"/></a>
+  <a href="https://f-droid.org/packages/com.saine.pixeltune/"><img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" height="60" alt="Get it on F-Droid" align="middle"/></a>
+  <a href="https://github.com/Saineeee/PixelTune/releases/latest"><img src="https://img.shields.io/badge/Direct_APK-Download-blue.svg?logo=github&logoColor=white" height="60" alt="Direct APK Download" align="middle"/></a>
 </p>
 
 ## 🤝 Contributing
@@ -256,6 +253,13 @@ Contributions are welcome, in every form:
 No. PixelTune has no accounts and no server. You connect *your own* cloud
 sources (Google Drive, Telegram) and the streaming catalogs are accessed
 directly from the public platforms.
+
+**Does the app phone home?**
+No. This build ships with every optional network feature disabled. Online
+artist artwork (Deezer public API) only works after you explicitly enable it
+in Settings, and even then nothing is sent besides the artist name in the
+query. Streaming only happens when you actively browse/play online catalogs,
+and lyrics are fetched only when you open the lyrics view.
 
 **Where does streaming content come from?**
 From third-party public platforms (YouTube, SoundCloud, NetEase) via their

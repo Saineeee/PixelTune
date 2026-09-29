@@ -25,6 +25,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "PixelTune"
 include(":app")
-include(":shared")
-include(":wear")
 include(":baselineprofile")

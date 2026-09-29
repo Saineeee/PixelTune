@@ -11,7 +11,7 @@ plugins {
 }
 
 android {
-    namespace = "com.theveloper.pixeltune"
+    namespace = "com.saine.pixeltune"
     compileSdk = 35
 
     signingConfigs {
@@ -88,6 +88,13 @@ android {
         compose = true
         buildConfig = true
     }
+
+    // F-Droid: never embed dependency checksums in the APK/AAB — the release
+    // artifacts must stay reproducible and free of Play-Infrastructure data.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
     kotlinOptions {
         jvmTarget = "11"
         // Aquí es donde debes agregar freeCompilerArgs para los informes del compilador de Compose.
@@ -156,10 +163,6 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    // google.genai 1.11.0 — 新版统一 Gemini SDK
-    implementation(libs.google.genai)
-    implementation(libs.androidx.mediarouter)
-    implementation(libs.play.services.cast.framework)
     implementation(libs.androidx.navigation.runtime.ktx)
     implementation(libs.androidx.compose.material3)
     testImplementation(libs.junit.jupiter.api)
@@ -262,8 +265,6 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.session)
-    implementation(libs.androidx.media.router)
-    implementation(libs.google.play.services.cast.framework)
     implementation(libs.androidx.media3.exoplayer.ffmpeg)
 
     // Palette API for color extraction
@@ -295,9 +296,6 @@ dependencies {
 
     // Kotlin Collections
     implementation(libs.kotlinx.collections.immutable) // Verifica la última versión
-
-    // Gemini — 使用 com.google.ai.client.generativeai (已在上方声明)
-    // google.genai (Java JVM SDK) 未被任何代码引用，已移除
 
     //permisisons
     implementation(libs.accompanist.permissions)
@@ -352,11 +350,6 @@ dependencies {
     implementation(libs.androidx.app)
     implementation(libs.androidx.app.projected)
 
-    // Wear OS Data Layer
-    implementation(project(":shared"))
-    implementation(libs.play.services.wearable)
-    implementation(libs.kotlinx.coroutines.play.services)
-
     // Telegram TDLib
     implementation(libs.tdlib)
 
@@ -364,7 +357,11 @@ dependencies {
     implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.3")
     implementation("org.mozilla:rhino:1.7.15")
 
-    // Google Sign-In via Credential Manager (for Google Drive)
+    // Google Sign-In via Credential Manager (for Google Drive).
+    // androidx.credentials + googleid are Apache-2.0 (AOSP) libraries; the
+    // play-services-auth variant only *bridges* to the (optional) system
+    // Credential Manager provider — no proprietary code is compiled in and
+    // sign-in degrades gracefully on non-GMS devices.
     implementation(libs.credentials)
     implementation(libs.credentials.play.services.auth)
     implementation(libs.googleid)
