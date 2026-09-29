@@ -63,9 +63,7 @@ data class SongEntity(
     @ColumnInfo(name = "date_added", defaultValue = "0") val dateAdded: Long = System.currentTimeMillis(),
     @ColumnInfo(name = "mime_type") val mimeType: String? = null,
     @ColumnInfo(name = "bitrate") val bitrate: Int? = null, // bits per second
-    @ColumnInfo(name = "sample_rate") val sampleRate: Int? = null, // Hz
-    @ColumnInfo(name = "telegram_chat_id") val telegramChatId: Long? = null, // Added for Telegram integration
-    @ColumnInfo(name = "telegram_file_id") val telegramFileId: Int? = null // Added for Telegram integration
+    @ColumnInfo(name = "sample_rate") val sampleRate: Int? = null // Hz
 )
 
 fun SongEntity.toSong(): Song {
@@ -88,19 +86,6 @@ fun SongEntity.toSong(): Song {
         trackNumber = this.trackNumber,
         dateAdded = this.dateAdded,
         year = this.year,
-        // Parse Telegram metadata from contentUriString
-        telegramChatId = if (this.contentUriString.startsWith("telegram://")) {
-            this.contentUriString.removePrefix("telegram://").split("/").getOrNull(0)?.toLongOrNull()
-        } else null,
-        telegramFileId = if (this.contentUriString.startsWith("telegram://")) {
-            this.contentUriString.removePrefix("telegram://").split("/").getOrNull(1)?.toIntOrNull()
-        } else null,
-        neteaseId = if (this.contentUriString.startsWith("netease://")) {
-            this.contentUriString.removePrefix("netease://").toLongOrNull()
-        } else null,
-        gdriveFileId = if (this.contentUriString.startsWith("gdrive://")) {
-            this.contentUriString.removePrefix("gdrive://")
-        } else null,
         mimeType = this.mimeType,
         bitrate = this.bitrate,
         sampleRate = this.sampleRate
@@ -140,19 +125,6 @@ fun SongEntity.toSongWithArtistRefs(artists: List<ArtistEntity>, crossRefs: List
         trackNumber = this.trackNumber,
         dateAdded = this.dateAdded,
         year = this.year,
-        // Parse Telegram metadata from contentUriString
-        telegramChatId = if (this.contentUriString.startsWith("telegram://")) {
-            this.contentUriString.removePrefix("telegram://").split("/").getOrNull(0)?.toLongOrNull()
-        } else null,
-        telegramFileId = if (this.contentUriString.startsWith("telegram://")) {
-            this.contentUriString.removePrefix("telegram://").split("/").getOrNull(1)?.toIntOrNull()
-        } else null,
-        neteaseId = if (this.contentUriString.startsWith("netease://")) {
-            this.contentUriString.removePrefix("netease://").toLongOrNull()
-        } else null,
-        gdriveFileId = if (this.contentUriString.startsWith("gdrive://")) {
-            this.contentUriString.removePrefix("gdrive://")
-        } else null,
         mimeType = this.mimeType,
         bitrate = this.bitrate,
         sampleRate = this.sampleRate

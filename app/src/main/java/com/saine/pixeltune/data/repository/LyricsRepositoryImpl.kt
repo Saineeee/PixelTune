@@ -1,7 +1,6 @@
 package com.saine.pixeltune.data.repository
 
 import android.content.Context
-import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.provider.OpenableColumns
@@ -92,7 +91,6 @@ class LyricsRepositoryImpl @Inject constructor(
         // API rate limiting constants (matching Rhythm)
         private const val LRCLIB_MIN_DELAY = 100L
         private const val MAX_CALLS_PER_MINUTE = 30
-        private const val AMLLDB_NCM_LYRICS_BASE_URL = "https://amlldb.bikonoo.com/lyrics/ncm-lyrics/"
         private const val NETWORK_RETRY_ATTEMPTS = 3
         private const val NETWORK_RETRY_INITIAL_DELAY_MS = 500L
     }
@@ -260,12 +258,11 @@ class LyricsRepositoryImpl @Inject constructor(
         forceRefresh: Boolean
     ): Lyrics? = withContext(Dispatchers.IO) {
         val cacheKey = generateCacheKey(song.id)
-        val isNeteaseTrack = isNeteaseSong(song)
-        
+
         Log.d(TAG, "===== FETCH LYRICS START: ${song.displayArtist} - ${song.title} (forceRefresh=$forceRefresh, source=$sourcePreference) =====")
 
         // Check in-memory cache unless force refresh (early return - matching Rhythm)
-        if (!forceRefresh && !isNeteaseTrack) {
+        if (!forceRefresh) {
             synchronized(lyricsCache) {
                 lyricsCache[cacheKey]?.let { cached ->
                     Log.d(TAG, "===== RETURNING IN-MEMORY CACHED LYRICS =====")
@@ -273,8 +270,6 @@ class LyricsRepositoryImpl @Inject constructor(
                 }
             }
             Log.d(TAG, "===== NO IN-MEMORY CACHE HIT, proceeding to fetch =====")
-        } else if (!forceRefresh && isNeteaseTrack) {
-            Log.d(TAG, "===== BYPASSING IN-MEMORY CACHE FOR NETEASE TRACK =====")
         } else {
             Log.d(TAG, "===== FORCE REFRESH - BYPASSING IN-MEMORY CACHE =====")
         }
@@ -350,17 +345,6 @@ class LyricsRepositoryImpl @Inject constructor(
      * Fetches lyrics from LRCLIB API with rate limiting (matching Rhythm)
      */
     private suspend fun fetchLyricsFromAPI(song: Song): Lyrics? = withContext(Dispatchers.IO) {
-        val isNetease = isNeteaseSong(song)
-
-        if (isNetease) {
-            val amlLyrics = fetchFromAmlldb(song)
-            if (amlLyrics != null) {
-                Log.d(TAG, "===== LOADED WORD-BY-WORD LYRICS FROM AMLLDB =====")
-                return@withContext amlLyrics
-            }
-            Log.d(TAG, "AMLLDB unavailable for Netease song, falling back to cache/LRCLIB")
-        }
-
         // Check JSON disk cache first (matching Rhythm)
         val cachedJson = loadLocalLyricsJson(song)
         if (cachedJson != null) {
@@ -488,7 +472,7 @@ class LyricsRepositoryImpl @Inject constructor(
                                 )
                             )
                         } catch (e: NumberFormatException) {
-                            Log.w(TAG, "Skipping database save for non-numeric song ID: ${song.id} (likely Telegram song). Lyrics will be cached in JSON.")
+                            Log.w(TAG, "Skipping database save for non-numeric song ID: ${song.id}. Lyrics will be cached in JSON.")
                         }
                         
                         return@withContext parsedLyrics
@@ -508,133 +492,6 @@ class LyricsRepositoryImpl @Inject constructor(
 
     private fun hasSyncedLyrics(response: LrcLibResponse): Boolean =
         !response.syncedLyrics.isNullOrBlank()
-
-    private fun isNeteaseSong(song: Song): Boolean =
-        song.neteaseId != null || song.contentUriString.startsWith("netease://")
-
-    private fun resolveNeteaseSongId(song: Song): Long? {
-        song.neteaseId?.let { return it }
-        if (!song.contentUriString.startsWith("netease://")) return null
-        return Uri.parse(song.contentUriString).host?.toLongOrNull()
-    }
-
-    private suspend fun fetchFromAmlldb(song: Song): Lyrics? = withContext(Dispatchers.IO) {
-        val neteaseSongId = resolveNeteaseSongId(song) ?: return@withContext null
-        val request = Request.Builder()
-            .url("$AMLLDB_NCM_LYRICS_BASE_URL$neteaseSongId")
-            .get()
-            .build()
-
-        try {
-            val ttml = withNetworkRetry(
-                operationName = "amlldb_fetch:$neteaseSongId",
-                shouldRetry = { throwable -> throwable is IOException }
-            ) {
-                okHttpClient.newCall(request).execute().use { response ->
-                    when {
-                        response.isSuccessful -> response.body?.string().orEmpty()
-                        response.code.isRetryableHttpStatusCode() ->
-                            throw IOException("AMLLDB HTTP ${response.code} for songId=$neteaseSongId")
-                        else -> ""
-                    }
-                }
-            }
-
-            if (ttml.isBlank() || ttml.contains("歌词不存在")) return@withContext null
-            val lrc = convertAmlTtmlToLrc(ttml) ?: return@withContext null
-            val parsed = LyricsUtils.parseLyrics(lrc)
-            if (!parsed.isValid()) return@withContext null
-            return@withContext parsed.copy(areFromRemote = true)
-        } catch (e: Exception) {
-            Log.w(TAG, "AMLLDB fetch failed for $neteaseSongId: ${e.message}")
-            return@withContext null
-        }
-    }
-
-    private fun convertAmlTtmlToLrc(ttml: String): String? {
-        val lineRegex = Regex(
-            "<p\\b[^>]*\\bbegin=\"([^\"]+)\"[^>]*>(.*?)</p>",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        )
-        val spanRegex = Regex(
-            "<span\\b([^>]*)>(.*?)</span>",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        )
-        val beginAttrRegex = Regex("\\bbegin=\"([^\"]+)\"")
-        val roleAttrRegex = Regex("\\bttm:role=\"([^\"]+)\"")
-
-        val lrcLines = mutableListOf<String>()
-        lineRegex.findAll(ttml).forEach { lineMatch ->
-            val lineStartMs = parseTtmlTimeToMs(lineMatch.groupValues[1]) ?: return@forEach
-            var inner = lineMatch.groupValues[2]
-            val markerRegex = Regex("§§TS\\(([^)]+)\\)§§")
-
-            inner = spanRegex.replace(inner) { spanMatch ->
-                val attributes = spanMatch.groupValues[1]
-                val role = roleAttrRegex.find(attributes)?.groupValues?.getOrNull(1)?.lowercase()
-                if (role == "x-roman") {
-                    return@replace ""
-                }
-                val wordStartMs = beginAttrRegex
-                    .find(attributes)
-                    ?.groupValues
-                    ?.getOrNull(1)
-                    ?.let(::parseTtmlTimeToMs)
-                val text = decodeXmlEntities(spanMatch.groupValues[2])
-
-                if (wordStartMs == null) {
-                    // Keep visible text (e.g. translation) but do not inject word timing.
-                    return@replace text
-                }
-
-                "§§TS(${formatTimestamp(wordStartMs.toInt())})§§$text"
-            }
-
-            val withoutXmlTags = decodeXmlEntities(inner.replace(Regex("<[^>]+>"), ""))
-            val lrcInlineTagged = markerRegex.replace(withoutXmlTags, "<$1>")
-            if (lrcInlineTagged.isBlank()) return@forEach
-
-            lrcLines += "[${formatTimestamp(lineStartMs.toInt())}]$lrcInlineTagged"
-        }
-
-        return lrcLines.takeIf { it.isNotEmpty() }?.joinToString("\n")
-    }
-
-    private fun parseTtmlTimeToMs(value: String): Long? {
-        val raw = value.trim()
-        if (raw.isEmpty()) return null
-
-        if (raw.endsWith("s")) {
-            val seconds = raw.removeSuffix("s").toDoubleOrNull() ?: return null
-            return (seconds * 1000.0).toLong()
-        }
-
-        val parts = raw.split(":")
-        val secondsPart = parts.lastOrNull()?.toDoubleOrNull() ?: return null
-        return when (parts.size) {
-            3 -> {
-                val hours = parts[0].toLongOrNull() ?: return null
-                val minutes = parts[1].toLongOrNull() ?: return null
-                (hours * 3_600_000L) + (minutes * 60_000L) + (secondsPart * 1000.0).toLong()
-            }
-            2 -> {
-                val minutes = parts[0].toLongOrNull() ?: return null
-                (minutes * 60_000L) + (secondsPart * 1000.0).toLong()
-            }
-            1 -> (secondsPart * 1000.0).toLong()
-            else -> null
-        }
-    }
-
-    private fun decodeXmlEntities(value: String): String =
-        value
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace("&#39;", "'")
-
     /**
      * Find local .lrc file next to the music file (matching Rhythm)
      */
@@ -813,8 +670,12 @@ class LyricsRepositoryImpl @Inject constructor(
             }
         }
         
-        // Skip embedded lyrics for Telegram songs (not supported yet/streamed)
-        if (song.contentUriString.startsWith("telegram://") || song.contentUriString.isEmpty()) {
+        // Streaming-only cloud songs have no local file to read embedded
+        // lyrics from — skip straight to null for them.
+        if (song.contentUriString.isEmpty() ||
+            song.contentUriString.startsWith("youtube://") ||
+            song.contentUriString.startsWith("soundcloud://")
+        ) {
             return@withContext null
         }
 

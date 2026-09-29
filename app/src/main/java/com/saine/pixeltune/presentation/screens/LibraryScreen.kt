@@ -2744,10 +2744,6 @@ fun LibraryDownloadsTab(
                                                 mimeType = "audio/mp4",
                                                 bitrate = 0,
                                                 sampleRate = 0,
-                                                telegramFileId = null,
-                                                telegramChatId = null,
-                                                neteaseId = null,
-                                                gdriveFileId = null,
                                                 youtubeId = null
                                             )
                                         )

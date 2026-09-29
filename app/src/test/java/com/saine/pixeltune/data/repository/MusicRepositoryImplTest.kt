@@ -9,7 +9,6 @@ import com.saine.pixeltune.data.database.ArtistEntity
 import com.saine.pixeltune.data.model.Song // Para verificar el mapeo
 import com.saine.pixeltune.data.preferences.UserPreferencesRepository
 import com.saine.pixeltune.data.database.FavoritesDao
-import com.saine.pixeltune.data.database.TelegramDao
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -35,9 +34,6 @@ class MusicRepositoryImplTest {
     private val mockContext: Context = mockk(relaxed = true) // relaxed para getAllUniqueAudioDirectories si no se testea a fondo aquí
     private val mockUserPreferencesRepository: UserPreferencesRepository = mockk()
     private val mockLyricsRepository: LyricsRepository = mockk(relaxed = true)
-    private val mockTelegramDao: TelegramDao = mockk(relaxed = true)
-    private val mockTelegramCacheManager: com.saine.pixeltune.data.telegram.TelegramCacheManager = mockk(relaxed = true)
-    private val mockTelegramRepository: com.saine.pixeltune.data.telegram.TelegramRepository = mockk(relaxed = true)
     private val mockSongRepository: SongRepository = mockk(relaxed = true)
     private val mockFavoritesDao: FavoritesDao = mockk(relaxed = true)
     private val mockArtistImageRepository: ArtistImageRepository = mockk(relaxed = true)
@@ -98,9 +94,6 @@ class MusicRepositoryImplTest {
             searchHistoryDao = mockSearchHistoryDao,
             musicDao = mockMusicDao,
             lyricsRepository = mockLyricsRepository,
-            telegramDao = mockTelegramDao,
-            telegramCacheManagerLazy = com.saine.pixeltune.utils.daggerLazyOf(mockTelegramCacheManager),
-            telegramRepositoryLazy = com.saine.pixeltune.utils.daggerLazyOf(mockTelegramRepository),
             songRepository = mockSongRepository,
 
             favoritesDao = mockFavoritesDao,

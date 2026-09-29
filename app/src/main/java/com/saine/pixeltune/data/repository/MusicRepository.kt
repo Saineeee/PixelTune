@@ -12,7 +12,6 @@ import com.saine.pixeltune.data.model.SearchHistoryItem
 import com.saine.pixeltune.data.model.SearchResultItem
 import com.saine.pixeltune.data.model.Song
 import kotlinx.coroutines.flow.Flow
-import com.saine.pixeltune.data.database.TelegramChannelEntity
 
 interface MusicRepository {
     /**
@@ -253,18 +252,6 @@ interface MusicRepository {
     ): Flow<List<com.saine.pixeltune.data.model.MusicFolder>>
 
     suspend fun deleteById(id: Long)
-    suspend fun saveTelegramSongs(songs: List<Song>)
-
-    suspend fun replaceTelegramSongsForChannel(chatId: Long, songs: List<Song>)
-    
-    suspend fun clearTelegramData()
-
-    suspend fun saveTelegramChannel(channel: TelegramChannelEntity)
-    fun getAllTelegramChannels(): Flow<List<TelegramChannelEntity>>
-    suspend fun deleteTelegramChannel(chatId: Long)
-    
-    
-    val telegramRepository: com.saine.pixeltune.data.telegram.TelegramRepository
 
     suspend fun getSongIdsSorted(
         sortOption: com.saine.pixeltune.data.model.SortOption,

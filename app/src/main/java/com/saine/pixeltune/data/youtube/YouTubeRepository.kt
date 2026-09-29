@@ -457,10 +457,6 @@ class YouTubeRepository @Inject constructor(
                                 mimeType = "audio/mp4",
                                 bitrate = 0,
                                 sampleRate = 0,
-                                telegramFileId = null,
-                                telegramChatId = null,
-                                neteaseId = null,
-                                gdriveFileId = null,
                                 youtubeId = youtubeId
                             )
                             results.add(SearchResultItem.SongItem(song))

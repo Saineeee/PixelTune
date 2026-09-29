@@ -1,6 +1,5 @@
 package com.saine.pixeltune.presentation.components
 
-import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -14,9 +13,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.CloudQueue
-import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
@@ -25,35 +23,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.saine.pixeltune.R
-import com.saine.pixeltune.data.netease.NeteaseRepository
-import androidx.compose.material.icons.rounded.PlayCircle
 import com.saine.pixeltune.presentation.viewmodel.SearchStateHolder.OnlineProvider
-import com.saine.pixeltune.presentation.netease.auth.NeteaseLoginActivity
-import com.saine.pixeltune.presentation.telegram.auth.TelegramLoginActivity
 import com.saine.pixeltune.ui.theme.GoogleSansRounded
 import kotlinx.coroutines.launch
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
 
 /**
- * Bottom sheet that lets the user choose between streaming providers
- * (Telegram, Google Drive, Netease Cloud Music).
- *
- * For Netease: if already logged in, navigates to dashboard.
- * If not logged in, launches WebView login activity.
+ * Bottom sheet that lets the user choose between the online streaming
+ * providers (YouTube, SoundCloud).
  *
  * IMPROVE(provider-indicator): [activeProvider] badges the streaming provider
- * (YouTube / SoundCloud) the app is currently using, updating in real time as
- * the selection changes.
+ * the app is currently using, updating in real time as the selection changes.
  *
- * IMPROVE(provider-sheet-dismiss): selecting any provider now closes the sheet
+ * IMPROVE(provider-sheet-dismiss): selecting any provider closes the sheet
  * with the same animated `sheetState.hide()` convention the app's other bottom
  * sheets use, instead of removing it from composition abruptly.
  */
@@ -61,15 +47,12 @@ import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
 @Composable
 fun StreamingProviderSheet(
     onDismissRequest: () -> Unit,
-    isNeteaseLoggedIn: Boolean = false,
-    onNavigateToNeteaseDashboard: () -> Unit = {},
     onProviderSelected: (OnlineProvider) -> Unit = {},
     activeProvider: OnlineProvider? = null,
     sheetState: SheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true
     )
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     // IMPROVE(provider-sheet-dismiss): the app-wide smooth-dismiss pattern —
@@ -117,7 +100,7 @@ fun StreamingProviderSheet(
             Spacer(Modifier.height(8.dp))
 
             Text(
-                text = "Stream music from your cloud accounts",
+                text = "Stream music from online providers",
                 style = MaterialTheme.typography.bodyMedium,
                 fontFamily = GoogleSansRounded,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -125,24 +108,6 @@ fun StreamingProviderSheet(
             )
 
             Spacer(Modifier.height(24.dp))
-
-            // Telegram Provider
-            ProviderCard(
-                iconPainter = painterResource(R.drawable.telegram),
-                icon = Icons.Rounded.Cloud,
-                title = "Telegram",
-                subtitle = "Stream from channels & chats",
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                iconColor = MaterialTheme.colorScheme.primaryContainer,
-                shape = cardShape,
-                onClick = {
-                    context.startActivity(Intent(context, TelegramLoginActivity::class.java))
-                    dismissWithAnimation()
-                }
-            )
-
-            Spacer(Modifier.height(12.dp))
 
             // YouTube Provider
             ProviderCard(
@@ -181,67 +146,6 @@ fun StreamingProviderSheet(
                     dismissWithAnimation()
                 }
             )
-
-            Spacer(Modifier.height(12.dp))
-
-            // Google Drive Provider (coming soon)
-            ProviderCard(
-                icon = Icons.Rounded.CloudQueue,
-                iconPainter = painterResource(R.drawable.rounded_drive_export_24),
-                title = "Google Drive",
-                subtitle = "Coming soon",
-                containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-                contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                iconColor = MaterialTheme.colorScheme.onSurface,
-                shape = cardShape,
-                enabled = false,
-                onClick = { }
-            )
-
-            Spacer(Modifier.height(12.dp))
-
-            // Netease Cloud Music Provider
-            ProviderCard(
-                icon = Icons.Rounded.MusicNote,
-                iconPainter = painterResource(R.drawable.netease_cloud_music_logo_icon_206716__1_),
-                title = "Netease Cloud Music",
-                subtitle = if (isNeteaseLoggedIn)
-                    "✓ Connected – Open dashboard"
-                else
-                    "网易云音乐 – Sign in to stream",
-                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                iconColor = MaterialTheme.colorScheme.tertiaryContainer,
-                shape = cardShape,
-                onClick = {
-                    // PERF(sheet-transition): navigation used to fire BEFORE the
-                    // sheet-dismiss animation started, so the destination's
-                    // composition + nav transition overlapped the sheet sliding
-                    // down (and the concurrent Home recomposition). Navigate in
-                    // invokeOnCompletion after hide() finishes — the same
-                    // convention HomeScreen uses for its own option sheets
-                    // (HomeScreen.kt HomeOptionsBottomSheet).
-                    val navigateAfterDismiss: () -> Unit = {
-                        if (isNeteaseLoggedIn) {
-                            onNavigateToNeteaseDashboard()
-                        } else {
-                            context.startActivity(Intent(context, NeteaseLoginActivity::class.java))
-                        }
-                    }
-                    scope.launch {
-                        sheetState.hide()
-                    }.invokeOnCompletion {
-                        if (!sheetState.isVisible) {
-                            onDismissRequest()
-                            navigateAfterDismiss()
-                        } else {
-                            // hide() was cancelled (e.g. scope left composition):
-                            // still navigate so the tap isn't swallowed.
-                            navigateAfterDismiss()
-                        }
-                    }
-                }
-            )
         }
     }
 }
@@ -249,7 +153,6 @@ fun StreamingProviderSheet(
 @Composable
 private fun ProviderCard(
     icon: ImageVector,
-    iconPainter: Painter? = null,
     title: String,
     subtitle: String,
     containerColor: Color,
@@ -284,21 +187,12 @@ private fun ProviderCard(
                     .background(contentColor),
                 contentAlignment = Alignment.Center
             ) {
-                if (iconPainter != null){
-                    Icon(
-                        painter = iconPainter,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp),
-                        tint = iconColor
-                    )
-                } else {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp),
-                        tint = iconColor
-                    )
-                }
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(24.dp),
+                    tint = iconColor
+                )
             }
 
             Spacer(Modifier.width(16.dp))
@@ -370,7 +264,9 @@ private fun ProviderCard(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Icon(
-                            painter = painterResource(R.drawable.rounded_check_circle_24),
+                            painter = androidx.compose.ui.res.painterResource(
+                                com.saine.pixeltune.R.drawable.rounded_check_circle_24
+                            ),
                             contentDescription = "Active provider",
                             modifier = Modifier.size(16.dp)
                         )

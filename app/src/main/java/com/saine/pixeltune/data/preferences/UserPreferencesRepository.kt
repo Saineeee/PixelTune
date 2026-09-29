@@ -186,6 +186,12 @@ constructor(
         // When false, no Deezer API call is ever made and only local /
         // cached artwork is used.
         val DOWNLOAD_DEEZER_ARTWORK = booleanPreferencesKey("download_deezer_artwork")
+
+        // One-time cleanup flag: playlists owned by removed cloud providers
+        // (Telegram / Netease / GDrive) are purged on first launch after the
+        // provider removal refactor.
+        val REMOVED_PROVIDER_PLAYLISTS_PURGED =
+            booleanPreferencesKey("removed_provider_playlists_purged")
         
         // Developer Options
         val ALBUM_ART_QUALITY = stringPreferencesKey("album_art_quality")
@@ -1016,6 +1022,30 @@ constructor(
         }
     }
 
+    /**
+     * One-time cleanup after the Telegram / Netease / Google Drive provider
+     * removal: deletes any user playlist whose `source` belonged to one of
+     * the removed providers. Guarded by a DataStore flag so it runs exactly
+     * once per install.
+     */
+    suspend fun purgeRemovedProviderPlaylists() {
+        dataStore.edit { preferences ->
+            if (preferences[PreferencesKeys.REMOVED_PROVIDER_PLAYLISTS_PURGED] == true) {
+                return@edit
+            }
+            val serialized = preferences[PreferencesKeys.USER_PLAYLISTS]
+            if (!serialized.isNullOrBlank()) {
+                runCatching { json.decodeFromString<List<Playlist>>(serialized) }
+                    .getOrNull()
+                    ?.filterNot { it.source == "TELEGRAM" || it.source == "NETEASE" || it.source == "GDRIVE" }
+                    ?.let { filtered ->
+                        preferences[PreferencesKeys.USER_PLAYLISTS] = json.encodeToString(filtered)
+                    }
+            }
+            preferences[PreferencesKeys.REMOVED_PROVIDER_PLAYLISTS_PURGED] = true
+        }
+    }
+
     suspend fun createPlaylist(
             name: String,
             songIds: List<String> = emptyList(),
@@ -1029,7 +1059,7 @@ constructor(
             coverShapeDetail2: Float? = null,
             coverShapeDetail3: Float? = null,
             coverShapeDetail4: Float? = null,
-            customId: String? = null,  // Support custom ID for NetEase sync de-duplication
+            customId: String? = null,  // Support custom ID for cloud import de-duplication
             source: String = "LOCAL"   // Source tag
     ): Playlist {
         val currentPlaylists = userPlaylistsFlow.first().toMutableList()

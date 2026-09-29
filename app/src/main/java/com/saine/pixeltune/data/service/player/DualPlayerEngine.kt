@@ -39,9 +39,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 
-import com.saine.pixeltune.data.netease.NeteaseStreamProxy
 import com.saine.pixeltune.data.soundcloud.SoundCloudStreamProxy
-import com.saine.pixeltune.data.telegram.TelegramRepository
 import com.saine.pixeltune.data.youtube.YouTubeStreamProxy
 import com.saine.pixeltune.data.downloads.DownloadedSongsRepository
 import androidx.media3.datasource.ResolvingDataSource
@@ -63,17 +61,6 @@ import java.io.File
 @Singleton
 class DualPlayerEngine @Inject constructor(
     @ApplicationContext private val context: Context,
-    // PERF(startup): the three Telegram dependencies below sit on the TDLib
-    // native chain (System.loadLibrary("tdjni") + Client.create() in
-    // TelegramClientManager). DualPlayerEngine is constructed by the first
-    // PlayerViewModel BEFORE the first frame; direct injection loaded TDLib on
-    // the main thread at startup. They are now lazy — resolved at first actual
-    // Telegram playback use, by which time the Application's IO-dispatcher
-    // proxy start has already constructed the chain off the main thread.
-    private val telegramRepositoryLazy: dagger.Lazy<TelegramRepository>,
-    private val telegramStreamProxyLazy: dagger.Lazy<com.saine.pixeltune.data.telegram.TelegramStreamProxy>,
-    private val neteaseStreamProxy: NeteaseStreamProxy,
-    private val telegramCacheManagerLazy: dagger.Lazy<com.saine.pixeltune.data.telegram.TelegramCacheManager>,
     private val connectivityStateHolder: com.saine.pixeltune.presentation.viewmodel.ConnectivityStateHolder,
     // FIX(cloud-favorites): YouTube + SoundCloud proxies are required so that
     // URIs persisted as `youtube://<videoId>` or `soundcloud://<encoded>` (e.g.
@@ -88,14 +75,6 @@ class DualPlayerEngine @Inject constructor(
     // localhost proxy — this is what makes downloaded songs work offline.
     private val downloadedSongsRepository: DownloadedSongsRepository
 ) {
-    private val telegramRepository: TelegramRepository
-        get() = telegramRepositoryLazy.get()
-
-    private val telegramStreamProxy: com.saine.pixeltune.data.telegram.TelegramStreamProxy
-        get() = telegramStreamProxyLazy.get()
-
-    private val telegramCacheManager: com.saine.pixeltune.data.telegram.TelegramCacheManager
-        get() = telegramCacheManagerLazy.get()
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var transitionJob: Job? = null
@@ -187,54 +166,9 @@ class DualPlayerEngine @Inject constructor(
         }
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
-            // Integración de test/telegram-streaming-integration
             if (audioSessionId != 0 && _activeAudioSessionId.value != audioSessionId) {
                 _activeAudioSessionId.value = audioSessionId
                 Timber.tag("TransitionDebug").d("Master audio session changed: %d", audioSessionId)
-            }
-        }
-
-        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            // Integración de feature/telegram-cloud-sync
-            val uri = mediaItem?.localConfiguration?.uri
-            if (uri?.scheme == "telegram") {
-                scope.launch {
-                    val result = telegramRepository.resolveTelegramUri(uri.toString())
-                    val fileId = result?.first
-                    telegramCacheManager.setActivePlayback(fileId)
-                    Timber.tag("DualPlayerEngine").d("Telegram playback active: fileId=$fileId")
-                }
-                // Telegram streaming necesita Wake Mode para evitar cortes
-                (playerA as? ExoPlayer)?.setWakeMode(C.WAKE_MODE_LOCAL)
-            } else {
-                // Limpieza para canciones que no son de Telegram
-                telegramCacheManager.setActivePlayback(null)
-                (playerA as? ExoPlayer)?.setWakeMode(C.WAKE_MODE_LOCAL)
-            }
-
-            // --- Pre-Resolve Next/Prev Tracks para Performance ---
-            try {
-                val currentIndex = playerA.currentMediaItemIndex
-                if (currentIndex != C.INDEX_UNSET) {
-                    // 1. Pre-resolver SIGUIENTE
-                    if (currentIndex + 1 < playerA.mediaItemCount) {
-                        val nextItem = playerA.getMediaItemAt(currentIndex + 1)
-                        val nextUri = nextItem.localConfiguration?.uri
-                        if (nextUri?.scheme == "telegram") {
-                            telegramRepository.preResolveTelegramUri(nextUri.toString())
-                        }
-                    }
-                    // 2. Pre-resolver ANTERIOR (para rapidez al retroceder)
-                    if (currentIndex - 1 >= 0) {
-                        val prevItem = playerA.getMediaItemAt(currentIndex - 1)
-                        val prevUri = prevItem.localConfiguration?.uri
-                        if (prevUri?.scheme == "telegram") {
-                            telegramRepository.preResolveTelegramUri(prevUri.toString())
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Timber.w(e, "Error during pre-resolution in onMediaItemTransition")
             }
         }
     }
@@ -381,9 +315,7 @@ class DualPlayerEngine @Inject constructor(
         val resolver = object : ResolvingDataSource.Resolver {
             override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
                 val scheme = dataSpec.uri.scheme
-                if (scheme == "telegram" || scheme == "netease" ||
-                    scheme == "youtube" || scheme == "soundcloud"
-                ) {
+                if (scheme == "youtube" || scheme == "soundcloud") {
                     val originalUri = dataSpec.uri.toString()
                     val resolved = resolvedUriCache[originalUri]
                     if (resolved != null) {
@@ -495,7 +427,7 @@ class DualPlayerEngine @Inject constructor(
     }
 
     /**
-     * Resolves a cloud URI (telegram:// or netease://) to a playable URI.
+     * Resolves a cloud URI (youtube:// or soundcloud://) to a playable URI.
      * Performs all network I/O and proxy readiness checks on the calling coroutine,
      * keeping ExoPlayer's playback thread free from blocking.
      *
@@ -520,8 +452,6 @@ class DualPlayerEngine @Inject constructor(
         resolvedUriCache[uriString]?.let { return it }
 
         val resolved: Uri? = when (uri.scheme) {
-            "telegram" -> resolveTelegramUriAsync(uri, uriString)
-            "netease" -> resolveNeteaseUriAsync(uriString)
             // FIX(cloud-favorites): resolve persisted youtube://<videoId> and
             // soundcloud://<encoded> scheme URIs to the current session's
             // localhost HTTP proxy URL. This is what makes favorited cloud
@@ -536,76 +466,6 @@ class DualPlayerEngine @Inject constructor(
             return resolved
         }
         return uri
-    }
-
-    private suspend fun resolveTelegramUriAsync(uri: Uri, uriString: String): Uri? {
-        var fileId: Int? = null
-        var fileSize: Long = 0L
-
-        val pathSegments = uri.pathSegments
-        if (pathSegments.isNotEmpty()) {
-            val result = telegramRepository.resolveTelegramUri(uriString)
-            fileId = result?.first
-            fileSize = result?.second ?: 0L
-        } else {
-            // Fallback to Legacy Scheme: telegram://fileId (host)
-            fileId = uri.host?.toIntOrNull()
-        }
-
-        if (fileId == null) return null
-
-        Timber.tag("DualPlayerEngine").d("Async resolving Telegram URI for fileId: $fileId")
-
-        // Check if file is already downloaded to use direct file access
-        val fileInfo = telegramRepository.getFile(fileId)
-        if (fileInfo?.local?.isDownloadingCompleted == true && fileInfo.local.path.isNotEmpty()) {
-            Timber.tag("DualPlayerEngine").d("File $fileId is downloaded. Using direct file playback.")
-            return Uri.fromFile(File(fileInfo.local.path))
-        }
-
-        // Not cached locally. Check connectivity.
-        val isOnline = connectivityStateHolder.isOnline.value
-        if (!isOnline) {
-            Timber.tag("DualPlayerEngine").w("Blocked playback: Offline and not cached (fileId=$fileId).")
-            connectivityStateHolder.triggerOfflineBlockedEvent()
-            return null
-        }
-
-        Timber.tag("DualPlayerEngine").d("File $fileId not downloaded. Using StreamProxy.")
-
-        // Wait for StreamProxy to be ready (non-blocking — runs on coroutine)
-        if (!telegramStreamProxy.isReady()) {
-            Timber.tag("DualPlayerEngine").w("StreamProxy not ready, awaiting...")
-            val proxyReady = telegramStreamProxy.awaitReady(5_000L)
-            if (!proxyReady) {
-                Timber.tag("DualPlayerEngine").e("StreamProxy not ready after timeout")
-                return null
-            }
-        }
-
-        val proxyUrl = telegramStreamProxy.getProxyUrl(fileId, fileSize)
-        return if (proxyUrl.isNotEmpty()) Uri.parse(proxyUrl) else null
-    }
-
-    private suspend fun resolveNeteaseUriAsync(uriString: String): Uri? {
-        Timber.tag("DualPlayerEngine").d("Async resolving Netease URI: $uriString")
-
-        if (!neteaseStreamProxy.isReady()) {
-            Timber.tag("DualPlayerEngine").w("NeteaseStreamProxy not ready, awaiting...")
-            val proxyReady = neteaseStreamProxy.awaitReady(5_000L)
-            if (!proxyReady) {
-                Timber.tag("DualPlayerEngine").e("NeteaseStreamProxy not ready after timeout")
-                return null
-            }
-        }
-
-        val proxyUrl = neteaseStreamProxy.resolveNeteaseUri(uriString)
-        if (!proxyUrl.isNullOrBlank()) {
-            return Uri.parse(proxyUrl)
-        }
-
-        Timber.tag("DualPlayerEngine").w("Failed to resolve Netease URI: $uriString")
-        return null
     }
 
     /**
@@ -679,9 +539,7 @@ class DualPlayerEngine @Inject constructor(
     suspend fun resolveMediaItem(mediaItem: MediaItem): MediaItem {
         val uri = mediaItem.localConfiguration?.uri ?: return mediaItem
         val scheme = uri.scheme
-        if (scheme != "telegram" && scheme != "netease" &&
-            scheme != "youtube" && scheme != "soundcloud"
-        ) return mediaItem
+        if (scheme != "youtube" && scheme != "soundcloud") return mediaItem
 
         val resolvedUri = resolveCloudUri(uri)
         if (resolvedUri == uri) return mediaItem // Resolution failed or not needed
@@ -707,14 +565,10 @@ class DualPlayerEngine @Inject constructor(
             playerB.clearMediaItems()
             playerB.playWhenReady = false
             playerB.setMediaItem(resolvedItem)
-            
-            // Set appropriate WakeMode for the next item
-            val scheme = mediaItem.localConfiguration?.uri?.scheme
-            if (scheme == "telegram" || scheme == "http" || scheme == "https") {
-                 playerB.setWakeMode(C.WAKE_MODE_LOCAL)
-            } else {
-                 playerB.setWakeMode(C.WAKE_MODE_LOCAL)
-            }
+
+            // Cloud proxies stream over localhost HTTP — keep the CPU awake
+            // for network-sourced items regardless of scheme.
+            playerB.setWakeMode(C.WAKE_MODE_LOCAL)
             
             playerB.prepare()
             playerB.volume = 0f // Start silent

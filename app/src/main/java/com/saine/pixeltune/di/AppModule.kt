@@ -17,7 +17,6 @@ import com.saine.pixeltune.PixelTuneApplication
 import com.saine.pixeltune.data.database.AlbumArtThemeDao
 import com.saine.pixeltune.data.database.EngagementDao
 import com.saine.pixeltune.data.database.FavoritesDao
-import com.saine.pixeltune.data.database.GDriveDao
 import com.saine.pixeltune.data.database.LyricsDao
 import com.saine.pixeltune.data.database.MusicDao
 import com.saine.pixeltune.data.database.PixelTuneDatabase
@@ -29,7 +28,6 @@ import com.saine.pixeltune.data.media.SongMetadataEditor
 import com.saine.pixeltune.data.network.PreferIpv4Dns
 import com.saine.pixeltune.data.network.YtimgArtworkFallbackInterceptor
 import com.saine.pixeltune.data.network.deezer.DeezerApiService
-import com.saine.pixeltune.data.network.netease.NeteaseApiService
 import com.saine.pixeltune.data.network.lyrics.LrcLibApiService
 import com.saine.pixeltune.data.repository.ArtistImageRepository
 import com.saine.pixeltune.data.repository.LyricsRepository
@@ -127,7 +125,8 @@ object AppModule {
             PixelTuneDatabase.MIGRATION_21_22,
             PixelTuneDatabase.MIGRATION_22_23,
             PixelTuneDatabase.MIGRATION_23_24,
-            PixelTuneDatabase.MIGRATION_24_25
+            PixelTuneDatabase.MIGRATION_24_25,
+            PixelTuneDatabase.MIGRATION_25_26
         )
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
@@ -173,12 +172,6 @@ object AppModule {
     @Provides
     fun provideLyricsDao(database: PixelTuneDatabase): LyricsDao {
         return database.lyricsDao()
-    }
-
-    @Singleton
-    @Provides
-    fun provideGDriveDao(database: PixelTuneDatabase): GDriveDao {
-        return database.gdriveDao()
     }
 
     @Provides
@@ -268,18 +261,6 @@ object AppModule {
         )
     }
 
-    @Singleton
-    @Provides
-    fun provideTelegramDao(database: PixelTuneDatabase): com.saine.pixeltune.data.database.TelegramDao {
-        return database.telegramDao()
-    }
-
-    @Singleton
-    @Provides
-    fun provideNeteaseDao(database: PixelTuneDatabase): com.saine.pixeltune.data.database.NeteaseDao {
-        return database.neteaseDao()
-    }
-
     @Provides
     @Singleton
     fun provideFolderTreeBuilder(): FolderTreeBuilder {
@@ -294,9 +275,6 @@ object AppModule {
         searchHistoryDao: SearchHistoryDao,
         musicDao: MusicDao,
         lyricsRepository: LyricsRepository,
-        telegramDao: com.saine.pixeltune.data.database.TelegramDao,
-        telegramCacheManager: dagger.Lazy<com.saine.pixeltune.data.telegram.TelegramCacheManager>,
-        telegramRepository: dagger.Lazy<com.saine.pixeltune.data.telegram.TelegramRepository>,
         songRepository: SongRepository,
         favoritesDao: FavoritesDao,
         artistImageRepository: ArtistImageRepository,
@@ -308,9 +286,6 @@ object AppModule {
             searchHistoryDao = searchHistoryDao,
             musicDao = musicDao,
             lyricsRepository = lyricsRepository,
-            telegramDao = telegramDao,
-            telegramCacheManagerLazy = telegramCacheManager,
-            telegramRepositoryLazy = telegramRepository,
             songRepository = songRepository,
             favoritesDao = favoritesDao,
             artistImageRepository = artistImageRepository,
@@ -331,10 +306,9 @@ object AppModule {
     @Provides
     fun provideSongMetadataEditor(
         @ApplicationContext context: Context,
-        musicDao: MusicDao,
-        telegramDao: com.saine.pixeltune.data.database.TelegramDao
+        musicDao: MusicDao
     ): SongMetadataEditor {
-        return SongMetadataEditor(context, musicDao, telegramDao)
+        return SongMetadataEditor(context, musicDao)
     }
 
         /**
@@ -422,9 +396,9 @@ object AppModule {
         return OkHttpClient.Builder()
             .connectionPool(connectionPool)
             // FIX(cloud-streaming-speed): IPv4-first route ordering for the
-            // app-wide client too (Retrofit APIs: lyrics, Deezer, Netease,
-            // GDrive) — same rationale as the NewPipe / streaming / artwork
-            // clients; see [PreferIpv4Dns].
+            // app-wide client too (Retrofit APIs: lyrics, Deezer) — same
+            // rationale as the NewPipe / streaming / artwork clients; see
+            // [PreferIpv4Dns].
             .dns(PreferIpv4Dns)
             .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
@@ -455,7 +429,7 @@ object AppModule {
 
     /**
      * Dedicated OkHttpClient for the cloud-streaming proxies
-     * (YouTube / Netease / SoundCloud / GDrive).
+     * (YouTube / SoundCloud).
      *
      * CRITICAL FIX for the "YouTube playback stuck at 00:00" bug:
      *

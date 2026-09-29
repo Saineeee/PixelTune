@@ -12,10 +12,10 @@ import coil.ImageLoaderFactory
 import com.saine.pixeltune.utils.CrashHandler
 import com.saine.pixeltune.utils.MediaMetadataRetrieverPool
 import dagger.hilt.android.HiltAndroidApp
-import kotlinx.coroutines.launch
 import timber.log.Timber
 import org.schabi.newpipe.extractor.NewPipe
 import com.saine.pixeltune.data.youtube.NewPipeDownloader
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import javax.inject.Inject
 
@@ -28,13 +28,6 @@ class PixelTuneApplication : Application(), ImageLoaderFactory, Configuration.Pr
     @Inject
     lateinit var imageLoader: dagger.Lazy<ImageLoader>
 
-    // Use dagger.Lazy to defer construction (and TDLib native library loading) off the main thread.
-    @Inject
-    lateinit var telegramStreamProxy: dagger.Lazy<com.saine.pixeltune.data.telegram.TelegramStreamProxy>
-
-    @Inject
-    lateinit var neteaseStreamProxy: com.saine.pixeltune.data.netease.NeteaseStreamProxy
-
     @Inject
     lateinit var youtubeStreamProxy: com.saine.pixeltune.data.youtube.YouTubeStreamProxy
 
@@ -44,6 +37,9 @@ class PixelTuneApplication : Application(), ImageLoaderFactory, Configuration.Pr
     @Inject
     lateinit var okHttpClient: OkHttpClient
 
+    @Inject
+    lateinit var userPreferencesRepository: com.saine.pixeltune.data.preferences.UserPreferencesRepository
+
     // FIX(streaming-performance): dedicated client for ALL NewPipe extractor
     // requests. The app-wide default client logs every response BODY in debug
     // builds (and the CI ships debug APKs) — piping multi-MB extractor pages
@@ -52,12 +48,6 @@ class PixelTuneApplication : Application(), ImageLoaderFactory, Configuration.Pr
     @Inject
     @com.saine.pixeltune.di.NewPipeOkHttpClient
     lateinit var newPipeOkHttpClient: OkHttpClient
-
-    @Inject
-    lateinit var telegramCacheManager: dagger.Lazy<com.saine.pixeltune.data.telegram.TelegramCacheManager>
-
-    @Inject
-    lateinit var telegramCoilFetcherFactory: dagger.Lazy<com.saine.pixeltune.data.image.TelegramCoilFetcher.Factory>
 
     // AÑADE EL COMPANION OBJECT
     companion object {
@@ -93,39 +83,26 @@ class PixelTuneApplication : Application(), ImageLoaderFactory, Configuration.Pr
         // Initialize NewPipe Extractor
         // FIX(streaming-performance): run NewPipe on the dedicated non-BODY-logging
         // client — see @NewPipeOkHttpClient. (The app-wide default client is still
-        // used everywhere else: Retrofit APIs, lyrics, Deezer, GDrive, …)
+        // used everywhere else: Retrofit APIs, lyrics, Deezer, …)
         NewPipe.init(NewPipeDownloader(newPipeOkHttpClient))
 
         // Start proxies
-        neteaseStreamProxy.start()
         youtubeStreamProxy.start()
         soundCloudStreamProxy.start()
 
-        // Start Telegram proxy and schedule cache cleanup on IO thread to avoid blocking
-        // Application.onCreate() with TDLib native library loading (System.loadLibrary("tdjni")).
+        // One-time cleanup: drop playlists owned by removed cloud providers
+        // (Telegram / Netease / GDrive) and their stale preferences.
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-            // First .get() call constructs TelegramStreamProxy (and transitively TelegramClientManager),
-            // loading the tdjni native library here on the IO thread instead of the main thread.
-            telegramStreamProxy.get().start()
-
             try {
-                // Wait a bit for TDLib to initialize before cleaning up
-                kotlinx.coroutines.delay(5000)
-                Timber.d("Performing startup Telegram cache cleanup...")
-                telegramCacheManager.get().clearTdLibCache()
-                telegramCacheManager.get().trimEmbeddedArtCache()
+                userPreferencesRepository.purgeRemovedProviderPlaylists()
             } catch (e: Exception) {
-                Timber.e(e, "Error during startup cache cleanup")
+                Timber.e(e, "Failed to purge removed-provider playlists")
             }
         }
     }
 
     override fun newImageLoader(): ImageLoader {
-        return imageLoader.get().newBuilder()
-            .components {
-                add(telegramCoilFetcherFactory.get())
-            }
-            .build()
+        return imageLoader.get()
     }
 
     override fun onTrimMemory(level: Int) {

@@ -4,8 +4,7 @@ import android.net.Uri
 import kotlin.math.abs
 
 /**
- * Shared helpers for cloud-streamed songs (YouTube / SoundCloud / Telegram /
- * Netease / GDrive).
+ * Shared helpers for cloud-streamed songs (YouTube / SoundCloud).
  *
  * Extracted from [com.saine.pixeltune.data.repository.MusicRepositoryImpl]
  * so that other components (ListeningStatsTracker, PlayerViewModel, etc.) can
@@ -19,7 +18,7 @@ import kotlin.math.abs
 object CloudUriUtils {
 
     /** Cloud URI schemes persisted in the songs table. */
-    val CLOUD_SCHEMES = setOf("youtube", "soundcloud", "telegram", "netease", "gdrive")
+    val CLOUD_SCHEMES = setOf("youtube", "soundcloud")
 
     /**
      * Stable Long ID derived from an arbitrary String ID via hashCode, forced
@@ -45,7 +44,7 @@ object CloudUriUtils {
     /**
      * Stable negative Long ID for a synthetic (non-MediaStore) artist or
      * album name. Negative IDs can never collide with real MediaStore IDs —
-     * the same convention the Telegram/Netease sync uses for unified rows.
+     * the same convention the cloud favorites sync uses for unified rows.
      */
     fun stableSyntheticIdFromName(name: String): Long {
         if (name.isEmpty()) return -1L
@@ -64,9 +63,9 @@ object CloudUriUtils {
      *   "http://127.0.0.1:53719/soundcloud/encodedPayload"
      *     -> "soundcloud://encodedPayload"
      *
-     * URIs that are already in scheme form (telegram://, netease://, gdrive://,
-     * youtube://, soundcloud://) and local file/content URIs are returned
-     * unchanged. Plain absolute paths are also returned unchanged.
+     * URIs that are already in scheme form (youtube://, soundcloud://)
+     * and local file/content URIs are returned unchanged. Plain absolute
+     * paths are also returned unchanged.
      */
     fun normalizeCloudUriForStorage(contentUriString: String): String {
         if (contentUriString.isEmpty()) return contentUriString
@@ -100,9 +99,9 @@ object CloudUriUtils {
 
     /**
      * Whether the given URI string identifies a cloud-streamed song — either
-     * via a known cloud scheme (youtube://, soundcloud://, telegram://,
-     * netease://, gdrive://) or via an HTTP(S) URL (the live local proxy URL
-     * while streaming, or the upstream service URL).
+     * via a known cloud scheme (youtube://, soundcloud://) or via an HTTP(S)
+     * URL (the live local proxy URL while streaming, or the upstream service
+     * URL).
      *
      * Local MediaStore songs use content:// or file:// URIs (or plain absolute
      * filesystem paths) and are therefore never classified as cloud by this

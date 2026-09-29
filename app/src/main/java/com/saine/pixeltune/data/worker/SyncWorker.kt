@@ -17,10 +17,8 @@ import androidx.work.workDataOf
 import com.saine.pixeltune.data.database.AlbumEntity
 import com.saine.pixeltune.data.database.ArtistEntity
 import com.saine.pixeltune.data.database.MusicDao
-import com.saine.pixeltune.data.database.NeteaseDao
 import com.saine.pixeltune.data.database.SongArtistCrossRef
 import com.saine.pixeltune.data.database.SongEntity
-import com.saine.pixeltune.data.database.TelegramDao // Added
 import com.saine.pixeltune.data.media.AudioMetadataReader
 import com.saine.pixeltune.data.model.Song
 import com.saine.pixeltune.data.preferences.UserPreferencesRepository
@@ -39,7 +37,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.absoluteValue // Added
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -64,9 +61,7 @@ constructor(
         @Assisted workerParams: WorkerParameters,
         private val musicDao: MusicDao,
         private val userPreferencesRepository: UserPreferencesRepository,
-        private val lyricsRepository: LyricsRepository,
-        private val telegramDao: TelegramDao,
-        private val neteaseDao: NeteaseDao
+        private val lyricsRepository: LyricsRepository
 ) : CoroutineWorker(appContext, workerParams) {
 
     private val contentResolver: ContentResolver = appContext.contentResolver
@@ -318,12 +313,7 @@ constructor(
                         // Clean orphaned album art cache files
                         val allSongIds = musicDao.getAllSongIds().toSet()
                         AlbumArtCacheManager.cleanOrphanedCacheFiles(applicationContext, allSongIds)
-                        
-                        // Sync cloud songs (Telegram + Netease)
-                        syncTelegramData()
-                        syncNeteaseData()
 
-                        // Recalculate total after cloud sync
                         val finalTotalSongs = musicDao.getSongCount().first()
 
                         Result.success(workDataOf(OUTPUT_TOTAL_SONGS to finalTotalSongs))
@@ -352,19 +342,12 @@ constructor(
                         )
 
                         val totalSongs = musicDao.getSongCount().first()
-                        
+
                         // Clean orphaned album art cache files
                         val allSongIds = musicDao.getAllSongIds().toSet()
                         AlbumArtCacheManager.cleanOrphanedCacheFiles(applicationContext, allSongIds)
-                        
-                        // Sync cloud songs (Telegram + Netease)
-                        syncTelegramData()
-                        syncNeteaseData()
 
-                        // Recalculate total after cloud sync
-                        val finalTotalSongs = musicDao.getSongCount().first()
-
-                        Result.success(workDataOf(OUTPUT_TOTAL_SONGS to finalTotalSongs))
+                        Result.success(workDataOf(OUTPUT_TOTAL_SONGS to totalSongs))
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error during MediaStore synchronization", e)
@@ -1287,11 +1270,6 @@ constructor(
         const val PROGRESS_TOTAL = "progress_total"
         const val PROGRESS_PHASE = "progress_phase"
         const val OUTPUT_TOTAL_SONGS = "output_total_songs"
-        private const val NETEASE_SONG_ID_OFFSET = 3_000_000_000_000L
-        private const val NETEASE_ALBUM_ID_OFFSET = 4_000_000_000_000L
-        private const val NETEASE_ARTIST_ID_OFFSET = 5_000_000_000_000L
-        private const val NETEASE_PARENT_DIRECTORY = "/Cloud/Netease"
-        private const val NETEASE_GENRE = "Netease Cloud"
 
         // Genre cache - shared across worker instances to avoid refetching on incremental syncs
         private const val GENRE_CACHE_TTL_MS = 60 * 60 * 1000L // 1 hour
@@ -1333,324 +1311,5 @@ constructor(
                 OneTimeWorkRequestBuilder<SyncWorker>()
                         .setInputData(workDataOf(INPUT_SYNC_MODE to SyncMode.REBUILD.name))
                         .build()
-    }
-    
-    // Logic to sync Telegram songs into main DB with Unified Library Support
-    private suspend fun syncTelegramData() {
-        Log.i(TAG, "Syncing Telegram songs to main database (Unified Mode)...")
-        try {
-            val telegramSongs = telegramDao.getAllTelegramSongs().first()
-            val channels = telegramDao.getAllChannels().first().associateBy { it.chatId }
-            val existingUnifiedTelegramIds = musicDao.getAllTelegramSongIds()
-            
-            if (telegramSongs.isEmpty()) { 
-                if (existingUnifiedTelegramIds.isNotEmpty()) {
-                    musicDao.clearAllTelegramSongs()
-                }
-                Log.d(TAG, "No Telegram songs to sync.")
-                return 
-            }
-
-            // 1. Pre-load Local Data for Merging
-            val existingArtists = musicDao.getAllArtistsListRaw().associate { it.name.trim().lowercase() to it.id }
-            val existingAlbums = musicDao.getAllAlbumsList(emptyList(), false).associate { "${it.title.trim().lowercase()}_${it.artistName?.trim()?.lowercase()}" to it.id }
-            val existingArtistImageUrls = musicDao.getAllArtistsListRaw().associate { it.id to it.imageUrl }
-            val nextArtistId = AtomicLong((musicDao.getMaxArtistId() ?: 0L) + 1)
-            val delimiters = userPreferencesRepository.artistDelimitersFlow.first()
-
-            val songsToInsert = mutableListOf<SongEntity>()
-            val artistsToInsert = mutableMapOf<Long, ArtistEntity>() // Map to dedup by ID
-            val albumsToInsert = mutableMapOf<Long, AlbumEntity>()   // Map to dedup by ID
-            val crossRefsToInsert = mutableListOf<SongArtistCrossRef>()
-            
-            telegramSongs.forEach { tSong ->
-                val channelName = channels[tSong.chatId]?.title ?: "Telegram Stream"
-                // Synthetic negative ID for Song to check existence, but we want to merge metadata
-                // We use negative IDs for songs to definitively identify them as Telegram-sourced in the DB
-                // This prevents collision with MediaStore numeric IDs.
-                val songId = -(tSong.id.hashCode().toLong().absoluteValue)
-                val finalSongId = if (songId == 0L) -1L else songId
-                
-                // 2. Metadata Refinement (ID3 for Downloaded Files)
-                var realTitle = tSong.title
-                var realArtistName = tSong.artist
-                var realAlbumName = channelName
-                var realYear = 0
-                var realTrackNumber = 0
-                var realAlbumArtist = "Telegram"
-                
-                val file = java.io.File(tSong.filePath)
-                if (tSong.filePath.isNotEmpty() && file.exists()) {
-                     try {
-                        AudioMetadataReader.read(file, readArtwork = false)?.let { meta ->
-                            if (!meta.title.isNullOrBlank()) realTitle = meta.title
-                            if (!meta.artist.isNullOrBlank()) realArtistName = meta.artist
-                            if (!meta.album.isNullOrBlank()) {
-                                realAlbumName = meta.album
-                                realAlbumArtist = meta.albumArtist ?: realArtistName // Default to Song Artist if Album Artist missing
-                            }
-                            if (meta.trackNumber != null) realTrackNumber = meta.trackNumber
-                            if (meta.year != null) realYear = meta.year
-                        }
-                    } catch (e: Exception) {
-                        // Ignore read errors, fall back to TdApi metadata
-                    }
-                }
-                
-                // 3. Multi-Artist Processing
-                val rawArtistName = if (realArtistName.isBlank()) "Unknown Artist" else realArtistName
-                val splitArtists = rawArtistName.splitArtistsByDelimiters(delimiters)
-                
-                // Process Primary Artist (First in list)
-                val primaryArtistName = splitArtists.firstOrNull()?.trim() ?: "Unknown Artist"
-                
-                var primaryArtistId = -1L
-                
-                splitArtists.forEachIndexed { index, individualArtistName ->
-                    val cleanName = individualArtistName.trim()
-                    val lowerName = cleanName.lowercase()
-                    
-                    // Check if artist exists locally (Merge logic)
-                    val existingId = existingArtists[lowerName]
-                    
-                    val finalArtistId = if (existingId != null) {
-                        existingId // Use Positive MediaStore ID
-                    } else {
-                        // Generate consistent negative ID for Telegram-only artist
-                        val synthId = -(cleanName.hashCode().toLong().absoluteValue)
-                        if (synthId == 0L) -1L else synthId
-                    }
-
-                    if (index == 0) primaryArtistId = finalArtistId
-
-                    // Add to Artist Insert Map
-                    if (!artistsToInsert.containsKey(finalArtistId)) {
-                        artistsToInsert[finalArtistId] = ArtistEntity(
-                            id = finalArtistId,
-                            name = cleanName,
-                            trackCount = 0, // Will be recalculated by Room or logic
-                            imageUrl = existingArtistImageUrls[finalArtistId] // Keep existing image if merging
-                        )
-                    }
-
-                    // Add Cross Ref
-                    crossRefsToInsert.add(SongArtistCrossRef(
-                        songId = finalSongId,
-                        artistId = finalArtistId,
-                        isPrimary = (index == 0)
-                    ))
-                }
-
-                // 4. Album Logic
-                // Try to match existing album by Name + Album Artist
-                val albumKey = "${realAlbumName.trim().lowercase()}_${realAlbumArtist.trim().lowercase()}"
-                val existingAlbumId = existingAlbums[albumKey]
-                
-                val finalAlbumId = if (existingAlbumId != null) {
-                    existingAlbumId // Merge with local album
-                } else {
-                    // Synthetic negative ID
-                    val synthId = -(realAlbumName.hashCode().toLong().absoluteValue)
-                    if (synthId == 0L) -1L else synthId
-                }
-                
-                if (!albumsToInsert.containsKey(finalAlbumId)) {
-                     albumsToInsert[finalAlbumId] = AlbumEntity(
-                        id = finalAlbumId,
-                        title = realAlbumName,
-                        artistName = realAlbumArtist, 
-                        artistId = primaryArtistId, // Link to primary song artist (or album artist if we resolved it properly)
-                        songCount = 0,
-                        year = realYear,
-                        albumArtUriString = tSong.albumArtUriString // Use Telegram thumb or embedded art
-                    )
-                }
-
-                // 5. Build Final Song Entity
-                val songEntity = SongEntity(
-                    id = finalSongId,
-                    title = realTitle,
-                    artistName = rawArtistName, // Store full string for display
-                    artistId = primaryArtistId,
-                    albumName = realAlbumName,
-                    albumId = finalAlbumId,
-                    albumArtist = realAlbumArtist,
-                    duration = tSong.duration,
-                    contentUriString = "telegram://${tSong.chatId}/${tSong.messageId}",
-                    albumArtUriString = tSong.albumArtUriString,
-                    filePath = tSong.filePath,
-                    parentDirectoryPath = File(tSong.filePath).parent ?: "/Telegram/$channelName",
-                    dateAdded = tSong.dateAdded,
-                    genre = "Telegram",
-                    trackNumber = realTrackNumber,
-                    year = realYear,
-                    isFavorite = false,
-                    lyrics = null,
-                    mimeType = tSong.mimeType,
-                    bitrate = 0,
-                    sampleRate = 0,
-                    telegramChatId = tSong.chatId,
-                    telegramFileId = tSong.fileId
-                )
-                songsToInsert.add(songEntity)
-            }
-            
-            // Calculate song counts for the albums we are inserting
-            val albumCounts = songsToInsert.groupingBy { it.albumId }.eachCount()
-
-            val finalAlbums = albumsToInsert.values.map { album ->
-                album.copy(songCount = albumCounts[album.id] ?: 0)
-            }
-            val syncedTelegramSongIds = songsToInsert.map { it.id }.toHashSet()
-            val deletedUnifiedSongIds = existingUnifiedTelegramIds.filterNot { it in syncedTelegramSongIds }
-
-            // Upsert into MusicDao
-            musicDao.incrementalSyncMusicData(
-                songs = songsToInsert,
-                albums = finalAlbums,
-                artists = artistsToInsert.values.toList(),
-                crossRefs = crossRefsToInsert,
-                deletedSongIds = deletedUnifiedSongIds
-            )
-            Log.i(TAG, "Synced ${songsToInsert.size} Telegram songs with Unified Metadata.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to sync Telegram data", e)
-        }
-    }
-
-    private suspend fun syncNeteaseData() {
-        Log.i(TAG, "Syncing Netease songs to main database (Unified Mode)...")
-        try {
-            val neteaseSongs = neteaseDao.getAllNeteaseSongsList()
-            val existingUnifiedNeteaseIds = musicDao.getAllNeteaseSongIds()
-
-            if (neteaseSongs.isEmpty()) {
-                if (existingUnifiedNeteaseIds.isNotEmpty()) {
-                    musicDao.clearAllNeteaseSongs()
-                }
-                Log.d(TAG, "No Netease songs to sync.")
-                return
-            }
-
-            val songsToInsert = ArrayList<SongEntity>(neteaseSongs.size)
-            val artistsToInsert = LinkedHashMap<Long, ArtistEntity>()
-            val albumsToInsert = LinkedHashMap<Long, AlbumEntity>()
-            val crossRefsToInsert = mutableListOf<SongArtistCrossRef>()
-
-            neteaseSongs.forEach { nSong ->
-                val songId = toUnifiedNeteaseSongId(nSong.neteaseId)
-                val artistNames = parseNeteaseArtistNames(nSong.artist)
-                val primaryArtistName = artistNames.firstOrNull() ?: "Unknown Artist"
-                val primaryArtistId = toUnifiedNeteaseArtistId(primaryArtistName)
-
-                artistNames.forEachIndexed { index, artistName ->
-                    val artistId = toUnifiedNeteaseArtistId(artistName)
-                    artistsToInsert.putIfAbsent(
-                        artistId,
-                        ArtistEntity(
-                            id = artistId,
-                            name = artistName,
-                            trackCount = 0,
-                            imageUrl = null
-                        )
-                    )
-                    crossRefsToInsert.add(
-                        SongArtistCrossRef(
-                            songId = songId,
-                            artistId = artistId,
-                            isPrimary = index == 0
-                        )
-                    )
-                }
-
-                val albumId = toUnifiedNeteaseAlbumId(nSong.albumId, nSong.album)
-                val albumName = nSong.album.ifBlank { "Unknown Album" }
-                albumsToInsert.putIfAbsent(
-                    albumId,
-                    AlbumEntity(
-                        id = albumId,
-                        title = albumName,
-                        artistName = primaryArtistName,
-                        artistId = primaryArtistId,
-                        songCount = 0,
-                        year = 0,
-                        albumArtUriString = nSong.albumArtUrl
-                    )
-                )
-
-                songsToInsert.add(
-                    SongEntity(
-                        id = songId,
-                        title = nSong.title,
-                        artistName = nSong.artist.ifBlank { primaryArtistName },
-                        artistId = primaryArtistId,
-                        albumArtist = null,
-                        albumName = albumName,
-                        albumId = albumId,
-                        contentUriString = "netease://${nSong.neteaseId}",
-                        albumArtUriString = nSong.albumArtUrl,
-                        duration = nSong.duration,
-                        genre = NETEASE_GENRE,
-                        filePath = "",
-                        parentDirectoryPath = NETEASE_PARENT_DIRECTORY,
-                        isFavorite = false,
-                        lyrics = null,
-                        trackNumber = 0,
-                        year = 0,
-                        dateAdded = nSong.dateAdded.takeIf { it > 0 } ?: System.currentTimeMillis(),
-                        mimeType = nSong.mimeType,
-                        bitrate = nSong.bitrate,
-                        sampleRate = null,
-                        telegramChatId = null,
-                        telegramFileId = null
-                    )
-                )
-            }
-
-            val albumCounts = songsToInsert.groupingBy { it.albumId }.eachCount()
-            val finalAlbums = albumsToInsert.values.map { album ->
-                album.copy(songCount = albumCounts[album.id] ?: 0)
-            }
-
-            val currentUnifiedSongIds = songsToInsert.map { it.id }.toSet()
-            val deletedUnifiedSongIds = existingUnifiedNeteaseIds.filter { it !in currentUnifiedSongIds }
-
-            musicDao.incrementalSyncMusicData(
-                songs = songsToInsert,
-                albums = finalAlbums,
-                artists = artistsToInsert.values.toList(),
-                crossRefs = crossRefsToInsert,
-                deletedSongIds = deletedUnifiedSongIds
-            )
-            Log.i(TAG, "Synced ${songsToInsert.size} Netease songs with Unified Metadata.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to sync Netease data", e)
-        }
-    }
-
-    private fun parseNeteaseArtistNames(rawArtist: String): List<String> {
-        if (rawArtist.isBlank()) return listOf("Unknown Artist")
-        val parsed = rawArtist.split(Regex("\\s*[,/&;+、]\\s*"))
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-        return if (parsed.isEmpty()) listOf("Unknown Artist") else parsed
-    }
-
-    private fun toUnifiedNeteaseSongId(neteaseId: Long): Long {
-        return -(NETEASE_SONG_ID_OFFSET + neteaseId.absoluteValue)
-    }
-
-    private fun toUnifiedNeteaseAlbumId(albumId: Long, albumName: String): Long {
-        val normalized = if (albumId > 0L) {
-            albumId.absoluteValue
-        } else {
-            albumName.lowercase().hashCode().toLong().absoluteValue
-        }
-        return -(NETEASE_ALBUM_ID_OFFSET + normalized)
-    }
-
-    private fun toUnifiedNeteaseArtistId(artistName: String): Long {
-        return -(NETEASE_ARTIST_ID_OFFSET + artistName.lowercase().hashCode().toLong().absoluteValue)
     }
 }

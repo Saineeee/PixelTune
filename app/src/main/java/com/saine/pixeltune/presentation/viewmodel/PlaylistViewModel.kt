@@ -74,7 +74,7 @@ sealed class PlaylistSongsOrderMode {
 /**
  * IMPROVE(cloud-playlist-source-filter): the library Playlists tab's source
  * filter — "All", "Local" (created on-device) or "Cloud" (imported from a
- * streaming provider — YouTube / SoundCloud / NetEase / Telegram).
+ * streaming provider — YouTube / SoundCloud).
  */
 enum class PlaylistSourceFilter(val displayName: String) {
     ALL("All"),
@@ -85,9 +85,7 @@ enum class PlaylistSourceFilter(val displayName: String) {
 /** Playlist.source values that identify a CLOUD-imported playlist. */
 private val CLOUD_PLAYLIST_SOURCES = setOf(
     CloudPlaylistImportManager.SOURCE_YOUTUBE,
-    CloudPlaylistImportManager.SOURCE_SOUNDCLOUD,
-    "NETEASE",
-    "TELEGRAM"
+    CloudPlaylistImportManager.SOURCE_SOUNDCLOUD
 )
 
 @HiltViewModel

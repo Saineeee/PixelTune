@@ -41,7 +41,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
 import com.saine.pixeltune.MainCoroutineExtension
 import com.saine.pixeltune.data.service.player.DualPlayerEngine
-import com.saine.pixeltune.data.telegram.TelegramCacheManager
 import com.saine.pixeltune.data.worker.SyncManager
 import com.saine.pixeltune.utils.AppShortcutManager
 import com.saine.pixeltune.presentation.viewmodel.*
@@ -63,8 +62,6 @@ class PlayerViewModelTest {
     private val mockSyncManager: SyncManager = mockk(relaxed = true)
     private val mockDualPlayerEngine: DualPlayerEngine = mockk(relaxed = true)
     private val mockAppShortcutManager: AppShortcutManager = mockk(relaxed = true)
-    private val mockTelegramCacheManager: TelegramCacheManager = mockk(relaxed = true)
-    private val mockTelegramRepository: com.saine.pixeltune.data.telegram.TelegramRepository = mockk(relaxed = true)
     private val mockListeningStatsTracker: ListeningStatsTracker = mockk(relaxed = true)
     private val mockDailyMixStateHolder: DailyMixStateHolder = mockk(relaxed = true)
     private val mockLyricsStateHolder: LyricsStateHolder = mockk(relaxed = true)
@@ -99,7 +96,6 @@ class PlayerViewModelTest {
         mockkStatic(ContextCompat::class)
         val directExecutor = java.util.concurrent.Executor { it.run() }
         every { ContextCompat.getMainExecutor(any()) } returns directExecutor
-        every { mockTelegramCacheManager.embeddedArtUpdated } returns kotlinx.coroutines.flow.MutableSharedFlow()
 
         // Mock UserPreferences
         coEvery { mockUserPreferencesRepository.playerThemePreferenceFlow } returns flowOf("Global")
@@ -164,8 +160,6 @@ class PlayerViewModelTest {
         every { mockMusicRepository.getPaginatedSongs(any(), any()) } returns flowOf(androidx.paging.PagingData.empty())
         every { mockMusicRepository.getAudioFiles() } returns flowOf(emptyList())
         coEvery { mockMusicRepository.getFavoriteSongIdsOnce() } returns emptySet()
-        every { mockMusicRepository.telegramRepository } returns mockTelegramRepository
-        every { mockTelegramRepository.downloadCompleted } returns MutableSharedFlow<Int>()
         every { mockLyricsStateHolder.songUpdates } returns MutableSharedFlow()
 
         // Initialize PlayerViewModel
@@ -193,7 +187,6 @@ class PlayerViewModelTest {
             mockSyncManager,
             mockDualPlayerEngine,
             mockAppShortcutManager,
-            com.saine.pixeltune.utils.daggerLazyOf(mockTelegramCacheManager),
             mockListeningStatsTracker,
             mockDailyMixStateHolder,
             mockLyricsStateHolder,

@@ -592,7 +592,6 @@ class MainActivity : ComponentActivity() {
         val routesWithHiddenNavigationBar = remember {
             setOf(
                 Screen.Settings.route,
-                Screen.Accounts.route,
                 Screen.PlaylistDetail.route,
                 Screen.DailyMixScreen.route,
                 Screen.RecentlyPlayed.route,
@@ -686,10 +685,6 @@ class MainActivity : ComponentActivity() {
                         }
                         DrawerDestination.Equalizer -> navController.navigateSafely(Screen.Equalizer.route)
                         DrawerDestination.Settings -> navController.navigateSafely(Screen.Settings.route)
-                        DrawerDestination.Telegram -> {
-                            val intent = Intent(this@MainActivity, com.saine.pixeltune.presentation.telegram.auth.TelegramLoginActivity::class.java)
-                            startActivity(intent)
-                        }
                         else -> {}
                     }
                 }

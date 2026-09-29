@@ -119,7 +119,6 @@ private data class Contributor(
     val avatarUrl: String? = null,
     @DrawableRes val iconRes: Int? = null,
     val githubUrl: String? = null,
-    val telegramUrl: String? = null,
     val buyMeACoffeeUrl: String? = null,
     val behanceUrl: String? = null,
     val contributions: Int? = null,
@@ -761,11 +760,6 @@ private fun ContributorCard(
                     painterRes = R.drawable.github,
                     contentDescription = "Open GitHub profile",
                     url = contributor.githubUrl,
-                )
-                SocialIconButton(
-                    painterRes = R.drawable.telegram,
-                    contentDescription = "Open Telegram",
-                    url = contributor.telegramUrl,
                 )
                 if (contributor.behanceUrl != null) {
                     SocialIconButton(

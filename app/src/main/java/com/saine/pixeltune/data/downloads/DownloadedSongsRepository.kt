@@ -179,10 +179,6 @@ fun DownloadedSong.toSong(): Song = Song(
     mimeType = mimeType ?: "audio/mp4",
     bitrate = null,
     sampleRate = null,
-    telegramFileId = null,
-    telegramChatId = null,
-    neteaseId = null,
-    gdriveFileId = null,
     youtubeId = youtubeId
 )
 

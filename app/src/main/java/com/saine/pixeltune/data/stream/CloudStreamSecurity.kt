@@ -15,7 +15,6 @@ object CloudStreamSecurity {
     private const val MAX_RANGE_HEADER_LENGTH = 64
     private const val MAX_RANGE_VALUE_BYTES = 8L * 1024L * 1024L * 1024L
 
-    private val GDRIVE_FILE_ID_REGEX = Regex("^[A-Za-z0-9_-]{10,200}$")
     private val FORBIDDEN_HOSTS = setOf("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]")
     
     // FIX: Added missing YouTube specific DASH audio formats
@@ -46,12 +45,6 @@ object CloudStreamSecurity {
         val endInclusive: Long? = null,
         val isSuffixRange: Boolean = false
     )
-
-    fun validateTelegramFileId(fileId: Int): Boolean = fileId > 0
-
-    fun validateNeteaseSongId(songId: Long): Boolean = songId > 0L
-
-    fun validateGDriveFileId(fileId: String): Boolean = GDRIVE_FILE_ID_REGEX.matches(fileId)
 
     fun validateRangeHeader(rawHeader: String?): RangeHeaderValidation {
         if (rawHeader.isNullOrBlank()) {

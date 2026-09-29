@@ -436,13 +436,6 @@ fun SettingsCategoryScreen(
                                     onCheckedChange = { settingsViewModel.setAutoScanLrcFiles(it) },
                                     leadingIcon = { Icon(Icons.Outlined.Folder, null, tint = MaterialTheme.colorScheme.secondary) }
                                 )
-                                SwitchSettingItem(
-                                    title = "Download online artist images",
-                                    subtitle = "Fetch artist covers and artwork from Deezer API",
-                                    checked = uiState.downloadDeezerArtwork,
-                                    onCheckedChange = { settingsViewModel.setDownloadDeezerArtwork(it) },
-                                    leadingIcon = { Icon(Icons.Outlined.CloudDownload, null, tint = MaterialTheme.colorScheme.secondary) }
-                                )
                             }
 
                             SettingsSubsection(
@@ -495,6 +488,16 @@ fun SettingsCategoryScreen(
                                     checked = useSmoothCorners,
                                     onCheckedChange = settingsViewModel::setUseSmoothCorners,
                                     leadingIcon = { Icon(painterResource(R.drawable.rounded_rounded_corner_24), null, tint = MaterialTheme.colorScheme.secondary) }
+                                )
+                            }
+
+                            SettingsSubsection(title = "Artist Artwork") {
+                                SwitchSettingItem(
+                                    title = "Download online artist images",
+                                    subtitle = "Fetch artist covers and artwork from Deezer API",
+                                    checked = uiState.downloadDeezerArtwork,
+                                    onCheckedChange = { settingsViewModel.setDownloadDeezerArtwork(it) },
+                                    leadingIcon = { Icon(Icons.Outlined.CloudDownload, null, tint = MaterialTheme.colorScheme.secondary) }
                                 )
                             }
 
@@ -673,7 +676,7 @@ fun SettingsCategoryScreen(
                             SettingsSubsection(title = "Streaming") {
                                 ThemeSelectorItem(
                                     label = "Streaming Quality",
-                                    description = "Adjust audio quality for cloud streams (YouTube, Netease, etc.)",
+                                    description = "Adjust audio quality for cloud streams (YouTube, SoundCloud, etc.)",
                                     options = com.saine.pixeltune.data.preferences.StreamingQuality.entries.associate { it.name to it.title },
                                     selectedKey = uiState.streamingQuality.name,
                                     onSelectionChanged = { key ->

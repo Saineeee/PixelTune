@@ -52,7 +52,7 @@ private fun libraryEmptySpec(
             StorageFilter.ONLINE -> LibraryEmptySpec(
                 iconRes = R.drawable.rounded_music_off_24,
                 title = "No cloud songs found",
-                subtitle = "Sync Telegram or Netease songs, or switch to local source."
+                subtitle = "Like YouTube or SoundCloud tracks, or switch to local source."
             )
         }
 
@@ -106,7 +106,7 @@ private fun libraryEmptySpec(
             StorageFilter.ONLINE -> LibraryEmptySpec(
                 iconRes = R.drawable.rounded_favorite_24,
                 title = "No liked cloud songs",
-                subtitle = "Like Telegram or Netease tracks to see them in this view."
+                subtitle = "Like YouTube or SoundCloud tracks to see them in this view."
             )
         }
 

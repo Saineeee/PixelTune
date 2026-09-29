@@ -70,7 +70,6 @@ import com.saine.pixeltune.data.preferences.CollagePattern
 import com.saine.pixeltune.presentation.components.AlbumArtCollage
 import com.saine.pixeltune.presentation.components.BetaInfoBottomSheet
 
-import com.saine.pixeltune.presentation.netease.dashboard.NeteaseDashboardViewModel
 import com.saine.pixeltune.presentation.components.DailyMixSection
 import com.saine.pixeltune.presentation.components.HomeGradientTopBar
 import com.saine.pixeltune.presentation.components.HomeOptionsBottomSheet
@@ -84,7 +83,6 @@ import com.saine.pixeltune.presentation.model.mapRecentlyPlayedSongs
 import com.saine.pixeltune.presentation.components.subcomps.PlayingEqIcon
 import com.saine.pixeltune.presentation.navigation.Screen
 import com.saine.pixeltune.presentation.components.StreamingProviderSheet
-import com.saine.pixeltune.presentation.telegram.auth.TelegramLoginActivity
 import com.saine.pixeltune.presentation.viewmodel.PlayerViewModel
 import com.saine.pixeltune.presentation.viewmodel.SettingsViewModel
 import com.saine.pixeltune.presentation.viewmodel.StatsViewModel
@@ -104,7 +102,6 @@ fun HomeScreen(
     paddingValuesParent: PaddingValues,
     playerViewModel: PlayerViewModel = hiltViewModel(),
     settingsViewModel: SettingsViewModel = hiltViewModel(),
-    neteaseViewModel: NeteaseDashboardViewModel = hiltViewModel(),
     onOpenSidebar: () -> Unit
 ) {
     val context = LocalContext.current
@@ -240,7 +237,7 @@ fun HomeScreen(
                     onBetaClick = {
                         showBetaInfoBottomSheet = true
                     },
-                    onTelegramClick = {
+                    onCloudStreamClick = {
                          showStreamingProviderSheet = true
                     },
                     onMenuClick = {
@@ -422,9 +419,7 @@ fun HomeScreen(
         // recomposed the ENTIRE ~450-line HomeScreen body on the same frames.
         // Hoisted into a small host so the reads invalidate only the sheet.
         StreamingProviderSheetHost(
-            neteaseViewModel = neteaseViewModel,
             playerViewModel = playerViewModel,
-            navController = navController,
             onDismissRequest = { showStreamingProviderSheet = false }
         )
     }
@@ -433,21 +428,14 @@ fun HomeScreen(
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun StreamingProviderSheetHost(
-    neteaseViewModel: NeteaseDashboardViewModel,
     playerViewModel: PlayerViewModel,
-    navController: NavController,
     onDismissRequest: () -> Unit
 ) {
-    val isNeteaseLoggedIn by neteaseViewModel.isLoggedIn.collectAsStateWithLifecycle()
     // IMPROVE(provider-indicator): the live provider selection, so the
     // sheet can badge the active YouTube / SoundCloud card in real time.
     val currentOnlineProvider by playerViewModel.currentOnlineProvider.collectAsStateWithLifecycle()
     StreamingProviderSheet(
         onDismissRequest = onDismissRequest,
-        isNeteaseLoggedIn = isNeteaseLoggedIn,
-        onNavigateToNeteaseDashboard = {
-            navController.navigateSafely(Screen.NeteaseDashboard.route)
-        },
         activeProvider = currentOnlineProvider,
         onProviderSelected = { provider ->
             playerViewModel.setOnlineProvider(provider)

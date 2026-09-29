@@ -31,7 +31,6 @@ import androidx.navigation.navArgument
 import com.saine.pixeltune.data.preferences.LaunchTab
 import com.saine.pixeltune.data.preferences.UserPreferencesRepository
 import com.saine.pixeltune.presentation.screens.AlbumDetailScreen
-import com.saine.pixeltune.presentation.screens.AccountsScreen
 import com.saine.pixeltune.presentation.screens.ArtistDetailScreen
 import com.saine.pixeltune.presentation.screens.ArtistSettingsScreen
 import com.saine.pixeltune.presentation.screens.CloudCatalogScreen
@@ -211,22 +210,6 @@ fun AppNavigation(
                         playerViewModel = playerViewModel,
                         onNavigationIconClick = {
                             navController.popBackStack()
-                        }
-                    )
-                }
-            }
-            composable(
-                Screen.Accounts.route,
-                enterTransition = { enterTransition() },
-                exitTransition = { exitTransition() },
-                popEnterTransition = { popEnterTransition() },
-                popExitTransition = { popExitTransition() },
-            ) {
-                ScreenWrapper(navController = navController, playerViewModel = playerViewModel) {
-                    AccountsScreen(
-                        onBackClick = { navController.popBackStack() },
-                        onOpenNeteaseDashboard = {
-                            navController.navigateSafely(Screen.NeteaseDashboard.route)
                         }
                     )
                 }
@@ -546,19 +529,6 @@ fun AppNavigation(
                     com.saine.pixeltune.presentation.screens.DeviceCapabilitiesScreen(
                         navController = navController,
                         playerViewModel = playerViewModel
-                    )
-                }
-            }
-            composable(
-                Screen.NeteaseDashboard.route,
-                enterTransition = { enterTransition() },
-                exitTransition = { exitTransition() },
-                popEnterTransition = { popEnterTransition() },
-                popExitTransition = { popExitTransition() },
-            ) {
-                ScreenWrapper(navController = navController, playerViewModel = playerViewModel) {
-                    com.saine.pixeltune.presentation.netease.dashboard.NeteaseDashboardScreen(
-                        onBack = { navController.popBackStack() }
                     )
                 }
             }

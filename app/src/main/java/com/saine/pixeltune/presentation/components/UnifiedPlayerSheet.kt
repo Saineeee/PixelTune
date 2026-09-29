@@ -730,10 +730,7 @@ internal fun MiniPlayerContentInternal(
                     model = albumArtModel,
                     contentDescription = "Carátula de ${song.title}",
                     shape = CircleShape,
-                    modifier = Modifier.size(44.dp),
-                    placeholderModel = if (albumArtModel?.startsWith("telegram_art") == true) {
-                        "$albumArtModel?quality=thumb"
-                    } else null
+                    modifier = Modifier.size(44.dp)
                 )
             }
             if (isPreparingPlayback) {

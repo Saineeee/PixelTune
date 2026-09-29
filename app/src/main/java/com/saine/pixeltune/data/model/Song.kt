@@ -36,10 +36,6 @@ data class Song(
     val mimeType: String?,
     val bitrate: Int?,
     val sampleRate: Int?,
-    val telegramFileId: Int? = null, // ID of the file in Telegram
-    val telegramChatId: Long? = null, // ID of the chat where the file is located
-    val neteaseId: Long? = null, // Netease Cloud Music song ID
-    val gdriveFileId: String? = null, // Google Drive file ID
     val youtubeId: String? = null // YouTube video ID
 ) : Parcelable {
     @IgnoredOnParcel
@@ -109,10 +105,6 @@ data class Song(
                 mimeType = "-",
                 bitrate = 0,
                 sampleRate = 0,
-                telegramFileId = null,
-                telegramChatId = null,
-                neteaseId = null,
-                gdriveFileId = null,
                 youtubeId = null
             )
         }

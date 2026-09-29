@@ -73,6 +73,13 @@ class ArtistImageRepository @Inject constructor(
 
     /**
      * Get artist image URL, fetching from Deezer if not cached.
+     *
+     * Works for BOTH local-library artists and artists that only exist
+     * because the user liked / played a YouTube or SoundCloud song: the
+     * canonical Room artist row is resolved by name, and when no row exists
+     * yet the Deezer result is still returned (memory-cached for the session)
+     * — the opt-in preference gate applies identically to both paths.
+     *
      * @param artistName Name of the artist
      * @param artistId Room database ID of the artist (for caching)
      * @return Image URL or null if not found
@@ -184,10 +191,22 @@ class ArtistImageRepository @Inject constructor(
                     if (!imageUrl.isNullOrEmpty()) {
                         // Cache in memory
                         memoryCache.put(normalizedName, imageUrl)
-                        
-                        // Cache in database
-                        musicDao.updateArtistImageUrl(artistId, imageUrl)
-                        
+
+                        // Cache in database — but only when the artist has a
+                        // real artists-table row. Liked YouTube / SoundCloud
+                        // songs create synthetic NEGATIVE-id artist rows (still
+                        // real rows, so they cache normally), while an
+                        // online-only song that was never liked passes a -1
+                        // placeholder whose UPDATE would be a silent no-op.
+                        // Re-resolve by name here: the row may have been
+                        // created after this fetch started.
+                        val cacheRowId = withContext(Dispatchers.IO) {
+                            musicDao.getArtistIdByNormalizedName(artistName)
+                        } ?: artistId.takeIf { it != -1L }
+                        if (cacheRowId != null) {
+                            musicDao.updateArtistImageUrl(cacheRowId, imageUrl)
+                        }
+
                         Log.d(TAG, "Fetched and cached image for $artistName: $imageUrl")
                         imageUrl
                     } else {

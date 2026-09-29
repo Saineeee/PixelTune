@@ -169,10 +169,6 @@ class PlayerViewModel @Inject constructor(
 
     private val dualPlayerEngine: DualPlayerEngine,
     private val appShortcutManager: AppShortcutManager,
-    // PERF(startup): lazy — TelegramCacheManager sits on the TDLib native
-    // chain; direct injection loaded tdjni on the main thread before the
-    // first frame. The collector below resolves it on a background dispatcher.
-    private val telegramCacheManagerLazy: dagger.Lazy<com.saine.pixeltune.data.telegram.TelegramCacheManager>,
     private val listeningStatsTracker: ListeningStatsTracker,
     private val dailyMixStateHolder: DailyMixStateHolder,
     private val lyricsStateHolder: LyricsStateHolder,
@@ -225,7 +221,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     /**
-     * Accumulates cloud-streamed songs (YouTube / SoundCloud / Netease / etc.)
+     * Accumulates cloud-streamed songs (YouTube / SoundCloud)
      * encountered during the current app session — sourced from the playback
      * queue, the current playing song, and any cloud songs that were favorited.
      *
@@ -249,8 +245,7 @@ class PlayerViewModel @Inject constructor(
         // Listening History).
         val scheme = runCatching { Uri.parse(contentUriString).scheme?.lowercase() }.getOrNull()
         if (scheme == "http" || scheme == "https" ||
-            scheme == "youtube" || scheme == "soundcloud" ||
-            scheme == "telegram" || scheme == "netease" || scheme == "gdrive"
+            scheme == "youtube" || scheme == "soundcloud"
         ) {
             return true
         }
@@ -396,46 +391,15 @@ class PlayerViewModel @Inject constructor(
     val paginatedSongs: Flow<PagingData<Song>> = libraryStateHolder.songsPagingFlow
         .cachedIn(viewModelScope)
     
-    // Observe embedded art updates for Telegram songs - refresh colors when available
-    // PERF(startup): resolved on Dispatchers.Default so the TDLib native chain
-    // (if not yet constructed) is never initialized on the main thread from
-    // this collector.
+    // Observe connectivity loss during cloud playback — surfaces the
+    // offline-blocked dialog.
     private val embeddedArtObserverJob = viewModelScope.launch(Dispatchers.Default) {
-        launch {
-            telegramCacheManagerLazy.get().embeddedArtUpdated.collect { updatedArtUri ->
-                refreshArtwork(updatedArtUri)
-            }
-        }
-        
         launch {
              connectivityStateHolder.offlinePlaybackBlocked.collect {
                  Timber.w("Received offline blocked event. Showing dialog.")
                  _showNoInternetDialog.emit(Unit)
              }
         }
-        
-        launch {
-            musicRepository.telegramRepository.downloadCompleted
-                .onEach { fileId: Int ->
-                    // Check if the downloaded file belongs to the current song
-                    val currentSong = playbackStateHolder.stablePlayerState.value.currentSong
-                    if (currentSong != null && currentSong.contentUriString.startsWith("telegram:")) {
-                        // Refresh art if the downloaded file is the audio file or the thumbnail
-                         val uri = Uri.parse(currentSong.contentUriString)
-                         val chatId = uri.host?.toLongOrNull()
-                         val messageId = uri.pathSegments.firstOrNull()?.toLongOrNull()
-                         
-                         if (chatId != null && messageId != null) {
-                             // Force a refresh attempt for this song
-                             // We construct the art URI manually since we know the pattern
-                             val artUri = "telegram_art://$chatId/$messageId"
-                             refreshArtwork(artUri)
-                         }
-                    }
-                }
-                .launchIn(this)
-        }
-
     }
 
     private suspend fun refreshArtwork(updatedArtUri: String) {
@@ -654,7 +618,7 @@ class PlayerViewModel @Inject constructor(
 
     fun requestLocateCurrentSong() {
         val currentSongId = stablePlayerState.value.currentSong?.id ?: return
-        val currentIdLong = currentSongId.toLongOrNull() ?: return // Telegram songs with negative IDs are also Longs
+        val currentIdLong = currentSongId.toLongOrNull() ?: return // Cloud songs with negative IDs are also Longs
         
         viewModelScope.launch {
             try {
@@ -2618,21 +2582,6 @@ class PlayerViewModel @Inject constructor(
                     mediaItem?.let { transitionedItem ->
                         listeningStatsTracker.finalizeCurrentSession()
                         val song = resolveSongFromMediaItem(transitionedItem)
-                        
-                        // Offline check for Telegram songs
-                        if (song?.contentUriString?.startsWith("telegram:") == true) {
-                            val isOnline = connectivityStateHolder.isOnline.value
-                            if (!isOnline) {
-                                val fileId = song.telegramFileId
-                                if (fileId != null) {
-                                    val isCached = musicRepository.telegramRepository.isFileCached(fileId)
-                                    if (!isCached) {
-                                        playerCtrl.pause()
-                                        _showNoInternetDialog.emit(Unit)
-                                    }
-                                }
-                            }
-                        }
 
                         val resolvedDuration = if (song != null) {
                             playbackStateHolder.resolveDurationForPlaybackState(
@@ -2793,23 +2742,22 @@ class PlayerViewModel @Inject constructor(
             val validStartSong =
                 validSongs.firstOrNull { it.id == startSong.id } ?: validSongs.first()
 
-            // Offline check for the starting song if it is a Telegram song
-            if (validStartSong.contentUriString.startsWith("telegram:")) {
-                val isOnline = connectivityStateHolder.isOnline.value
-                val fileId = validStartSong.telegramFileId
-                
-                Timber.d("Offline Check: fileId=$fileId, contentUri=${validStartSong.contentUriString}, isOnline=$isOnline")
-
-                if (!isOnline) {
-                     if (fileId != null) {
-                         val isCached = musicRepository.telegramRepository.isFileCached(fileId)
-                         Timber.d("Offline Check: isCached=$isCached")
-                         if (!isCached) {
-                             Timber.w("Blocked playback: Offline and not cached.")
-                             _showNoInternetDialog.tryEmit(Unit)
-                             return@launch
-                         }
-                     }
+            // Offline guard for cloud-streamed starting songs: a scheme URI
+            // needs connectivity unless the song has been downloaded to
+            // app-private storage (in which case it plays from the local file).
+            run {
+                val uriString = validStartSong.contentUriString
+                val scheme = uriString.substringBefore("://")
+                if (scheme == "youtube" || scheme == "soundcloud") {
+                    val isOnline = connectivityStateHolder.isOnline.value
+                    val isDownloaded =
+                        downloadedSongsRepository.downloadedFileForUri(uriString) != null
+                    Timber.d("Offline Check: contentUri=$uriString, isOnline=$isOnline, isDownloaded=$isDownloaded")
+                    if (!isOnline && !isDownloaded) {
+                        Timber.w("Blocked playback: offline and not a local file.")
+                        _showNoInternetDialog.tryEmit(Unit)
+                        return@launch
+                    }
                 }
             }
 
@@ -3014,9 +2962,7 @@ class PlayerViewModel @Inject constructor(
         // 00:00 (the same symptom as the original YouTube bug).
         val startingUri = MediaItemBuilder.playbackUri(effectiveStartSong.contentUriString)
         val startingScheme = startingUri.scheme
-        if (startingScheme == "telegram" || startingScheme == "netease" ||
-            startingScheme == "youtube" || startingScheme == "soundcloud"
-        ) {
+        if (startingScheme == "youtube" || startingScheme == "soundcloud") {
             dualPlayerEngine.resolveCloudUri(startingUri)
         }
 

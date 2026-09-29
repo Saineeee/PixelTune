@@ -16,7 +16,7 @@ import java.util.Random
  * These tests pin down the chunk-by-chunk streaming behavior that is the
  * actual fix for the "YouTube playback stuck at 00:00" production bug.
  *
- * The legacy cloud-streaming proxies (YouTube / Netease / SoundCloud / GDrive)
+ * The legacy cloud-streaming proxies (YouTube / SoundCloud)
  * buffered the ENTIRE upstream body in memory via OkHttp's `bytes()` before
  * forwarding anything to ExoPlayer. That pattern re-introduced (and never
  * actually fixed) the original 00:00 freeze because:

@@ -382,7 +382,7 @@ class PlaylistImportManager @Inject constructor(
     internal fun normalizeCloudUriForStorage(contentUriString: String): String {
         if (contentUriString.isEmpty()) return contentUriString
         val knownSchemes = setOf(
-            "youtube", "soundcloud", "telegram", "netease", "gdrive",
+            "youtube", "soundcloud",
             "content", "file"
         )
         val parsed = runCatching { android.net.Uri.parse(contentUriString) }.getOrNull()

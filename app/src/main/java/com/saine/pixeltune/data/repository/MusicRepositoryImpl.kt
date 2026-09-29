@@ -24,13 +24,10 @@ import com.saine.pixeltune.data.database.FavoritesDao
 import com.saine.pixeltune.data.database.MusicDao
 import com.saine.pixeltune.data.database.SearchHistoryDao
 import com.saine.pixeltune.data.database.SearchHistoryEntity
-import com.saine.pixeltune.data.database.TelegramChannelEntity
-import com.saine.pixeltune.data.database.TelegramDao
 import com.saine.pixeltune.data.database.toAlbum
 import com.saine.pixeltune.data.database.toArtist
 import com.saine.pixeltune.data.database.toSearchHistoryItem
 import com.saine.pixeltune.data.database.toSong
-import com.saine.pixeltune.data.database.toTelegramEntity
 import com.saine.pixeltune.data.model.Album
 import com.saine.pixeltune.data.model.Artist
 import com.saine.pixeltune.data.model.Genre
@@ -81,29 +78,11 @@ class MusicRepositoryImpl @Inject constructor(
     private val searchHistoryDao: SearchHistoryDao,
     private val musicDao: MusicDao,
     private val lyricsRepository: LyricsRepository,
-    private val telegramDao: TelegramDao,
-    // PERF(startup): both Telegram dependencies sit on the TDLib native chain
-    // (TelegramCacheManager / TelegramRepository -> TelegramClientManager ->
-    // System.loadLibrary("tdjni") + Client.create()). Injecting them directly
-    // made MainViewModel's construction — which runs on the MAIN thread before
-    // the first frame — load TDLib and start its threads there, defeating the
-    // Application's dagger.Lazy deferral. dagger.Lazy keeps the public
-    // `telegramRepository` property working for callers while deferring the
-    // native init to first actual Telegram use (the Application's IO-dispatcher
-    // proxy start still owns the warmup).
-    private val telegramCacheManagerLazy: dagger.Lazy<com.saine.pixeltune.data.telegram.TelegramCacheManager>,
-    private val telegramRepositoryLazy: dagger.Lazy<com.saine.pixeltune.data.telegram.TelegramRepository>,
     private val songRepository: SongRepository,
     private val favoritesDao: FavoritesDao,
     private val artistImageRepository: ArtistImageRepository,
     private val folderTreeBuilder: FolderTreeBuilder
 ) : MusicRepository {
-
-    private val telegramCacheManager: com.saine.pixeltune.data.telegram.TelegramCacheManager
-        get() = telegramCacheManagerLazy.get()
-
-    override val telegramRepository: com.saine.pixeltune.data.telegram.TelegramRepository
-        get() = telegramRepositoryLazy.get()
 
     companion object {
         /** Maximum number of search results to load at once to avoid memory issues with large libraries. */
@@ -232,29 +211,6 @@ class MusicRepositoryImpl @Inject constructor(
         val applyFilter = blocked.isNotEmpty()
         
         musicDao.getRandomSongs(limit, allowed.toList(), applyFilter).map { it.toSong() }
-    }
-
-    override suspend fun saveTelegramSongs(songs: List<Song>) {
-         val entities = songs.mapNotNull { it.toTelegramEntity() }
-         if (entities.isNotEmpty()) {
-             telegramDao.insertSongs(entities)
-             // Trigger sync to update main DB
-             androidx.work.WorkManager.getInstance(context).enqueue(
-                 com.saine.pixeltune.data.worker.SyncWorker.incrementalSyncWork()
-             )
-         }
-    }
-
-    override suspend fun replaceTelegramSongsForChannel(chatId: Long, songs: List<Song>) {
-        val entities = songs.mapNotNull { it.toTelegramEntity() }.filter { it.chatId == chatId }
-        telegramDao.deleteSongsByChatId(chatId)
-        if (entities.isNotEmpty()) {
-            telegramDao.insertSongs(entities)
-        }
-        // Trigger sync to update main DB (and remove deleted songs)
-        androidx.work.WorkManager.getInstance(context).enqueue(
-            com.saine.pixeltune.data.worker.SyncWorker.incrementalSyncWork()
-        )
     }
 
     /**
@@ -636,7 +592,7 @@ class MusicRepositoryImpl @Inject constructor(
      *    `PRAGMA foreign_keys = ON`), throwing SQLiteConstraintException.
      *    We therefore resolve/insert placeholder album + artist rows first —
      *    merging with an existing local artist/album by name when possible
-     *    (the same convention the Telegram unified sync uses), and otherwise
+     *    (the same convention the cloud favorites sync uses), and otherwise
      *    creating synthetic negative-ID rows that can never collide with
      *    MediaStore IDs.
      *
@@ -663,6 +619,20 @@ class MusicRepositoryImpl @Inject constructor(
                     )
                 )
             )
+        }
+
+        // IMPROVE(online-artist-artwork): warm the Deezer artist-image cache
+        // for the freshly (re)resolved artist row so the artwork is ready by
+        // the time the user opens the Artists tab or the artist detail page.
+        // The prefetch is strictly opt-in — ArtistImageRepository checks the
+        // downloadDeezerArtwork preference before any network call — and is
+        // fire-and-forget so liking a song never waits on the network.
+        repositoryScope.launch {
+            try {
+                artistImageRepository.prefetchArtistImages(listOf(artistId to artistName))
+            } catch (e: Exception) {
+                Log.w("MusicRepo", "Deezer artwork prefetch failed for $artistName: ${e.message}")
+            }
         }
 
         // ---- Resolve album (merge with existing by title+artist, else synthetic) ----
@@ -789,15 +759,10 @@ class MusicRepositoryImpl @Inject constructor(
         return if (longId != null) {
             musicDao.getSongById(longId).map { it?.toSong() }.flowOn(Dispatchers.IO)
         } else {
-            combine(
-                telegramDao.getSongsByIds(listOf(songId)),
-                telegramDao.getAllChannels()
-            ) { songs, channels ->
-                val channelMap = channels.associateBy { it.chatId }
-                songs.firstOrNull()?.let { 
-                    it.toSong(channelTitle = channelMap[it.chatId]?.title)
-                }
-            }.flowOn(Dispatchers.IO)
+            // Cloud-streamed songs (YouTube / SoundCloud) always carry a
+            // stable numeric Room id (stableLongIdFromString), so a non-numeric
+            // id has no row to resolve.
+            flowOf(null)
         }
     }
 
@@ -951,52 +916,6 @@ class MusicRepositoryImpl @Inject constructor(
 
     override suspend fun deleteById(id: Long) {
         musicDao.deleteById(id)
-    }
-
-    override suspend fun clearTelegramData() {
-        // Delete all Telegram playlists from app playlists
-        val allChannels = telegramDao.getAllChannels().first()
-        allChannels.forEach { channel ->
-            telegramRepository.deleteAppPlaylistForTelegramChannel(channel.chatId)
-        }
-        
-        musicDao.clearAllTelegramSongs()
-        telegramDao.clearAll()
-        // Clear all Telegram caches (TDLib files, embedded art, memory)
-        telegramRepository.clearMemoryCache()
-        telegramCacheManager.clearAllCache()
-    }
-
-    override suspend fun saveTelegramChannel(channel: TelegramChannelEntity) {
-        telegramDao.insertChannel(channel)
-        
-        // Create or update the corresponding app playlist
-        try {
-            val channelSongs = withContext(Dispatchers.IO) {
-                telegramDao.getSongsByChatId(channel.chatId)
-            }
-            
-            telegramRepository.updateAppPlaylistForTelegramChannel(
-                channel.chatId,
-                channel.title,
-                channelSongs
-            )
-        } catch (e: Exception) {
-            Log.e("MusicRepo", "Failed to update app playlist for Telegram channel ${channel.chatId}", e)
-        }
-    }
-
-    override fun getAllTelegramChannels(): Flow<List<TelegramChannelEntity>> {
-        return telegramDao.getAllChannels()
-    }
-
-    override suspend fun deleteTelegramChannel(chatId: Long) {
-        musicDao.clearTelegramSongsForChat(chatId)
-        telegramDao.deleteSongsByChatId(chatId) // Cascade delete songs
-        telegramDao.deleteChannel(chatId)
-        
-        // Delete corresponding app playlist
-        telegramRepository.deleteAppPlaylistForTelegramChannel(chatId)
     }
 
     override suspend fun getSongIdsSorted(

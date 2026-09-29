@@ -298,18 +298,6 @@ fun SettingsScreen(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Accounts (Standalone)
-                ExpressiveNavigationItem(
-                    title = "Accounts",
-                    subtitle = "Manage Telegram, Google Drive, Netease, and more services",
-                    icon = Icons.Rounded.AccountCircle,
-                    colors = getAccountsColors(isDark),
-                    onClick = { navController.navigateSafely(Screen.Accounts.route) },
-                    shape = RoundedCornerShape(24.dp)
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-                
                 // About Category (Standalone)
                 ExpressiveCategoryItem(
                     category = SettingsCategory.ABOUT,

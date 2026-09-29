@@ -1331,8 +1331,8 @@ class MusicService : MediaLibraryService() {
                     youtubeStreamProxy.prefetch(playbackUri)
                 playbackUri.contains("/soundcloud/") ->
                     soundCloudStreamProxy.prefetch(playbackUri)
-                // Local files, Telegram, Netease, GDrive … resolve their URIs
-                // through other/cheap paths — nothing to warm here.
+                // Local files resolve their URIs through other/cheap paths —
+                // nothing to warm here.
             }
         } catch (e: Exception) {
             // A prefetch is best-effort only — never let it disturb playback.
@@ -1381,8 +1381,8 @@ class MusicService : MediaLibraryService() {
             contentUriString = contentUri,
             albumArtUriString = currentItem.mediaMetadata.artworkUri?.toString(),
             // Only treat the media id as a YouTube video id when the item
-            // really is a YouTube song — SoundCloud/Telegram ids must never
-            // leak into a YouTube watch URL.
+            // really is a YouTube song — SoundCloud ids must never leak into
+            // a YouTube watch URL.
             youtubeId = if (isYouTubeSeed) mediaId else null
         )
 

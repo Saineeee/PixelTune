@@ -121,8 +121,9 @@ android {
         }
     }
 
-    // ABI Splits: 为每个 CPU 架构生成独立 APK，避免单 APK 同时打包所有架构 native 库
-    // TDLib 单架构约 15~25MB，四架构合计 87MB，开启后每个 APK 只含对应架构
+    // ABI Splits: generate one APK per CPU architecture so a single APK doesn't
+    // bundle every architecture's native libraries (the media3 FFmpeg audio
+    // extension renderer ships per-ABI native libs).
     splits {
         abi {
             isEnable = true
@@ -350,21 +351,9 @@ dependencies {
     implementation(libs.androidx.app)
     implementation(libs.androidx.app.projected)
 
-    // Telegram TDLib
-    implementation(libs.tdlib)
-
     // YouTube / NewPipe
     implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.3")
     implementation("org.mozilla:rhino:1.7.15")
-
-    // Google Sign-In via Credential Manager (for Google Drive).
-    // androidx.credentials + googleid are Apache-2.0 (AOSP) libraries; the
-    // play-services-auth variant only *bridges* to the (optional) system
-    // Credential Manager provider — no proprietary code is compiled in and
-    // sign-in degrades gracefully on non-GMS devices.
-    implementation(libs.credentials)
-    implementation(libs.credentials.play.services.auth)
-    implementation(libs.googleid)
 }
 
 tasks.withType<Test> {

@@ -11,9 +11,7 @@ import androidx.core.net.toUri
 import com.kyant.taglib.Picture
 import com.kyant.taglib.TagLib
 import com.saine.pixeltune.data.database.MusicDao
-import com.saine.pixeltune.data.database.TelegramDao // Added
-import com.saine.pixeltune.data.database.TelegramSongEntity // Added
-import kotlinx.coroutines.flow.first // Added
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.gagravarr.opus.OpusFile
@@ -45,8 +43,7 @@ enum class MetadataEditError {
 
 class SongMetadataEditor(
     private val context: Context,
-    private val musicDao: MusicDao,
-    private val telegramDao: TelegramDao // Added
+    private val musicDao: MusicDao
 ) {
 
     // File extensions that require VorbisJava (TagLib has issues with these via file descriptors)
@@ -122,15 +119,17 @@ class SongMetadataEditor(
             val normalizedGenre = trimmedGenre.takeIf { it.isNotBlank() }
             val normalizedLyrics = trimmedLyrics.takeIf { it.isNotBlank() }
 
-            // 1. FIRST: Get file path (Handle both MediaStore and Telegram/Negative IDs)
-            val isTelegramSong = songId < 0
-            val filePath = if (isTelegramSong) {
+            // 1. FIRST: Get file path (Handle both MediaStore and cloud/synthetic negative IDs)
+            // Cloud-streamed songs (YouTube / SoundCloud likes, downloads) use
+            // synthetic negative Room ids and are not backed by MediaStore.
+            val isCloudSong = songId < 0
+            val filePath = if (isCloudSong) {
                 runBlocking { musicDao.getSongById(songId).first()?.filePath }
             } else {
                 getFilePathFromMediaStore(songId)
             }
 
-            if (filePath.isNullOrBlank() && !isTelegramSong) {
+            if (filePath.isNullOrBlank() && !isCloudSong) {
                 Log.e(TAG, "Could not get file path for songId: $songId")
                 return SongMetadataEditResult(
                     success = false,
@@ -160,8 +159,8 @@ class SongMetadataEditor(
             val fileExists = finalFilePath.isNotBlank() && File(finalFilePath).exists()
             
             val fileUpdateSuccess = if (!fileExists) {
-                if (isTelegramSong) {
-                     Log.w(TAG, "METADATA_EDIT: Telegram file not found (streaming?). Skipping file tags, updating DB only.")
+                if (isCloudSong) {
+                     Log.w(TAG, "METADATA_EDIT: Cloud song file not found (streaming?). Skipping file tags, updating DB only.")
                      true
                 } else {
                      Log.e(TAG, "METADATA_EDIT: File does not exist: $finalFilePath")
@@ -195,30 +194,8 @@ class SongMetadataEditor(
                 )
             }
 
-            // 3. Update MediaStore (Local) OR Telegram Database (Telegram)
-            if (isTelegramSong) {
-                // Update Telegram Database
-                 runBlocking {
-                    // Update the cached items so SyncWorker doesn't overwrite our changes
-                     val songEntity = musicDao.getSongById(songId).first()
-                     if (songEntity?.telegramChatId != null && songEntity.telegramFileId != null) {
-                        val telegramId = "${songEntity.telegramChatId}_${songEntity.telegramFileId}"
-                         // Currently we don't have a direct update method in TelegramDao,
-                         // assuming we fetch, modify, insert (REPLACE)
-                         val telegramSong = telegramDao.getSongsByIds(listOf(telegramId)).first().firstOrNull()
-                         if (telegramSong != null) {
-                             val updatedTelegramSong = telegramSong.copy(
-                                 title = newTitle,
-                                 artist = newArtist,
-                                 // Telegram entity doesn't have album/genre/lyrics fields in current schema
-                                 // but updating title/artist is the most important
-                             )
-                             telegramDao.insertSongs(listOf(updatedTelegramSong))
-                             Timber.d("Updated TelegramDao for song: $telegramId")
-                         }
-                     }
-                 }
-            } else {
+            // 3. Update MediaStore for local songs (cloud songs keep DB-only metadata)
+            if (!isCloudSong) {
                 // Update MediaStore to reflect the changes
                 val mediaStoreSuccess = updateMediaStoreMetadata(
                     songId = songId,
@@ -228,7 +205,7 @@ class SongMetadataEditor(
                     genre = trimmedGenre,
                     trackNumber = newTrackNumber
                 )
-    
+
                 if (!mediaStoreSuccess) {
                     Timber.w("MediaStore update failed, but file was updated for songId: $songId")
                     // Continue anyway since the file was updated

@@ -96,7 +96,7 @@ fun HomeGradientTopBar(
     onNavigationIconClick: () -> Unit,
     onMoreOptionsClick: () -> Unit,
     onBetaClick: () -> Unit,
-    onTelegramClick: () -> Unit,
+    onCloudStreamClick: () -> Unit,
     onMenuClick: () -> Unit = {},
 ) {
     // 1) Pinta la status bar con el color surface
@@ -179,11 +179,11 @@ fun HomeGradientTopBar(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                         contentColor = MaterialTheme.colorScheme.onSurface
                     ),
-                    onClick = onTelegramClick
+                    onClick = onCloudStreamClick
                 ) {
                     Icon(
                          imageVector = Icons.Rounded.Cloud,
-                         contentDescription = "Telegram"
+                         contentDescription = "Cloud Streaming"
                     )
                 }
                 //Spacer(Modifier.size(8.dp))

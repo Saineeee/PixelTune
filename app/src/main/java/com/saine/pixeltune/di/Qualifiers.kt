@@ -18,7 +18,7 @@ annotation class FastOkHttpClient
 
 /**
  * Qualifier for the OkHttpClient used by the cloud-streaming proxies
- * (YouTube, Netease, SoundCloud, GDrive).
+ * (YouTube, SoundCloud).
  *
  * This client MUST NOT use the app-wide 8s readTimeout — that timeout is
  * the root cause of the "YouTube playback stuck at 00:00" bug. YouTube
@@ -67,11 +67,4 @@ annotation class NewPipeOkHttpClient
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class BackupGson
-
-/**
- * Qualifier for Netease Cloud Music Retrofit instance.
- */
-@Qualifier
-@Retention(AnnotationRetention.BINARY)
-annotation class NeteaseRetrofit
 

@@ -191,10 +191,6 @@ class SoundCloudRepository @Inject constructor() {
                     mimeType = "audio/mpeg",
                     bitrate = 0,
                     sampleRate = 0,
-                    telegramFileId = null,
-                    telegramChatId = null,
-                    neteaseId = null,
-                    gdriveFileId = null,
                     youtubeId = null
                 )
             }
@@ -362,10 +358,6 @@ class SoundCloudRepository @Inject constructor() {
                                 mimeType = "audio/mpeg", // typical for soundcloud
                                 bitrate = 0,
                                 sampleRate = 0,
-                                telegramFileId = null,
-                                telegramChatId = null,
-                                neteaseId = null,
-                                gdriveFileId = null,
                                 youtubeId = null
                             )
                             results.add(SearchResultItem.SongItem(song))

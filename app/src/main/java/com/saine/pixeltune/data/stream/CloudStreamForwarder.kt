@@ -53,7 +53,7 @@ sealed interface ForwardOutcome {
  * ROOT-CAUSE NOTE (why this exists)
  * ──────────────────────────────────────────────────────────────────────
  * The legacy cloud-streaming proxies (YouTubeStreamProxy,
- * NeteaseStreamProxy, SoundCloudStreamProxy, GDriveStreamProxy) all read
+ * SoundCloudStreamProxy) all read
  * the ENTIRE upstream response into a `ByteArray` via OkHttp's
  * `ResponseBody.bytes()` before forwarding anything to ExoPlayer.
  *
@@ -267,7 +267,7 @@ object CloudStreamForwarder {
         //    code comments. Ktor's CIO engine already dispatches route
         //    handlers on Dispatchers.IO, so doing the blocking InputStream
         //    reads + OutputStream writes on the request handler's coroutine
-        //    is safe (and is in fact what TelegramStreamProxy already does
+        //    is safe (and is in fact what the stream proxy already does
         //    with respondBytesWriter + writeFully for local files).
         //
         //    FIX(cloud-streaming-speed): pass the upstream Content-Length so

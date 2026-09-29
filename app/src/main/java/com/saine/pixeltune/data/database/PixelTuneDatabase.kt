@@ -14,17 +14,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ArtistEntity::class,
         TransitionRuleEntity::class,
         SongArtistCrossRef::class,
-        TelegramSongEntity::class,
-        TelegramChannelEntity::class,
         SongEngagementEntity::class,
         FavoritesEntity::class,
-        LyricsEntity::class,
-        NeteaseSongEntity::class,
-        NeteasePlaylistEntity::class,
-        GDriveSongEntity::class,
-        GDriveFolderEntity::class
+        LyricsEntity::class
     ],
-    version = 25, // Incremented for query performance indexes
+    version = 26, // Telegram / Netease / GDrive providers removed: tables dropped, songs table rebuilt without telegram columns
 
     exportSchema = false
 )
@@ -33,12 +27,9 @@ abstract class PixelTuneDatabase : RoomDatabase() {
     abstract fun searchHistoryDao(): SearchHistoryDao
     abstract fun musicDao(): MusicDao
     abstract fun transitionDao(): TransitionDao
-    abstract fun telegramDao(): TelegramDao
     abstract fun engagementDao(): EngagementDao
     abstract fun favoritesDao(): FavoritesDao
     abstract fun lyricsDao(): LyricsDao
-    abstract fun neteaseDao(): NeteaseDao
-    abstract fun gdriveDao(): GDriveDao
 
     companion object {
         // Gap-bridging no-op migrations for missing version ranges.
@@ -469,6 +460,130 @@ abstract class PixelTuneDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_gdrive_songs_folder_id_title ON gdrive_songs(folder_id, title)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_song_engagements_last_played_timestamp ON song_engagements(last_played_timestamp)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_search_history_timestamp ON search_history(timestamp)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_file_path ON songs(file_path)")
+            }
+        }
+
+        /**
+         * Removal of the Telegram / Netease Cloud Music / Google Drive cloud
+         * streaming providers (only YouTube and SoundCloud remain):
+         *
+         *  - DROP the six provider cache tables (their data is re-syncable
+         *    cache; the providers no longer exist so the tables are dead).
+         *  - DELETE every songs row that belonged to a removed provider
+         *    (content URIs starting with telegram:// / netease:// / gdrive://)
+         *    together with its favorites / lyrics / engagement rows.
+         *  - REBUILD the songs table without the telegram_chat_id /
+         *    telegram_file_id columns (SQLite cannot DROP COLUMN on the
+         *    supported API range, so the table is recreated and the surviving
+         *    rows copied over).
+         */
+        val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 1. Drop removed-provider cache tables.
+                db.execSQL("DROP TABLE IF EXISTS telegram_songs")
+                db.execSQL("DROP TABLE IF EXISTS telegram_channels")
+                db.execSQL("DROP TABLE IF EXISTS netease_songs")
+                db.execSQL("DROP TABLE IF EXISTS netease_playlists")
+                db.execSQL("DROP TABLE IF EXISTS gdrive_songs")
+                db.execSQL("DROP TABLE IF EXISTS gdrive_folders")
+
+                // 2. Delete songs rows owned by the removed providers (and
+                //    their satellite rows). Must run BEFORE the table rebuild.
+                db.execSQL(
+                    """
+                    DELETE FROM lyrics WHERE songId IN (
+                        SELECT id FROM songs WHERE content_uri_string LIKE 'telegram://%'
+                        OR content_uri_string LIKE 'netease://%'
+                        OR content_uri_string LIKE 'gdrive://%'
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    DELETE FROM favorites WHERE songId IN (
+                        SELECT id FROM songs WHERE content_uri_string LIKE 'telegram://%'
+                        OR content_uri_string LIKE 'netease://%'
+                        OR content_uri_string LIKE 'gdrive://%'
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    DELETE FROM song_engagements WHERE song_id IN (
+                        SELECT id FROM songs WHERE content_uri_string LIKE 'telegram://%'
+                        OR content_uri_string LIKE 'netease://%'
+                        OR content_uri_string LIKE 'gdrive://%'
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    DELETE FROM songs WHERE content_uri_string LIKE 'telegram://%'
+                    OR content_uri_string LIKE 'netease://%'
+                    OR content_uri_string LIKE 'gdrive://%'
+                    """.trimIndent()
+                )
+
+                // 3. Rebuild songs without the telegram columns.
+                db.execSQL("ALTER TABLE songs RENAME TO songs_old")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS songs (
+                        id INTEGER NOT NULL PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        artist_name TEXT NOT NULL,
+                        artist_id INTEGER NOT NULL,
+                        album_artist TEXT,
+                        album_name TEXT NOT NULL,
+                        album_id INTEGER NOT NULL,
+                        content_uri_string TEXT NOT NULL,
+                        album_art_uri_string TEXT,
+                        duration INTEGER NOT NULL,
+                        genre TEXT,
+                        file_path TEXT NOT NULL,
+                        parent_directory_path TEXT NOT NULL,
+                        is_favorite INTEGER NOT NULL DEFAULT 0,
+                        lyrics TEXT,
+                        track_number INTEGER NOT NULL DEFAULT 0,
+                        year INTEGER NOT NULL DEFAULT 0,
+                        date_added INTEGER NOT NULL DEFAULT 0,
+                        mime_type TEXT,
+                        bitrate INTEGER,
+                        sample_rate INTEGER,
+                        FOREIGN KEY (album_id) REFERENCES albums(id) ON DELETE CASCADE,
+                        FOREIGN KEY (artist_id) REFERENCES artists(id) ON DELETE SET NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT INTO songs (
+                        id, title, artist_name, artist_id, album_artist, album_name, album_id,
+                        content_uri_string, album_art_uri_string, duration, genre, file_path,
+                        parent_directory_path, is_favorite, lyrics, track_number, year,
+                        date_added, mime_type, bitrate, sample_rate
+                    )
+                    SELECT
+                        id, title, artist_name, artist_id, album_artist, album_name, album_id,
+                        content_uri_string, album_art_uri_string, duration, genre, file_path,
+                        parent_directory_path, is_favorite, lyrics, track_number, year,
+                        date_added, mime_type, bitrate, sample_rate
+                    FROM songs_old
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE songs_old")
+
+                // 4. Recreate the songs indices that the rename dropped.
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_title ON songs(title)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_album_id ON songs(album_id)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_artist_id ON songs(artist_id)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_artist_name ON songs(artist_name)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_genre ON songs(genre)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_parent_directory_path ON songs(parent_directory_path)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_content_uri_string ON songs(content_uri_string)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_date_added ON songs(date_added)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_duration ON songs(duration)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_songs_file_path ON songs(file_path)")
             }
         }

@@ -37,8 +37,6 @@ import coil.compose.AsyncImagePainter
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Size // Import Coil's Size
-import coil.compose.SubcomposeAsyncImage
-import coil.compose.SubcomposeAsyncImageContent
 import com.saine.pixeltune.R
 
 @Composable
@@ -65,7 +63,6 @@ fun SmartImage(
     targetSize: Size? = null,
     colorFilter: ColorFilter? = null,
     alpha: Float = 1f,
-    placeholderModel: Any? = null,
     onState: ((AsyncImagePainter.State) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -131,27 +128,6 @@ fun SmartImage(
     //
     // The loading/error placeholder visuals are reproduced exactly (colored
     // box + centered 32 dp tinted icon) via [AlbumArtPlaceholderPainter].
-    //
-    // The placeholderModel branch (low-res thumbnail behind Telegram/cloud
-    // art) still needs a composable loading slot, so it keeps the old
-    // subcompose implementation — it has only two call sites, neither in a
-    // fast-scrolling list.
-    if (placeholderModel != null) {
-        SmartImageWithPlaceholderModel(
-            request = request,
-            placeholderModel = placeholderModel,
-            contentDescription = contentDescription,
-            clippedModifier = clippedModifier,
-            contentScale = contentScale,
-            colorFilter = colorFilter,
-            alpha = alpha,
-            placeholderResId = placeholderResId,
-            errorResId = errorResId,
-            onState = onState
-        )
-        return
-    }
-
     val containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerHigh
     val iconColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
     val density = LocalDensity.current
@@ -198,116 +174,6 @@ fun SmartImage(
         alpha = alpha,
         colorFilter = colorFilter
     )
-}
-
-/**
- * Rare variant used when a low-res [placeholderModel] (e.g. a Telegram
- * thumbnail) should be shown while the full artwork loads. Preserved verbatim
- * from the old subcompose implementation — see the note in [SmartImage].
- */
-@Composable
-private fun SmartImageWithPlaceholderModel(
-    request: ImageRequest,
-    placeholderModel: Any?,
-    contentDescription: String?,
-    clippedModifier: Modifier,
-    contentScale: ContentScale,
-    colorFilter: ColorFilter?,
-    alpha: Float,
-    @DrawableRes placeholderResId: Int,
-    @DrawableRes errorResId: Int,
-    onState: ((AsyncImagePainter.State) -> Unit)?
-) {
-    SubcomposeAsyncImage(
-        model = request,
-        contentDescription = contentDescription,
-        modifier = clippedModifier,
-        contentScale = contentScale,
-        colorFilter = colorFilter,
-        alpha = alpha
-    ) {
-        val state = painter.state
-
-        LaunchedEffect(state) {
-            onState?.invoke(state)
-        }
-
-        var lastSuccessPainter by remember(request.data) { mutableStateOf<Painter?>(null) }
-
-        when (state) {
-            is AsyncImagePainter.State.Success -> {
-                lastSuccessPainter = state.painter
-                SubcomposeAsyncImageContent()
-            }
-            AsyncImagePainter.State.Empty,
-            is AsyncImagePainter.State.Loading -> {
-                val cachedPainter = lastSuccessPainter
-                if (cachedPainter != null) {
-                    Image(
-                        painter = cachedPainter,
-                        contentDescription = contentDescription,
-                        modifier = Modifier
-                            .fillMaxSize(),
-                        contentScale = contentScale,
-                        colorFilter = colorFilter,
-                        alpha = alpha
-                    )
-                } else if (placeholderModel != null) {
-                    // Render placeholder model (e.g. low-res thumbnail)
-                     SubcomposeAsyncImage(
-                        model = placeholderModel,
-                        contentDescription = null, // Decorative placeholder
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = contentScale,
-                        colorFilter = colorFilter,
-                        alpha = alpha,
-                        error = {
-                            Placeholder(
-                                modifier = Modifier.fillMaxSize(),
-                                drawableResId = placeholderResId,
-                                contentDescription = contentDescription,
-                                containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerHigh,
-                                iconColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
-                                alpha = alpha
-                            )
-                        }
-                    )
-                } else {
-                    Placeholder(
-                        modifier = Modifier.fillMaxSize(),
-                        drawableResId = placeholderResId,
-                        contentDescription = contentDescription,
-                        containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerHigh,
-                        iconColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
-                        alpha = alpha
-                    )
-                }
-            }
-            is AsyncImagePainter.State.Error -> {
-                val cachedPainter = lastSuccessPainter
-                if (cachedPainter != null) {
-                    Image(
-                        painter = cachedPainter,
-                        contentDescription = contentDescription,
-                        modifier = Modifier
-                            .fillMaxSize(),
-                        contentScale = contentScale,
-                        colorFilter = colorFilter,
-                        alpha = alpha
-                    )
-                } else {
-                    Placeholder(
-                        modifier = Modifier.fillMaxSize(),
-                        drawableResId = errorResId,
-                        contentDescription = contentDescription,
-                        containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerHigh,
-                        iconColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
-                        alpha = alpha
-                    )
-                }
-            }
-        }
-    }
 }
 
 /**
