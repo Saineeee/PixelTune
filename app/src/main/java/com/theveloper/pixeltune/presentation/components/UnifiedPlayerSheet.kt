@@ -99,7 +99,6 @@ import com.theveloper.pixeltune.presentation.components.scoped.PlayerSheetPredic
 import com.theveloper.pixeltune.presentation.components.scoped.QueueSheetRuntimeEffects
 import com.theveloper.pixeltune.presentation.components.scoped.miniPlayerDismissHorizontalGesture
 import com.theveloper.pixeltune.presentation.components.scoped.playerSheetVerticalDragGesture
-import com.theveloper.pixeltune.presentation.components.scoped.rememberCastSheetState
 import com.theveloper.pixeltune.presentation.components.scoped.rememberFullPlayerVisualState
 import com.theveloper.pixeltune.presentation.components.scoped.rememberMiniPlayerDismissGestureHandler
 import com.theveloper.pixeltune.presentation.components.scoped.rememberPrewarmFullPlayer
@@ -166,16 +165,9 @@ fun UnifiedPlayerSheet(
 
     val currentPositionState = playerViewModel.currentPlaybackPosition.collectAsStateWithLifecycle()
 
-    val remotePositionState = playerViewModel.remotePosition.collectAsStateWithLifecycle()
-    // We observe isRemotePlaybackActive directly as switching modes is a major event
-    val isRemotePlaybackActive by playerViewModel.isRemotePlaybackActive.collectAsStateWithLifecycle()
-    
     // Position Provider: Reads state inside the lambda to prevent recomposition of UnifiedPlayerSheet
-    val positionToDisplayProvider = remember(isRemotePlaybackActive) {
-        {
-            if (isRemotePlaybackActive) remotePositionState.value
-            else currentPositionState.value
-        }
+    val positionToDisplayProvider = remember {
+        { currentPositionState.value }
     }
     
     val isFavorite by playerViewModel.isCurrentSongFavorite.collectAsStateWithLifecycle()
@@ -231,10 +223,8 @@ fun UnifiedPlayerSheet(
     ) { with(density) { configuration.screenHeightDp.dp.toPx() } }
     val miniPlayerContentHeightPx = remember { with(density) { MiniPlayerHeight.toPx() } }
 
-    val isCastConnecting by playerViewModel.isCastConnecting.collectAsStateWithLifecycle()
-
-    val showPlayerContentArea by remember(infrequentPlayerState.currentSong, isCastConnecting) {
-        derivedStateOf { infrequentPlayerState.currentSong != null || isCastConnecting }
+    val showPlayerContentArea by remember(infrequentPlayerState.currentSong) {
+        derivedStateOf { infrequentPlayerState.currentSong != null }
     }
 
     val playerContentExpansionFraction = playerViewModel.playerContentExpansionFraction
@@ -382,7 +372,6 @@ fun UnifiedPlayerSheet(
     val queueSheetController = queueSheetState.queueSheetController
     val onQueueSheetHeightPxChange = queueSheetState.onQueueSheetHeightPxChange
 
-    val castSheetState = rememberCastSheetState()
     val sheetBackAndDragState = rememberSheetBackAndDragState(
         showPlayerContentArea = showPlayerContentArea,
         currentSheetContentState = currentSheetContentState
@@ -443,8 +432,7 @@ fun UnifiedPlayerSheet(
         hideMiniPlayer = hideMiniPlayer,
         showQueueSheet = showQueueSheet,
         queueHiddenOffsetPx = queueHiddenOffsetPx,
-        screenHeightPx = screenHeightPx,
-        castSheetOpenFraction = castSheetState.castSheetOpenFraction
+        screenHeightPx = screenHeightPx
     )
     val internalIsKeyboardVisible = sheetOverlayState.internalIsKeyboardVisible
     val actuallyShowSheetContent = sheetOverlayState.actuallyShowSheetContent
@@ -455,13 +443,9 @@ fun UnifiedPlayerSheet(
     LaunchedEffect(showQueueSheet) {
         playerViewModel.updateQueueSheetVisibility(showQueueSheet)
     }
-    LaunchedEffect(castSheetState.showCastSheet) {
-        playerViewModel.updateCastSheetVisibility(castSheetState.showCastSheet)
-    }
     DisposableEffect(Unit) {
         onDispose {
             playerViewModel.updateQueueSheetVisibility(false)
-            playerViewModel.updateCastSheetVisibility(false)
         }
     }
 
@@ -595,7 +579,6 @@ fun UnifiedPlayerSheet(
                                 miniPlayerScheme = miniPlayerScheme,
                                 overallSheetTopCornerRadius = overallSheetTopCornerRadius,
                                 infrequentPlayerState = infrequentPlayerState,
-                                isCastConnecting = isCastConnecting,
                                 isPreparingPlayback = isPreparingPlayback,
                                 playerContentExpansionFraction = playerContentExpansionFraction,
                                 albumColorScheme = albumColorScheme,
@@ -613,8 +596,7 @@ fun UnifiedPlayerSheet(
                                 onShowQueueClicked = sheetActionHandlers.openQueueSheet,
                                 onQueueDragStart = sheetActionHandlers.beginQueueDrag,
                                 onQueueDrag = sheetActionHandlers.dragQueueBy,
-                                onQueueRelease = sheetActionHandlers.endQueueDrag,
-                                onShowCastClicked = castSheetState.openCastSheet
+                                onQueueRelease = sheetActionHandlers.endQueueDrag
                             )
                         }
                     }
@@ -632,7 +614,6 @@ fun UnifiedPlayerSheet(
                         fullPlayerLoadingTweaks = fullPlayerLoadingTweaks,
                         playerViewModel = playerViewModel,
                         currentPositionProvider = positionToDisplayProvider,
-                        isCastConnecting = isCastConnecting,
                         isFavorite = isFavorite,
                         onShowQueueClicked = sheetActionHandlers.openQueueSheet,
                         onQueueDragStart = sheetActionHandlers.beginQueueDrag,
@@ -675,15 +656,6 @@ fun UnifiedPlayerSheet(
             }
         }
 
-        UnifiedPlayerCastLayer(
-            showCastSheet = castSheetState.showCastSheet,
-            internalIsKeyboardVisible = internalIsKeyboardVisible,
-            albumColorScheme = albumColorScheme,
-            playerViewModel = playerViewModel,
-            onDismiss = castSheetState.dismissCastSheet,
-            onExpansionChanged = castSheetState.onCastExpansionChanged
-        )
-
         UnifiedPlayerSaveQueueLayer(
             pendingOverlay = pendingSaveQueueOverlay,
             onDismissOverlay = { sheetModalOverlayController.dismissSaveQueueOverlay() }
@@ -719,44 +691,6 @@ fun UnifiedPlayerSheet(
     }
 }
 
-@Composable
-private fun CastConnectingDialog() {
-    BasicAlertDialog(
-        onDismissRequest = {},
-        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
-    ) {
-        Surface(
-            modifier = Modifier.padding(24.dp),
-            shape = RoundedCornerShape(20.dp),
-            tonalElevation = 8.dp,
-            color = MaterialTheme.colorScheme.surface
-        ) {
-            Column(
-                modifier = Modifier
-                    .padding(horizontal = 20.dp, vertical = 24.dp)
-                    .widthIn(min = 220.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                CircularProgressIndicator()
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = "Mantén la app abierta",
-                        style = MaterialTheme.typography.titleMedium,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Estamos transfiriendo la reproducción. Puede tardar unos segundos en desconectarse o reconectarse.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 fun getNavigationBarHeight(): Dp {
@@ -768,7 +702,6 @@ fun getNavigationBarHeight(): Dp {
 internal fun MiniPlayerContentInternal(
     song: Song,
     isPlaying: Boolean,
-    isCastConnecting: Boolean,
     isPreparingPlayback: Boolean,
     onPlayPause: () -> Unit,
     onPrevious: () -> Unit,
@@ -777,7 +710,7 @@ internal fun MiniPlayerContentInternal(
     modifier: Modifier = Modifier
 ) {
     val hapticFeedback = LocalHapticFeedback.current
-    val controlsEnabled = !isCastConnecting && !isPreparingPlayback
+    val controlsEnabled = !isPreparingPlayback
 
     val previousInteraction = remember { MutableInteractionSource() }
     val playPauseInteraction = remember { MutableInteractionSource() }
@@ -803,13 +736,7 @@ internal fun MiniPlayerContentInternal(
                     } else null
                 )
             }
-            if (isCastConnecting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(24.dp),
-                    strokeWidth = 2.dp,
-                    color = LocalMaterialTheme.current.onPrimaryContainer
-                )
-            } else if (isPreparingPlayback) {
+            if (isPreparingPlayback) {
                 CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
             }
         }
@@ -834,7 +761,6 @@ internal fun MiniPlayerContentInternal(
 
             AutoScrollingText(
                 text = when {
-                    isCastConnecting -> "Connecting to device…"
                     isPreparingPlayback -> "Preparing playback…"
                     else -> song.title
                 },

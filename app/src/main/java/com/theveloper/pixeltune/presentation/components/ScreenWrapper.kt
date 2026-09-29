@@ -45,7 +45,6 @@ fun ScreenWrapper(
     val lifecycleOwner = LocalLifecycleOwner.current
     val playerSheetState by playerViewModel.sheetState.collectAsStateWithLifecycle()
     val isQueueSheetVisible by playerViewModel.isQueueSheetVisible.collectAsStateWithLifecycle()
-    val isCastSheetVisible by playerViewModel.isCastSheetVisible.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     
     // Lifecycle State
@@ -121,7 +120,7 @@ fun ScreenWrapper(
         content()
 
         val isPlayerExpanded = playerSheetState == PlayerSheetState.EXPANDED
-        val hasBlockingOverlay = isQueueSheetVisible || isCastSheetVisible
+        val hasBlockingOverlay = isQueueSheetVisible
         val canHandlePlayerBack = isPlayerExpanded && !hasBlockingOverlay
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {

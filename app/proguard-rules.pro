@@ -181,3 +181,9 @@
     public static int d(...);
     public static int i(...);
 }
+
+# slf4j-api (pulled in transitively by Ktor server used for local cloud-stream
+# proxies) performs optional runtime lookups of backend binders
+# (StaticLoggerBinder/StaticMDCBinder/StaticMarkerBinder) that are not present
+# on Android. They are optional reflections — safe to silence for R8 full mode.
+-dontwarn org.slf4j.impl.**

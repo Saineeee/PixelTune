@@ -34,8 +34,7 @@ internal fun rememberSheetOverlayState(
     hideMiniPlayer: Boolean,
     showQueueSheet: Boolean,
     queueHiddenOffsetPx: Float,
-    screenHeightPx: Float,
-    castSheetOpenFraction: Float
+    screenHeightPx: Float
 ): SheetOverlayState {
     var internalIsKeyboardVisible by remember { mutableStateOf(false) }
 
@@ -74,8 +73,8 @@ internal fun rememberSheetOverlayState(
         label = "queueVisualOpenFraction"
     )
 
-    val bottomSheetOpenFraction by remember(queueVisualOpenFraction, castSheetOpenFraction) {
-        derivedStateOf { max(queueVisualOpenFraction, castSheetOpenFraction) }
+    val bottomSheetOpenFraction by remember(queueVisualOpenFraction) {
+        derivedStateOf { queueVisualOpenFraction }
     }
 
     val queueScrimAlpha by remember(queueVisualOpenFraction) {

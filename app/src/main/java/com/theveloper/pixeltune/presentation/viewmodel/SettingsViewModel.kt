@@ -35,9 +35,6 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 import com.theveloper.pixeltune.data.preferences.NavBarStyle
-import com.theveloper.pixeltune.data.ai.GeminiModel
-import com.theveloper.pixeltune.data.ai.provider.AiClientFactory
-import com.theveloper.pixeltune.data.ai.provider.AiProvider
 import com.theveloper.pixeltune.data.preferences.LaunchTab
 import com.theveloper.pixeltune.data.model.Song
 import java.io.File
@@ -54,7 +51,6 @@ data class SettingsUiState(
     val libraryNavigationMode: String = LibraryNavigationMode.TAB_ROW,
     val launchTab: String = LaunchTab.HOME,
     val keepPlayingInBackground: Boolean = true,
-    val disableCastAutoplay: Boolean = false,
     val showQueueHistory: Boolean = true,
     val isCrossfadeEnabled: Boolean = false,
     val crossfadeDuration: Int = 2000,
@@ -63,9 +59,6 @@ data class SettingsUiState(
     val lyricsSourcePreference: LyricsSourcePreference = LyricsSourcePreference.EMBEDDED_FIRST,
     val autoScanLrcFiles: Boolean = false,
     val blockedDirectories: Set<String> = emptySet(),
-    val availableModels: List<GeminiModel> = emptyList(),
-    val isLoadingModels: Boolean = false,
-    val modelsFetchError: String? = null,
     val appRebrandDialogShown: Boolean = false,
     val fullPlayerLoadingTweaks: FullPlayerLoadingTweaks = FullPlayerLoadingTweaks(),
     val showPlayerFileInfo: Boolean = true,
@@ -129,7 +122,6 @@ private sealed interface SettingsUiUpdate {
     
     data class Group2(
         val keepPlayingInBackground: Boolean,
-        val disableCastAutoplay: Boolean,
         val showQueueHistory: Boolean,
         val isCrossfadeEnabled: Boolean,
         val crossfadeDuration: Int,
@@ -148,7 +140,6 @@ private sealed interface SettingsUiUpdate {
 class SettingsViewModel @Inject constructor(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val syncManager: SyncManager,
-    private val aiClientFactory: AiClientFactory,
     private val lyricsRepository: LyricsRepository,
     private val musicRepository: MusicRepository,
     private val backupManager: BackupManager,
@@ -161,27 +152,6 @@ class SettingsViewModel @Inject constructor(
     val streamingQuality: StateFlow<com.theveloper.pixeltune.data.preferences.StreamingQuality> = userPreferencesRepository.streamingQualityFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), com.theveloper.pixeltune.data.preferences.StreamingQuality.NORMAL)
 
-    val geminiApiKey: StateFlow<String> = userPreferencesRepository.geminiApiKey
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
-
-    val geminiModel: StateFlow<String> = userPreferencesRepository.geminiModel
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
-
-    val geminiSystemPrompt: StateFlow<String> = userPreferencesRepository.geminiSystemPrompt
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UserPreferencesRepository.DEFAULT_SYSTEM_PROMPT)
-
-    val deepseekSystemPrompt: StateFlow<String> = userPreferencesRepository.deepseekSystemPrompt
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UserPreferencesRepository.DEFAULT_DEEPSEEK_SYSTEM_PROMPT)
-    
-    // AI Provider Settings
-    val aiProvider: StateFlow<String> = userPreferencesRepository.aiProvider
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "GEMINI")
-    
-    val deepseekApiKey: StateFlow<String> = userPreferencesRepository.deepseekApiKey
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
-    
-    val deepseekModel: StateFlow<String> = userPreferencesRepository.deepseekModel
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
     private val fileExplorerStateHolder = FileExplorerStateHolder(userPreferencesRepository, viewModelScope, context)
 
@@ -258,15 +228,15 @@ class SettingsViewModel @Inject constructor(
                 SettingsUiUpdate.Group1(
                     appRebrandDialogShown = values[0] as Boolean,
                     appThemeMode = values[1] as String,
-                    playerThemePreference = values[2] as String,
-                    albumArtPaletteStyle = values[3] as AlbumArtPaletteStyle,
-                    mockGenresEnabled = values[4] as Boolean,
-                    navBarCornerRadius = values[5] as Int,
-                    navBarStyle = values[6] as String,
-                    libraryNavigationMode = values[7] as String,
-                    carouselStyle = values[8] as String,
-                    launchTab = values[9] as String,
-                    showPlayerFileInfo = values[10] as Boolean
+                    playerThemePreference = values[1] as String,
+                    albumArtPaletteStyle = values[2] as AlbumArtPaletteStyle,
+                    mockGenresEnabled = values[3] as Boolean,
+                    navBarCornerRadius = values[4] as Int,
+                    navBarStyle = values[5] as String,
+                    libraryNavigationMode = values[6] as String,
+                    carouselStyle = values[7] as String,
+                    launchTab = values[8] as String,
+                    showPlayerFileInfo = values[9] as Boolean
                 )
             }.collect { update ->
                 _uiState.update { state ->
@@ -291,7 +261,6 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             combine<Any?, SettingsUiUpdate.Group2>(
                 userPreferencesRepository.keepPlayingInBackgroundFlow,
-                userPreferencesRepository.disableCastAutoplayFlow,
                 userPreferencesRepository.showQueueHistoryFlow,
                 userPreferencesRepository.isCrossfadeEnabledFlow,
                 userPreferencesRepository.crossfadeDurationFlow,
@@ -306,24 +275,22 @@ class SettingsViewModel @Inject constructor(
             ) { values ->
                 SettingsUiUpdate.Group2(
                     keepPlayingInBackground = values[0] as Boolean,
-                    disableCastAutoplay = values[1] as Boolean,
-                    showQueueHistory = values[2] as Boolean,
-                    isCrossfadeEnabled = values[3] as Boolean,
-                    crossfadeDuration = values[4] as Int,
-                    persistentShuffleEnabled = values[5] as Boolean,
-                    folderBackGestureNavigation = values[6] as Boolean,
-                    lyricsSourcePreference = values[7] as LyricsSourcePreference,
-                    autoScanLrcFiles = values[8] as Boolean,
-                    blockedDirectories = @Suppress("UNCHECKED_CAST") (values[9] as Set<String>),
-                    hapticsEnabled = values[10] as Boolean,
-                    immersiveLyricsEnabled = values[11] as Boolean,
-                    immersiveLyricsTimeout = values[12] as Long
+                    showQueueHistory = values[1] as Boolean,
+                    isCrossfadeEnabled = values[2] as Boolean,
+                    crossfadeDuration = values[3] as Int,
+                    persistentShuffleEnabled = values[4] as Boolean,
+                    folderBackGestureNavigation = values[5] as Boolean,
+                    lyricsSourcePreference = values[6] as LyricsSourcePreference,
+                    autoScanLrcFiles = values[7] as Boolean,
+                    blockedDirectories = @Suppress("UNCHECKED_CAST") (values[8] as Set<String>),
+                    hapticsEnabled = values[9] as Boolean,
+                    immersiveLyricsEnabled = values[10] as Boolean,
+                    immersiveLyricsTimeout = values[11] as Long
                 )
             }.collect { update ->
                 _uiState.update { state ->
                     state.copy(
                         keepPlayingInBackground = update.keepPlayingInBackground,
-                        disableCastAutoplay = update.disableCastAutoplay,
                         showQueueHistory = update.showQueueHistory,
                         isCrossfadeEnabled = update.isCrossfadeEnabled,
                         crossfadeDuration = update.crossfadeDuration,
@@ -526,11 +493,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun setDisableCastAutoplay(disabled: Boolean) {
-        viewModelScope.launch {
-            userPreferencesRepository.setDisableCastAutoplay(disabled)
-        }
-    }
 
     fun setShowQueueHistory(show: Boolean) {
         viewModelScope.launch {
@@ -571,6 +533,24 @@ class SettingsViewModel @Inject constructor(
     fun setAutoScanLrcFiles(enabled: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setAutoScanLrcFiles(enabled)
+        }
+    }
+
+    fun setNavBarCornerRadius(radius: Int) {
+        viewModelScope.launch {
+            userPreferencesRepository.setNavBarCornerRadius(radius)
+        }
+    }
+
+    // F-Droid privacy: online artist artwork (Deezer public API) is strictly
+    // opt-in and disabled by default.
+    val onlineArtistArtworkEnabled: StateFlow<Boolean> =
+        userPreferencesRepository.onlineArtistArtworkEnabled
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setOnlineArtistArtworkEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setOnlineArtistArtworkEnabled(enabled)
         }
     }
 
@@ -720,167 +700,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun onGeminiApiKeyChange(apiKey: String) {
-        viewModelScope.launch {
-            userPreferencesRepository.setGeminiApiKey(apiKey)
-
-            // Fetch models when API key changes and is not empty
-            if (apiKey.isNotBlank()) {
-                fetchAvailableModels(apiKey, "GEMINI")
-            } else {
-                // Clear models if API key is empty
-                _uiState.update {
-                    it.copy(
-                        availableModels = emptyList(),
-                        modelsFetchError = null
-                    )
-                }
-                userPreferencesRepository.setGeminiModel("")
-            }
-        }
-    }
-    
-    fun onAiProviderChange(provider: String) {
-        viewModelScope.launch {
-            userPreferencesRepository.setAiProvider(provider)
-
-            // Fetch models for the selected provider
-            val apiKey = when (provider) {
-                "GEMINI" -> geminiApiKey.value
-                "DEEPSEEK" -> deepseekApiKey.value
-                else -> ""
-            }
-
-            _uiState.update {
-                it.copy(
-                    availableModels = emptyList(),
-                    modelsFetchError = null
-                )
-            }
-
-            if (apiKey.isNotBlank()) {
-                fetchAvailableModels(apiKey, provider)
-            }
-        }
-    }
-    
-    fun onDeepseekApiKeyChange(apiKey: String) {
-        viewModelScope.launch {
-            userPreferencesRepository.setDeepseekApiKey(apiKey)
-            
-            // Fetch models when API key changes and is not empty
-            if (apiKey.isNotBlank() && aiProvider.value == "DEEPSEEK") {
-                fetchAvailableModels(apiKey, "DEEPSEEK")
-            } else if (apiKey.isBlank()) {
-                // Clear models if API key is empty
-                _uiState.update {
-                    it.copy(
-                        availableModels = emptyList(),
-                        modelsFetchError = null
-                    )
-                }
-                userPreferencesRepository.setDeepseekModel("")
-            }
-        }
-    }
-    
-    fun onDeepseekModelChange(model: String) {
-        viewModelScope.launch {
-            userPreferencesRepository.setDeepseekModel(model)
-        }
-    }
-
-    fun onDeepseekSystemPromptChange(prompt: String) {
-        viewModelScope.launch {
-            userPreferencesRepository.setDeepseekSystemPrompt(prompt)
-        }
-    }
-
-    fun resetDeepseekSystemPrompt() {
-        viewModelScope.launch {
-            userPreferencesRepository.resetDeepseekSystemPrompt()
-        }
-    }
-
-    fun fetchAvailableModels(apiKey: String, providerName: String = aiProvider.value) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingModels = true, modelsFetchError = null) }
-
-            val result = runCatching {
-                val provider = AiProvider.fromString(providerName)
-                val client = aiClientFactory.createClient(provider, apiKey)
-                client.getAvailableModels(apiKey).map { modelName ->
-                    GeminiModel(name = modelName, displayName = formatModelDisplayName(modelName))
-                }
-            }
-
-            result.onSuccess { rawModels ->
-                val models = rawModels.distinctBy { it.name }
-                _uiState.update {
-                    it.copy(
-                        availableModels = models,
-                        isLoadingModels = false,
-                        modelsFetchError = null
-                    )
-                }
-
-                // Auto-select first model if none is selected
-                val currentModel = when (providerName) {
-                    "DEEPSEEK" -> userPreferencesRepository.deepseekModel.first()
-                    else -> userPreferencesRepository.geminiModel.first()
-                }
-                if (currentModel.isEmpty() && models.isNotEmpty()) {
-                    when (providerName) {
-                        "DEEPSEEK" -> userPreferencesRepository.setDeepseekModel(models.first().name)
-                        else -> userPreferencesRepository.setGeminiModel(models.first().name)
-                    }
-                }
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(
-                        isLoadingModels = false,
-                        modelsFetchError = error.message ?: "Failed to fetch models"
-                    )
-                }
-            }
-        }
-    }
-
-    private fun formatModelDisplayName(modelName: String): String {
-        return modelName
-            .removePrefix("models/")
-            .replace('-', ' ')
-            .replace('_', ' ')
-            .split(' ')
-            .filter { it.isNotBlank() }
-            .joinToString(" ") { token ->
-                token.lowercase().replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-            }
-    }
-
-    fun onGeminiModelChange(modelName: String) {
-        viewModelScope.launch {
-            userPreferencesRepository.setGeminiModel(modelName)
-        }
-    }
-
-    fun setNavBarCornerRadius(radius: Int) {
-        viewModelScope.launch {
-            userPreferencesRepository.setNavBarCornerRadius(radius)
-        }
-    }
-
-    fun onGeminiSystemPromptChange(prompt: String) {
-        viewModelScope.launch {
-            userPreferencesRepository.setGeminiSystemPrompt(prompt)
-        }
-    }
-
-    fun resetGeminiSystemPrompt() {
-        viewModelScope.launch {
-            userPreferencesRepository.resetGeminiSystemPrompt()
-        }
-    }
 
 
 

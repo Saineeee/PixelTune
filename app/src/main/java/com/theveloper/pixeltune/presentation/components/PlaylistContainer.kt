@@ -415,15 +415,6 @@ fun PlaylistItem(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (playlist.isAiGenerated) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Icon(
-                            painter = painterResource(R.drawable.gemini_ai),
-                            contentDescription = "AI Generated",
-                            tint = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
                     if (playlist.source == "NETEASE") {
                         Spacer(modifier = Modifier.width(8.dp))
                         Icon(
@@ -518,8 +509,7 @@ fun PlaylistItem(
 @Composable
 fun CreatePlaylistDialogRedesigned(
     onDismiss: () -> Unit,
-    onCreate: (String) -> Unit,
-    onGenerateClick: () -> Unit
+    onCreate: (String) -> Unit
 ) {
     var playlistName by remember { mutableStateOf("") }
 
@@ -565,28 +555,6 @@ fun CreatePlaylistDialogRedesigned(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    FilledTonalButton(
-                        onClick = {
-                            onDismiss()
-                            onGenerateClick()
-                        },
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                        ),
-                        contentPadding = PaddingValues(vertical = 12.dp)
-                    ) {
-                        Icon(
-                            painter = painterResource(R.drawable.generate_playlist_ai),
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Generate with AI")
-                    }
-
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End,

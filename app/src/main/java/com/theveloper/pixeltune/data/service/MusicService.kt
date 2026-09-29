@@ -34,13 +34,6 @@ import androidx.media3.session.SessionResult
 import coil.imageLoader
 import coil.request.ImageRequest
 import coil.size.Size
-import com.google.android.gms.cast.MediaMetadata as CastMediaMetadata
-import com.google.android.gms.cast.MediaStatus
-import com.google.android.gms.cast.framework.CastContext
-import com.google.android.gms.cast.framework.CastSession
-import com.google.android.gms.cast.framework.SessionManager
-import com.google.android.gms.cast.framework.SessionManagerListener
-import com.google.android.gms.cast.framework.media.RemoteMediaClient
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
@@ -65,7 +58,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.ByteArrayOutputStream
@@ -80,9 +72,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import com.theveloper.pixeltune.data.preferences.ThemePreference
 import com.theveloper.pixeltune.data.service.auto.AutoMediaBrowseTree
-import com.theveloper.pixeltune.data.service.wear.WearStatePublisher
 import com.theveloper.pixeltune.presentation.viewmodel.ColorSchemePair
-import com.theveloper.pixeltune.shared.WearIntents
 import com.theveloper.pixeltune.utils.CloudUriUtils
 import com.theveloper.pixeltune.utils.MediaItemBuilder
 import com.theveloper.pixeltune.data.preferences.LastPlaybackSnapshot
@@ -112,8 +102,6 @@ class MusicService : MediaLibraryService() {
     lateinit var colorSchemeProcessor: ColorSchemeProcessor
     @Inject
     lateinit var autoMediaBrowseTree: AutoMediaBrowseTree
-    @Inject
-    lateinit var wearStatePublisher: WearStatePublisher
     @Inject
     lateinit var youtubeRepository: com.theveloper.pixeltune.data.youtube.YouTubeRepository
     @Inject
@@ -159,10 +147,6 @@ class MusicService : MediaLibraryService() {
         getSystemService(Context.ALARM_SERVICE) as AlarmManager
     }
     private var endOfTrackTimerSongId: String? = null
-    private var castSessionManager: SessionManager? = null
-    private var castSessionManagerListener: SessionManagerListener<CastSession>? = null
-    private var castRemoteClientCallback: RemoteMediaClient.Callback? = null
-    private var observedCastSession: CastSession? = null
 
     // --- Endless Radio (IMPROVE: never-ending queue) ---
     // One in-flight recommendation fetch at a time (rapid skips must not
@@ -357,6 +341,9 @@ class MusicService : MediaLibraryService() {
         private const val RADIO_MAX_QUEUE_ITEMS = 120
         private const val RADIO_KEEP_PLAYED_BEHIND = 20
         private const val RADIO_RECENT_IDS_MEMORY = 60
+
+        /** Opens the main player UI (also declared in the manifest intent filter). */
+        const val ACTION_OPEN_PLAYER = "com.theveloper.pixeltune.action.OPEN_PLAYER"
     }
 
     override fun onCreate() {
@@ -430,7 +417,6 @@ class MusicService : MediaLibraryService() {
         }
 
         controller.initialize()
-        initializeCastWearSync()
 
         // Restore equalizer state from preferences and attach to audio session.
         // This ensures the equalizer is active even before the user opens the EQ screen.
@@ -1546,108 +1532,6 @@ class MusicService : MediaLibraryService() {
         player.volume = clampedVolume
     }
 
-    private fun initializeCastWearSync() {
-        val sessionManager = runCatching {
-            CastContext.getSharedInstance(this).sessionManager
-        }.getOrElse { error ->
-            Timber.tag(TAG).w(error, "CastContext unavailable; skipping cast wear sync setup")
-            return
-        }
-        castSessionManager = sessionManager
-
-        val remoteCallback = object : RemoteMediaClient.Callback() {
-            override fun onStatusUpdated() {
-                requestWidgetFullUpdate(force = false)
-            }
-
-            override fun onMetadataUpdated() {
-                requestWidgetFullUpdate(force = false)
-            }
-
-            override fun onQueueStatusUpdated() {
-                requestWidgetFullUpdate(force = false)
-            }
-
-            override fun onPreloadStatusUpdated() {
-                requestWidgetFullUpdate(force = false)
-            }
-        }
-        castRemoteClientCallback = remoteCallback
-
-        val sessionListener = object : SessionManagerListener<CastSession> {
-            override fun onSessionStarted(session: CastSession, sessionId: String) {
-                attachCastRemoteClient(session)
-            }
-
-            override fun onSessionResumed(session: CastSession, wasSuspended: Boolean) {
-                attachCastRemoteClient(session)
-            }
-
-            override fun onSessionEnded(session: CastSession, error: Int) {
-                if (observedCastSession === session) {
-                    attachCastRemoteClient(null)
-                } else {
-                    requestWidgetFullUpdate(force = true)
-                }
-            }
-
-            override fun onSessionStarting(session: CastSession) = Unit
-            override fun onSessionStartFailed(session: CastSession, error: Int) = requestWidgetFullUpdate(force = true)
-            override fun onSessionEnding(session: CastSession) = Unit
-            override fun onSessionResuming(session: CastSession, sessionId: String) = Unit
-            override fun onSessionResumeFailed(session: CastSession, error: Int) = requestWidgetFullUpdate(force = true)
-            override fun onSessionSuspended(session: CastSession, reason: Int) = requestWidgetFullUpdate(force = true)
-        }
-        castSessionManagerListener = sessionListener
-        runCatching {
-            sessionManager.addSessionManagerListener(sessionListener, CastSession::class.java)
-        }.onFailure { e ->
-            Timber.tag(TAG).w(e, "Failed to register Cast session listener")
-        }
-
-        attachCastRemoteClient(sessionManager.currentCastSession)
-    }
-
-    private fun attachCastRemoteClient(session: CastSession?) {
-        if (observedCastSession === session) return
-
-        observedCastSession?.remoteMediaClient?.let { oldClient ->
-            castRemoteClientCallback?.let { callback ->
-                runCatching { oldClient.unregisterCallback(callback) }
-            }
-        }
-
-        observedCastSession = session
-        session?.remoteMediaClient?.let { remoteClient ->
-            castRemoteClientCallback?.let { callback ->
-                runCatching { remoteClient.registerCallback(callback) }
-            }
-            remoteClient.requestStatus()
-        }
-        requestWidgetFullUpdate(force = true)
-    }
-
-    private fun stopCastWearSync() {
-        observedCastSession?.remoteMediaClient?.let { remoteClient ->
-            castRemoteClientCallback?.let { callback ->
-                runCatching { remoteClient.unregisterCallback(callback) }
-            }
-        }
-        observedCastSession = null
-
-        val listener = castSessionManagerListener
-        val manager = castSessionManager
-        if (listener != null && manager != null) {
-            runCatching { manager.removeSessionManagerListener(listener, CastSession::class.java) }
-                .onFailure { e ->
-                    Timber.tag(TAG).w(e, "Failed to remove Cast session listener")
-                }
-        }
-        castSessionManagerListener = null
-        castRemoteClientCallback = null
-        castSessionManager = null
-    }
-
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = mediaSession?.player
         val allowBackground = keepPlayingInBackground
@@ -1684,8 +1568,6 @@ class MusicService : MediaLibraryService() {
         // cancelled below).
         persistEngineSnapshotBeforeTeardown()
 
-        stopCastWearSync()
-        wearStatePublisher.clearState()
         replayGainJob?.cancel()
         radioFetchJob?.cancel()
         radioRetryJob?.cancel()
@@ -1704,7 +1586,7 @@ class MusicService : MediaLibraryService() {
     }
 
     private fun getOpenAppPendingIntent(): PendingIntent {
-        val intent = Intent(WearIntents.ACTION_OPEN_PLAYER).apply {
+        val intent = Intent(ACTION_OPEN_PLAYER).apply {
             `package` = packageName
             addCategory(Intent.CATEGORY_DEFAULT)
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -1746,116 +1628,17 @@ class MusicService : MediaLibraryService() {
         }
     }
 
-    private data class RemotePlaybackSnapshot(
-        val songId: String?,
-        val title: String,
-        val artist: String,
-        val artworkUri: Uri?,
-        val isPlaying: Boolean,
-        val currentPositionMs: Long,
-        val totalDurationMs: Long,
-        val repeatMode: Int,
-        val isShuffleEnabled: Boolean,
-    )
-
-    private fun resolveCastRemoteSnapshot(): RemotePlaybackSnapshot? {
-        val remoteClient = observedCastSession?.remoteMediaClient
-            ?: castSessionManager?.currentCastSession?.remoteMediaClient
-            ?: return null
-
-        val mediaStatus = remoteClient.mediaStatus ?: return null
-        if (mediaStatus.playerState == MediaStatus.PLAYER_STATE_UNKNOWN) {
-            return null
-        }
-
-        val currentItem = mediaStatus.getQueueItemById(mediaStatus.currentItemId)
-        val mediaInfo = currentItem?.media ?: remoteClient.mediaInfo
-        val metadata = mediaInfo?.metadata
-        if (metadata == null && currentItem == null) {
-            return null
-        }
-
-        val songId = currentItem
-            ?.customData
-            ?.optString("songId")
-            ?.takeIf { it.isNotBlank() }
-
-        val durationHintMs = currentItem
-            ?.customData
-            ?.optLong("durationHintMs", -1L)
-            ?.takeIf { it > 0L }
-
-        val streamDurationMs = remoteClient.streamDuration.takeIf { it > 0L }
-        val effectiveDurationMs = (streamDurationMs ?: durationHintMs ?: 0L).coerceAtLeast(0L)
-        val imageUri = metadata
-            ?.images
-            ?.firstOrNull()
-            ?.url
-            ?.toString()
-            ?.takeIf { it.isNotBlank() }
-            ?.let { Uri.parse(it) }
-
-        val mappedRepeatMode = when (mediaStatus.queueRepeatMode) {
-            MediaStatus.REPEAT_MODE_REPEAT_SINGLE -> Player.REPEAT_MODE_ONE
-            MediaStatus.REPEAT_MODE_REPEAT_ALL,
-            MediaStatus.REPEAT_MODE_REPEAT_ALL_AND_SHUFFLE -> Player.REPEAT_MODE_ALL
-            else -> Player.REPEAT_MODE_OFF
-        }
-
-        return RemotePlaybackSnapshot(
-            songId = songId,
-            title = metadata?.getString(CastMediaMetadata.KEY_TITLE).orEmpty(),
-            artist = metadata?.getString(CastMediaMetadata.KEY_ARTIST).orEmpty(),
-            artworkUri = imageUri,
-            isPlaying = mediaStatus.playerState == MediaStatus.PLAYER_STATE_PLAYING,
-            currentPositionMs = remoteClient.approximateStreamPosition.coerceAtLeast(0L),
-            totalDurationMs = effectiveDurationMs,
-            repeatMode = mappedRepeatMode,
-            isShuffleEnabled = mediaStatus.queueRepeatMode == MediaStatus.REPEAT_MODE_REPEAT_ALL_AND_SHUFFLE,
-        )
-    }
-
-    private suspend fun resolveCurrentMediaIdForWear(): String? {
-        val remoteSongId = resolveCastRemoteSnapshot()?.songId
-        if (!remoteSongId.isNullOrBlank()) {
-            return remoteSongId
-        }
-        val player = engine.masterPlayer
-        return withContext(Dispatchers.Main) { player.currentMediaItem?.mediaId }
-    }
-
     private suspend fun processWidgetUpdateInternal() {
         // PERF(battery): a full update decodes album art for the current song
-        // + 4 queue items (buildPlayerInfo), serializes PlayerInfo and writes
-        // Glance state for 4 widget classes plus the Wear DataLayer item —
-        // per track change this ran up to 3x. When the user has NO pinned
-        // widgets AND no currently-connected Wear node, there is no consumer
-        // for any of that work: skip the pipeline entirely.
-        //
-        // Wear note: a paired-but-disconnected watch will simply receive the
-        // next event's state when it matters (any play/pause/track change
-        // re-publishes); connected watches are fully unaffected.
+        // + 4 queue items (buildPlayerInfo) and serializes PlayerInfo into
+        // Glance state for the 4 widget classes. When the user has NO pinned
+        // widgets there is no consumer for any of that work: skip the
+        // pipeline entirely.
         if (!hasAnyPinnedGlanceWidgets()) {
-            val hasConnectedNode = try {
-                com.google.android.gms.wearable.Wearable
-                    .getNodeClient(applicationContext)
-                    .connectedNodes
-                    .await()
-                    .isNotEmpty()
-            } catch (e: Exception) {
-                // GMS unavailable — fall back to running the pipeline rather
-                // than dropping Wear updates.
-                true
-            }
-            if (!hasConnectedNode) {
-                return
-            }
+            return
         }
         val playerInfo = buildPlayerInfo()
-        val currentMediaId = resolveCurrentMediaIdForWear()
         updateGlanceWidgets(playerInfo)
-        // Publish state to Wear OS watch
-        wearStatePublisher.publishState(currentMediaId, playerInfo)
     }
 
     private suspend fun hasAnyPinnedGlanceWidgets(): Boolean {
@@ -1900,29 +1683,6 @@ class MusicService : MediaLibraryService() {
         var mediaId = currentItem?.mediaId
         var artworkUri = currentItem?.mediaMetadata?.artworkUri
         var artworkData = currentItem?.mediaMetadata?.artworkData
-
-        resolveCastRemoteSnapshot()?.let { remote ->
-            if (!remote.title.isNullOrBlank()) {
-                title = remote.title
-            }
-            if (!remote.artist.isNullOrBlank()) {
-                artist = remote.artist
-            }
-            if (!remote.songId.isNullOrBlank()) {
-                mediaId = remote.songId
-            }
-            if (remote.artworkUri != null) {
-                artworkUri = remote.artworkUri
-                artworkData = null
-            }
-            isPlaying = remote.isPlaying
-            currentPosition = remote.currentPositionMs
-            if (remote.totalDurationMs > 0L) {
-                totalDuration = remote.totalDurationMs
-            }
-            repeatMode = remote.repeatMode
-            shuffleEnabled = remote.isShuffleEnabled
-        }
 
         val (artBytes, artUriString) = getAlbumArtForWidget(artworkData, artworkUri)
 

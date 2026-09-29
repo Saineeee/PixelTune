@@ -45,7 +45,6 @@ internal fun BoxScope.UnifiedPlayerMiniAndFullLayers(
     miniPlayerScheme: ColorScheme?,
     overallSheetTopCornerRadius: Dp,
     infrequentPlayerState: StablePlayerState,
-    isCastConnecting: Boolean,
     isPreparingPlayback: Boolean,
     playerContentExpansionFraction: Animatable<Float, AnimationVector1D>,
     albumColorScheme: ColorScheme,
@@ -64,8 +63,7 @@ internal fun BoxScope.UnifiedPlayerMiniAndFullLayers(
     onShowQueueClicked: () -> Unit,
     onQueueDragStart: () -> Unit,
     onQueueDrag: (Float) -> Unit,
-    onQueueRelease: (Float, Float) -> Unit,
-    onShowCastClicked: () -> Unit
+    onQueueRelease: (Float, Float) -> Unit
 ) {
     currentSong?.let { currentSongNonNull ->
         miniPlayerScheme?.let { readyScheme ->
@@ -92,7 +90,6 @@ internal fun BoxScope.UnifiedPlayerMiniAndFullLayers(
                         song = currentSongNonNull,
                         cornerRadiusAlb = (overallSheetTopCornerRadius.value * 0.5).dp,
                         isPlaying = infrequentPlayerState.isPlaying,
-                        isCastConnecting = isCastConnecting,
                         isPreparingPlayback = isPreparingPlayback,
                         onPlayPause = { playerViewModel.playPause() },
                         onPrevious = { playerViewModel.previousSong() },
@@ -201,7 +198,6 @@ internal fun BoxScope.UnifiedPlayerMiniAndFullLayers(
                         isShuffleEnabledProvider = isShuffleEnabledProvider,
                         totalDurationProvider = totalDurationProvider,
                         lyricsProvider = lyricsProvider,
-                        isCastConnecting = isCastConnecting,
                         isFavoriteProvider = isFavoriteProvider,
                         onPlayPause = onPlayPause,
                         onSeek = onSeek,
@@ -212,7 +208,6 @@ internal fun BoxScope.UnifiedPlayerMiniAndFullLayers(
                         onQueueDragStart = onQueueDragStart,
                         onQueueDrag = onQueueDrag,
                         onQueueRelease = onQueueRelease,
-                        onShowCastClicked = onShowCastClicked,
                         onShuffleToggle = onShuffleToggle,
                         onRepeatToggle = onRepeatToggle,
                         onFavoriteToggle = onFavoriteToggle
@@ -237,7 +232,6 @@ internal fun UnifiedPlayerPrewarmLayer(
     fullPlayerLoadingTweaks: FullPlayerLoadingTweaks,
     playerViewModel: PlayerViewModel,
     currentPositionProvider: () -> Long,
-    isCastConnecting: Boolean,
     isFavorite: Boolean,
     onShowQueueClicked: () -> Unit,
     onQueueDragStart: () -> Unit,
@@ -274,7 +268,6 @@ internal fun UnifiedPlayerPrewarmLayer(
                     isShuffleEnabledProvider = { infrequentPlayerState.isShuffleEnabled },
                     totalDurationProvider = { infrequentPlayerState.totalDuration },
                     lyricsProvider = { infrequentPlayerState.lyrics },
-                    isCastConnecting = isCastConnecting,
                     isFavoriteProvider = { isFavorite },
                     onShowQueueClicked = onShowQueueClicked,
                     onQueueDragStart = onQueueDragStart,
@@ -285,7 +278,6 @@ internal fun UnifiedPlayerPrewarmLayer(
                     onNext = playerViewModel::nextSong,
                     onPrevious = playerViewModel::previousSong,
                     onCollapse = {},
-                    onShowCastClicked = {},
                     onShuffleToggle = { playerViewModel.toggleShuffle() },
                     onRepeatToggle = playerViewModel::cycleRepeatMode,
                     onFavoriteToggle = playerViewModel::toggleFavorite

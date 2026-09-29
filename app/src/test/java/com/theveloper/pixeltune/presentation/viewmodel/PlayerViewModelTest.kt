@@ -68,15 +68,12 @@ class PlayerViewModelTest {
     private val mockListeningStatsTracker: ListeningStatsTracker = mockk(relaxed = true)
     private val mockDailyMixStateHolder: DailyMixStateHolder = mockk(relaxed = true)
     private val mockLyricsStateHolder: LyricsStateHolder = mockk(relaxed = true)
-    private val mockCastStateHolder: CastStateHolder = mockk(relaxed = true)
     private val mockQueueStateHolder: QueueStateHolder = mockk(relaxed = true)
     private val mockPlaybackStateHolder: PlaybackStateHolder = mockk(relaxed = true)
     private val mockConnectivityStateHolder: ConnectivityStateHolder = mockk(relaxed = true)
     private val mockSleepTimerStateHolder: SleepTimerStateHolder = mockk(relaxed = true)
     private val mockSearchStateHolder: SearchStateHolder = mockk(relaxed = true)
-    private val mockAiStateHolder: AiStateHolder = mockk(relaxed = true)
     private val mockLibraryStateHolder: LibraryStateHolder = mockk(relaxed = true)
-    private val mockCastTransferStateHolder: CastTransferStateHolder = mockk(relaxed = true)
     private val mockMetadataEditStateHolder: MetadataEditStateHolder = mockk(relaxed = true)
     private val mockDownloadedSongsRepository: com.theveloper.pixeltune.data.downloads.DownloadedSongsRepository = mockk(relaxed = true)
     private val mockExternalMediaStateHolder: ExternalMediaStateHolder = mockk(relaxed = true)
@@ -93,7 +90,6 @@ class PlayerViewModelTest {
     private val _searchHistoryFlow = MutableStateFlow<ImmutableList<SearchHistoryItem>>(persistentListOf())
     private val _searchResultsFlow = MutableStateFlow<ImmutableList<SearchResultItem>>(persistentListOf())
     private val _selectedSearchFilterFlow = MutableStateFlow(SearchFilterType.ALL)
-    private val _castSessionFlow = MutableStateFlow<com.google.android.gms.cast.framework.CastSession?>(null)
 
     @BeforeEach
     fun setUp() {
@@ -116,7 +112,6 @@ class PlayerViewModelTest {
         coEvery { mockUserPreferencesRepository.navBarStyleFlow } returns flowOf("Default")
         coEvery { mockUserPreferencesRepository.libraryNavigationModeFlow } returns flowOf("TabRow")
         coEvery { mockUserPreferencesRepository.carouselStyleFlow } returns flowOf("NoPeek")
-        coEvery { mockUserPreferencesRepository.geminiApiKey } returns flowOf("")
         coEvery { mockUserPreferencesRepository.fullPlayerLoadingTweaksFlow } returns flowOf(com.theveloper.pixeltune.data.preferences.FullPlayerLoadingTweaks())
         coEvery { mockUserPreferencesRepository.tapBackgroundClosesPlayerFlow } returns flowOf(true)
         coEvery { mockUserPreferencesRepository.hapticsEnabledFlow } returns flowOf(true)
@@ -148,16 +143,6 @@ class PlayerViewModelTest {
         every { mockSearchStateHolder.updateSearchFilter(any()) } just runs
         every { mockSearchStateHolder.initialize(any()) } just runs // Added missing initialize mock
 
-        every { mockAiStateHolder.showAiPlaylistSheet } returns MutableStateFlow(false)
-        every { mockAiStateHolder.isGeneratingAiPlaylist } returns MutableStateFlow(false)
-        every { mockAiStateHolder.aiError } returns MutableStateFlow<String?>(null)
-        every { mockAiStateHolder.isGeneratingMetadata } returns MutableStateFlow(false)
-        every { mockAiStateHolder.initialize(any(), any(), any(), any(), any(), any()) } just runs
- 
-        every { mockCastStateHolder.castSession } returns _castSessionFlow
-        every { mockCastStateHolder.startDiscovery() } just runs // Added missing mock
-        every { mockCastStateHolder.selectedRoute } returns MutableStateFlow<androidx.mediarouter.media.MediaRouter.RouteInfo?>(null) // Added missing mock
-
         // Connectivity mocks removed as properties differ from expectations
         every { mockConnectivityStateHolder.initialize() } just runs
         every { mockConnectivityStateHolder.offlinePlaybackBlocked } returns MutableSharedFlow()
@@ -168,7 +153,6 @@ class PlayerViewModelTest {
 
         every { mockSleepTimerStateHolder.initialize(any(), any(), any(), any(), any()) } just runs // Added missing mock
         every { mockLibraryStateHolder.initialize(any()) } just runs // Added missing mock
-        every { mockCastTransferStateHolder.initialize(any(), any(), any(), any(), any(), any(), any(), any(), any()) } just runs
         
         // Mock MusicRepository Basic Returns
         every { mockMusicRepository.getPaginatedSongs(any(), any()) } returns flowOf(androidx.paging.PagingData.empty())
@@ -207,15 +191,12 @@ class PlayerViewModelTest {
             mockListeningStatsTracker,
             mockDailyMixStateHolder,
             mockLyricsStateHolder,
-            mockCastStateHolder,
             mockQueueStateHolder,
             mockPlaybackStateHolder,
             mockConnectivityStateHolder,
             mockSleepTimerStateHolder,
             mockSearchStateHolder,
-            mockAiStateHolder,
             mockLibraryStateHolder,
-            mockCastTransferStateHolder,
             mockMetadataEditStateHolder,
             mockExternalMediaStateHolder,
             mockThemeStateHolder,
@@ -359,13 +340,11 @@ class PlayerViewModelTest {
             // Mock queue preparation to return a valid shuffled queue and start song
             coEvery { mockQueueStateHolder.prepareShuffledQueueSuspending(randomSongs, any()) } returns Pair(randomSongs, song2)
             
-            // We can't easily spy on internal methods like internalPlaySongs, 
+            // We can't easily spy on internal methods like internalPlaySongs,
             // but we can verify dependencies called by it.
-            // internalPlaySongs calls dualPlayerEngine.masterPlayer.setMediaItems if no cast session
+            // internalPlaySongs calls dualPlayerEngine.masterPlayer.setMediaItems
             val mockPlayer = mockk<androidx.media3.common.Player>(relaxed = true)
             every { mockDualPlayerEngine.masterPlayer } returns mockPlayer
-            // Ensure no cast session is active so it plays locally
-            every { mockCastStateHolder.castSession.value } returns null
 
             // Act
             playerViewModel.shuffleAllSongs()

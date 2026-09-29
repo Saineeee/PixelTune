@@ -72,10 +72,8 @@ import com.theveloper.pixeltune.utils.shapes.RoundedStarShape
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
 import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.theveloper.pixeltune.data.ai.SongMetadata
 import com.theveloper.pixeltune.data.media.CoverArtUpdate
 import com.theveloper.pixeltune.ui.theme.MontserratFamily
-import com.theveloper.pixeltune.presentation.viewmodel.SongInfoBottomSheetViewModel
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -98,7 +96,6 @@ fun SongInfoBottomSheet(
     onNavigateToAlbum: () -> Unit,
     onNavigateToArtist: () -> Unit,
     onEditSong: (title: String, artist: String, album: String, genre: String, lyrics: String, trackNumber: Int, coverArtUpdate: CoverArtUpdate?) -> Unit,
-    generateAiMetadata: suspend (List<String>) -> Result<SongMetadata>,
     removeFromListTrigger: () -> Unit,
     // IMPROVE(offline-downloads): status of this song's offline download.
     // Defaults keep every existing call site compiling unchanged; wired
@@ -109,16 +106,6 @@ fun SongInfoBottomSheet(
 ) {
     val context = LocalContext.current
     var showEditSheet by remember { mutableStateOf(false) }
-    val songInfoViewModel: SongInfoBottomSheetViewModel = hiltViewModel()
-    val isPixelTuneWatchAvailable by songInfoViewModel.isPixelTuneWatchAvailable.collectAsState()
-    val isSendingToWatch by songInfoViewModel.isSendingToWatch.collectAsState()
-    val canSendToWatch = remember(song.path, song.contentUriString) {
-        songInfoViewModel.isLocalSongForWatchTransfer(song)
-    }
-
-    LaunchedEffect(song.id) {
-        songInfoViewModel.refreshWatchAvailability()
-    }
 
     val evenCornerRadiusElems = 26.dp
 
@@ -497,34 +484,6 @@ fun SongInfoBottomSheet(
                                     }
                                 }
 
-                                if (isPixelTuneWatchAvailable && canSendToWatch) {
-                                    item {
-                                        FilledTonalButton(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .heightIn(min = 66.dp),
-                                            colors = ButtonDefaults.filledTonalButtonColors(
-                                                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                            ),
-                                            shape = CircleShape,
-                                            enabled = !isSendingToWatch,
-                                            onClick = {
-                                                songInfoViewModel.sendSongToWatch(song) { message ->
-                                                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-                                                }
-                                            }
-                                        ) {
-                                            Icon(
-                                                Icons.Rounded.Share,
-                                                contentDescription = "Send to watch"
-                                            )
-                                            Spacer(Modifier.width(8.dp))
-                                            Text(if (isSendingToWatch) "Sending..." else "Send to Watch")
-                                        }
-                                    }
-                                }
-
                                 item {
                                     Spacer(Modifier.height(80.dp))
                                 }
@@ -672,7 +631,6 @@ fun SongInfoBottomSheet(
         onSave = { title, artist, album, genre, lyrics, trackNumber, coverArt ->
             onEditSong(title, artist, album, genre, lyrics, trackNumber, coverArt)
             showEditSheet = false
-        },
-        generateAiMetadata = generateAiMetadata
+        }
     )
 }

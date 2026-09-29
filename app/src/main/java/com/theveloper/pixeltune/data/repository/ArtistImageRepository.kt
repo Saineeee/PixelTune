@@ -8,8 +8,10 @@ import android.util.Log
 import android.util.LruCache
 import com.theveloper.pixeltune.data.database.MusicDao
 import com.theveloper.pixeltune.data.network.deezer.DeezerApiService
+import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
@@ -31,7 +33,8 @@ import kotlinx.coroutines.sync.withPermit
 @Singleton
 class ArtistImageRepository @Inject constructor(
     private val deezerApiService: DeezerApiService,
-    private val musicDao: MusicDao
+    private val musicDao: MusicDao,
+    private val userPreferencesRepository: UserPreferencesRepository
 ) {
     companion object {
         private const val TAG = "ArtistImageRepository"
@@ -63,6 +66,13 @@ class ArtistImageRepository @Inject constructor(
      */
     suspend fun getArtistImageUrl(artistName: String, artistId: Long): String? {
         if (artistName.isBlank()) return null
+
+        // F-Droid privacy: online artwork (Deezer public API) is strictly opt-in.
+        // When disabled (the default) we serve only locally cached URLs and never
+        // touch the network — including Deezer CDN loads by the image loader.
+        if (!userPreferencesRepository.onlineArtistArtworkEnabled.first()) {
+            return null
+        }
 
         val normalizedName = artistName.trim().lowercase()
 
@@ -103,6 +113,11 @@ class ArtistImageRepository @Inject constructor(
      * Useful for batch loading when displaying artist lists.
      */
     suspend fun prefetchArtistImages(artists: List<Pair<Long, String>>) = withContext(Dispatchers.IO) {
+        // Strictly opt-in: skip the whole prefetch pipeline when the user has not
+        // enabled online artist artwork.
+        if (!userPreferencesRepository.onlineArtistArtworkEnabled.first()) {
+            return@withContext
+        }
         // Process in small chunks to avoid creating hundreds of coroutines simultaneously.
         // Without this, a library with 500 artists creates 500 coroutine objects at once, all
         // suspended at the semaphore, exhausting the heap and triggering OOM in coroutine machinery.

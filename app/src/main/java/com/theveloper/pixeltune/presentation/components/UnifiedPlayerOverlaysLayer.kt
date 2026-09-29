@@ -226,9 +226,6 @@ internal fun UnifiedPlayerSongInfoLayer(
                     )
                     onDismissSongInfo()
                 },
-                generateAiMetadata = { fields ->
-                    playerViewModel.generateAiMetadata(liveSong, fields)
-                },
                 removeFromListTrigger = {
                     playerViewModel.removeSongFromQueue(liveSong.id)
                     onDismissSongInfo()
@@ -413,34 +410,5 @@ internal fun UnifiedPlayerSaveQueueLayer(
                 onDismissOverlay()
             }
         )
-    }
-}
-
-@OptIn(UnstableApi::class)
-@Composable
-internal fun UnifiedPlayerCastLayer(
-    showCastSheet: Boolean,
-    internalIsKeyboardVisible: Boolean,
-    albumColorScheme: ColorScheme,
-    playerViewModel: PlayerViewModel,
-    onDismiss: () -> Unit,
-    onExpansionChanged: (Float) -> Unit
-) {
-    if (!showCastSheet || internalIsKeyboardVisible) return
-
-    CompositionLocalProvider(
-        LocalMaterialTheme provides albumColorScheme
-    ) {
-        MaterialTheme(
-            colorScheme = LocalMaterialTheme.current,
-            typography = MaterialTheme.typography,
-            shapes = MaterialTheme.shapes
-        ) {
-            CastBottomSheet(
-                playerViewModel = playerViewModel,
-                onDismiss = onDismiss,
-                onExpansionChanged = onExpansionChanged
-            )
-        }
     }
 }

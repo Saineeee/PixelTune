@@ -62,11 +62,7 @@ data class PlaylistUiState(
     // IMPROVE(cloud-playlist-source-filter): the Local / Cloud source filter
     // of the library Playlists tab (chips next to the sort button — same
     // affordance the Artists / Songs tabs have for their own filters).
-    val currentPlaylistSourceFilter: PlaylistSourceFilter = PlaylistSourceFilter.ALL,
-    
-    // AI Generation State
-    val isAiGenerating: Boolean = false,
-    val aiGenerationError: String? = null
+    val currentPlaylistSourceFilter: PlaylistSourceFilter = PlaylistSourceFilter.ALL
 )
 
 sealed class PlaylistSongsOrderMode {
@@ -97,7 +93,6 @@ private val CLOUD_PLAYLIST_SOURCES = setOf(
 class PlaylistViewModel @Inject constructor(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val musicRepository: MusicRepository,
-    private val aiPlaylistGenerator: com.theveloper.pixeltune.data.ai.AiPlaylistGenerator,
     private val m3uManager: M3uManager,
     // IMPROVE(cloud-playlist-import): imports an online-search playlist
     // (YouTube Music / SoundCloud) into the library Playlists tab.
@@ -1030,55 +1025,6 @@ class PlaylistViewModel @Inject constructor(
         }
     }
 
-    fun generateAiPlaylist(prompt: String, minLength: Int = 10, maxLength: Int = 50) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isAiGenerating = true, aiGenerationError = null) }
-            
-            try {
-                // Fetch all library songs
-                val allSongs = withContext(Dispatchers.IO) {
-                    musicRepository.getAudioFiles().first()
-                }
-
-                // Call AiPlaylistGenerator
-                val result = aiPlaylistGenerator.generate(
-                    userPrompt = prompt,
-                    allSongs = allSongs,
-                    minLength = minLength,
-                    maxLength = maxLength
-                )
-                
-                result.onSuccess { selectedSongs ->
-                    // Create Playlist
-                    val playlistName = "AI: $prompt".take(50) 
-                    
-                    userPreferencesRepository.createPlaylist(
-                        name = playlistName,
-                        songIds = selectedSongs.map { it.id },
-                        isAiGenerated = true,
-                        source = "AI" // Mark as AI source
-                    )
-                    
-                    _uiState.update { it.copy(isAiGenerating = false) }
-                    _playlistCreationEvent.emit(true)
-                }.onFailure { e ->
-                    val errorMessage = if (e.message?.contains("API Key") == true) {
-                        "Please configure your Gemini API Key in Settings."
-                    } else {
-                        e.message ?: "Unknown error"
-                    }
-                    _uiState.update { it.copy(isAiGenerating = false, aiGenerationError = errorMessage) }
-                }
-
-            } catch (e: Exception) {
-                _uiState.update { it.copy(isAiGenerating = false, aiGenerationError = e.message) }
-            }
-        }
-    }
-    
-    fun clearAiError() {
-        _uiState.update { it.copy(aiGenerationError = null) }
-    }
 
     /**
      * Delete multiple playlists in batch

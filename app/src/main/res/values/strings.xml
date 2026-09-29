@@ -71,12 +71,6 @@
     <string name="lyrics_later">Later</string>
 
     <!-- AI Playlist -->
-    <string name="ai_error_api_key">Please configure your Gemini API Key in Settings.</string>
-    <string name="ai_error_generic">AI Error: %s</string>
-    <string name="ai_no_songs_found">AI couldn\'t find any songs for your prompt.</string>
-    <string name="ai_prompt_empty">Write an idea for your Daily Mix</string>
-    <string name="ai_daily_mix_updated">Daily Mix updated with AI</string>
-    <string name="ai_no_songs_for_mix">AI couldn\'t find songs for this mix</string>
 
     <!-- Launcher Shortcuts -->
     <string name="shortcut_shuffle_short">Shuffle</string>

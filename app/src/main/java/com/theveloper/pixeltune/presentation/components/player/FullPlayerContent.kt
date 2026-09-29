@@ -166,8 +166,6 @@ fun FullPlayerContent(
     isShuffleEnabledProvider: () -> Boolean,
     totalDurationProvider: () -> Long,
     lyricsProvider: () -> Lyrics? = { null }, 
-    // State
-    isCastConnecting: Boolean = false,
     // Event Handlers
     onPlayPause: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -178,7 +176,6 @@ fun FullPlayerContent(
     onQueueDragStart: () -> Unit,
     onQueueDrag: (Float) -> Unit,
     onQueueRelease: (Float, Float) -> Unit,
-    onShowCastClicked: () -> Unit,
     onShuffleToggle: () -> Unit,
     onRepeatToggle: () -> Unit,
     onFavoriteToggle: () -> Unit
@@ -204,8 +201,6 @@ fun FullPlayerContent(
     val immersiveLyricsEnabled by playerViewModel.immersiveLyricsEnabled.collectAsStateWithLifecycle()
     val immersiveLyricsTimeout by playerViewModel.immersiveLyricsTimeout.collectAsStateWithLifecycle()
     val isImmersiveTemporarilyDisabled by playerViewModel.isImmersiveTemporarilyDisabled.collectAsStateWithLifecycle()
-    val isRemotePlaybackActive by playerViewModel.isRemotePlaybackActive.collectAsStateWithLifecycle()
-    val selectedRouteName by playerViewModel.selectedRoute.map { it?.name }.collectAsStateWithLifecycle(initialValue = null)
     val isBluetoothEnabled by playerViewModel.isBluetoothEnabled.collectAsStateWithLifecycle()
     val bluetoothName by playerViewModel.bluetoothName.collectAsStateWithLifecycle()
 
@@ -578,27 +573,23 @@ fun FullPlayerContent(
                         titleContentColor = LocalMaterialTheme.current.onPrimaryContainer,
                     ),
                     title = {
-                        if (!isCastConnecting) {
-                            AnimatedVisibility(visible = (!isRemotePlaybackActive)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        modifier = Modifier.padding(start = 18.dp),
-                                        text = "Now Playing",
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = MaterialTheme.typography.labelLargeEmphasized,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                modifier = Modifier.padding(start = 18.dp),
+                                text = "Now Playing",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelLargeEmphasized,
+                                fontWeight = FontWeight.SemiBold
+                            )
 
-                                    if (currentSong != null && (currentSong.telegramChatId != null || currentSong.contentUriString.startsWith("telegram:"))) {
-                                        Icon(
-                                            imageVector = androidx.compose.material.icons.Icons.Rounded.Cloud,
-                                            contentDescription = "Cloud Stream",
-                                            tint = LocalMaterialTheme.current.onPrimaryContainer.copy(alpha = 0.6f),
-                                            modifier = Modifier.padding(start = 8.dp).size(16.dp)
-                                        )
-                                    }
-                                }
+                            if (currentSong != null && (currentSong.telegramChatId != null || currentSong.contentUriString.startsWith("telegram:"))) {
+                                Icon(
+                                    imageVector = androidx.compose.material.icons.Icons.Rounded.Cloud,
+                                    contentDescription = "Cloud Stream",
+                                    tint = LocalMaterialTheme.current.onPrimaryContainer.copy(alpha = 0.6f),
+                                    modifier = Modifier.padding(start = 8.dp).size(16.dp)
+                                )
                             }
                         }
                     },
@@ -635,125 +626,33 @@ fun FullPlayerContent(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val showCastLabel = isCastConnecting || (isRemotePlaybackActive && selectedRouteName != null)
+                            // Passive audio-output indicator (Cast removed for the
+                            // F-Droid FOSS build — shows Bluetooth vs device speaker).
                             val isBluetoothActive =
-                                isBluetoothEnabled && !bluetoothName.isNullOrEmpty() && !isRemotePlaybackActive && !isCastConnecting
-                            val castIconPainter = when {
-                                isCastConnecting || isRemotePlaybackActive -> painterResource(R.drawable.rounded_cast_24)
+                                isBluetoothEnabled && !bluetoothName.isNullOrEmpty()
+                            val outputIconPainter = when {
                                 isBluetoothActive -> painterResource(R.drawable.rounded_bluetooth_24)
                                 else -> painterResource(R.drawable.rounded_mobile_speaker_24)
                             }
-                            val castCornersExpanded = 50.dp
-                            val castCornersCompact = 6.dp
-                            val castTopStart by animateDpAsState(
-                                targetValue = if (showCastLabel) castCornersExpanded else castCornersExpanded,
-                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
-                            )
-                            val castTopEnd by animateDpAsState(
-                                targetValue = if (showCastLabel) castCornersExpanded else castCornersCompact,
-                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
-                            )
-                            val castBottomStart by animateDpAsState(
-                                targetValue = if (showCastLabel) castCornersExpanded else castCornersExpanded,
-                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
-                            )
-                            val castBottomEnd by animateDpAsState(
-                                targetValue = if (showCastLabel) castCornersExpanded else castCornersCompact,
-                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
-                            )
-                            val castContainerColor by animateColorAsState(
-                                targetValue = playerOnAccentColor.copy(alpha = 0.7f),
-                                animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)
-                            )
                             Box(
                                 modifier = Modifier
-                                    .height(42.dp)
-                                    .align(Alignment.CenterVertically)
-                                    .animateContentSize(
-                                        animationSpec = spring(
-                                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                                            stiffness = Spring.StiffnessLow
-                                        )
-                                    )
-                                    .widthIn(
-                                        min = 50.dp,
-                                        max = if (showCastLabel) 190.dp else 58.dp
-                                    )
+                                    .size(height = 42.dp, width = 50.dp)
                                     .clip(
                                         RoundedCornerShape(
-                                            topStart = castTopStart.coerceAtLeast(0.dp),
-                                            topEnd = castTopEnd.coerceAtLeast(0.dp),
-                                            bottomStart = castBottomStart.coerceAtLeast(0.dp),
-                                            bottomEnd = castBottomEnd.coerceAtLeast(0.dp)
+                                            topStart = 6.dp,
+                                            topEnd = 50.dp,
+                                            bottomStart = 6.dp,
+                                            bottomEnd = 50.dp
                                         )
                                     )
-                                    .background(castContainerColor)
-                                    .clickable { onShowCastClicked() },
-                                contentAlignment = Alignment.CenterStart
+                                    .background(playerOnAccentColor.copy(alpha = 0.7f)),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Row(
-                                    modifier = Modifier
-                                        .padding(start = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Start
-                                ) {
-                                    Icon(
-                                        painter = castIconPainter,
-                                        contentDescription = when {
-                                            isCastConnecting || isRemotePlaybackActive -> "Cast"
-                                            isBluetoothActive -> "Bluetooth"
-                                            else -> "Local playback"
-                                        },
-                                        tint = playerAccentColor
-                                    )
-                                    AnimatedVisibility(visible = showCastLabel) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Spacer(Modifier.width(8.dp))
-                                            AnimatedContent(
-                                                targetState = when {
-                                                    isCastConnecting -> "Connecting…"
-                                                    isRemotePlaybackActive && selectedRouteName != null -> selectedRouteName ?: ""
-                                                    else -> ""
-                                                },
-                                                transitionSpec = {
-                                                    fadeIn(animationSpec = tween(150)) togetherWith fadeOut(animationSpec = tween(120))
-                                                },
-                                                label = "castButtonLabel"
-                                            ) { label ->
-                                                Row(
-                                                    modifier = Modifier.padding(end = 16.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                                ) {
-                                                    Text(
-                                                        text = label,
-                                                        style = MaterialTheme.typography.labelMedium,
-                                                        color = playerAccentColor,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis,
-                                                        modifier = Modifier.weight(1f, fill = false)
-                                                    )
-                                                    AnimatedVisibility(visible = isCastConnecting) {
-                                                        CircularProgressIndicator(
-                                                            modifier = Modifier
-                                                                .size(14.dp),
-                                                            strokeWidth = 2.dp,
-                                                            color = playerAccentColor
-                                                        )
-                                                    }
-                                                    if (isRemotePlaybackActive && !isCastConnecting) {
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .size(8.dp)
-                                                                .clip(CircleShape)
-                                                                .background(LocalMaterialTheme.current.onTertiaryContainer)
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                Icon(
+                                    painter = outputIconPainter,
+                                    contentDescription = if (isBluetoothActive) "Bluetooth" else "Local playback",
+                                    tint = playerAccentColor
+                                )
                             }
 
                             // IMPROVE(offline-downloads): download button for

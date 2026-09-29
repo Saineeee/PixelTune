@@ -497,9 +497,6 @@ fun GenreDetailScreen(
                         onEditSong = { newTitle, newArtist, newAlbum, newGenre, newLyrics, newTrackNumber, coverArtUpdate ->
                             playerViewModel.editSongMetadata(song, newTitle, newArtist, newAlbum, newGenre, newLyrics, newTrackNumber, coverArtUpdate)
                         },
-                        generateAiMetadata = { fields ->
-                            playerViewModel.generateAiMetadata(song, fields)
-                        },
                         removeFromListTrigger = {}
                     )
                 }

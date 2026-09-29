@@ -72,9 +72,6 @@ constructor(
 
     private object PreferencesKeys {
         val APP_REBRAND_DIALOG_SHOWN = booleanPreferencesKey("app_rebrand_dialog_shown")
-        val GEMINI_API_KEY = stringPreferencesKey("gemini_api_key")
-        val GEMINI_MODEL = stringPreferencesKey("gemini_model")
-        val GEMINI_SYSTEM_PROMPT = stringPreferencesKey("gemini_system_prompt")
         val ALLOWED_DIRECTORIES = stringSetPreferencesKey("allowed_directories")
         val BLOCKED_DIRECTORIES = stringSetPreferencesKey("blocked_directories")
         val INITIAL_SETUP_DONE = booleanPreferencesKey("initial_setup_done")
@@ -101,6 +98,11 @@ constructor(
         val LAST_LIBRARY_TAB_INDEX =
                 intPreferencesKey("last_library_tab_index") // Corrected: Add intPreferencesKey here
         val MOCK_GENRES_ENABLED = booleanPreferencesKey("mock_genres_enabled")
+
+        // F-Droid privacy: online artist artwork (Deezer public API) is strictly
+        // opt-in — no network request leaves the device unless the user flips
+        // this switch. Defaults to false (disabled).
+        val ONLINE_ARTIST_ARTWORK_ENABLED = booleanPreferencesKey("online_artist_artwork_enabled")
         val LAST_DAILY_MIX_UPDATE = longPreferencesKey("last_daily_mix_update")
         val DAILY_MIX_SONG_IDS = stringPreferencesKey("daily_mix_song_ids")
         val YOUR_MIX_SONG_IDS = stringPreferencesKey("your_mix_song_ids")
@@ -126,7 +128,6 @@ constructor(
         val REPEAT_MODE = intPreferencesKey("repeat_mode")
         val IS_SHUFFLE_ON = booleanPreferencesKey("is_shuffle_on")
         val PERSISTENT_SHUFFLE_ENABLED = booleanPreferencesKey("persistent_shuffle_enabled")
-        val DISABLE_CAST_AUTOPLAY = booleanPreferencesKey("disable_cast_autoplay")
         val SHOW_QUEUE_HISTORY = booleanPreferencesKey("show_queue_history")
         val FULL_PLAYER_SHOW_FILE_INFO = booleanPreferencesKey("full_player_show_file_info")
         val FULL_PLAYER_DELAY_ALL = booleanPreferencesKey("full_player_delay_all")
@@ -220,10 +221,6 @@ constructor(
         val PLAYER_VOLUME = floatPreferencesKey("player_volume")
         
         // AI Provider Settings
-        val AI_PROVIDER = stringPreferencesKey("ai_provider")
-        val DEEPSEEK_API_KEY = stringPreferencesKey("deepseek_api_key")
-        val DEEPSEEK_MODEL = stringPreferencesKey("deepseek_model")
-        val DEEPSEEK_SYSTEM_PROMPT = stringPreferencesKey("deepseek_system_prompt")
         
         // Streaming Quality
         val STREAMING_QUALITY = stringPreferencesKey("streaming_quality")
@@ -907,11 +904,6 @@ constructor(
                 preferences[PreferencesKeys.KEEP_PLAYING_IN_BACKGROUND] ?: true
             }
 
-    val disableCastAutoplayFlow: Flow<Boolean> =
-            dataStore.data.map { preferences ->
-                preferences[PreferencesKeys.DISABLE_CAST_AUTOPLAY] ?: false
-            }
-
     val showQueueHistoryFlow: Flow<Boolean> =
             dataStore.data.map { preferences ->
                 preferences[PreferencesKeys.SHOW_QUEUE_HISTORY] ?: false  // Default to false for performance
@@ -1500,94 +1492,21 @@ constructor(
         dataStore.edit { preferences -> preferences[PreferencesKeys.MOCK_GENRES_ENABLED] = enabled }
     }
 
-    val geminiApiKey: Flow<String> =
-            dataStore.data.map { preferences -> preferences[PreferencesKeys.GEMINI_API_KEY] ?: "" }
+    // ===== Online artist artwork (Deezer) — strictly opt-in, default OFF =====
+    val onlineArtistArtworkEnabled: Flow<Boolean> =
+        dataStore.data.map { preferences ->
+            preferences[PreferencesKeys.ONLINE_ARTIST_ARTWORK_ENABLED] ?: false
+        }
 
-    suspend fun setGeminiApiKey(apiKey: String) {
-        dataStore.edit { preferences -> preferences[PreferencesKeys.GEMINI_API_KEY] = apiKey }
-    }
-
-    val geminiModel: Flow<String> =
-            dataStore.data.map { preferences -> preferences[PreferencesKeys.GEMINI_MODEL] ?: "" }
-
-    suspend fun setGeminiModel(model: String) {
-        dataStore.edit { preferences -> preferences[PreferencesKeys.GEMINI_MODEL] = model }
+    suspend fun setOnlineArtistArtworkEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.ONLINE_ARTIST_ARTWORK_ENABLED] = enabled
+        }
     }
 
     companion object {
-        const val DEFAULT_SYSTEM_PROMPT =
-                "You are a helpful AI assistant integrated into a music player app. You help users create perfect playlists based on their request."
-        const val DEFAULT_DEEPSEEK_SYSTEM_PROMPT =
-            "You are a helpful AI assistant integrated into a music player app. You help users create perfect playlists based on their request."
-
         /** Default delimiters for splitting multi-artist tags */
         val DEFAULT_ARTIST_DELIMITERS = listOf("/", ";", ",", "+", "&")
-    }
-
-    val geminiSystemPrompt: Flow<String> =
-            dataStore.data.map { preferences ->
-                preferences[PreferencesKeys.GEMINI_SYSTEM_PROMPT] ?: DEFAULT_SYSTEM_PROMPT
-            }
-
-    suspend fun setGeminiSystemPrompt(prompt: String) {
-        dataStore.edit { preferences -> preferences[PreferencesKeys.GEMINI_SYSTEM_PROMPT] = prompt }
-    }
-
-    suspend fun resetGeminiSystemPrompt() {
-        dataStore.edit { preferences ->
-            preferences[PreferencesKeys.GEMINI_SYSTEM_PROMPT] = DEFAULT_SYSTEM_PROMPT
-        }
-    }
-
-    // AI Provider Settings
-    val aiProvider: Flow<String> =
-        dataStore.data.map { preferences -> 
-            preferences[PreferencesKeys.AI_PROVIDER] ?: "GEMINI"
-        }
-    
-    suspend fun setAiProvider(provider: String) {
-        dataStore.edit { preferences -> 
-            preferences[PreferencesKeys.AI_PROVIDER] = provider 
-        }
-    }
-    
-    val deepseekApiKey: Flow<String> =
-        dataStore.data.map { preferences -> 
-            preferences[PreferencesKeys.DEEPSEEK_API_KEY] ?: "" 
-        }
-    
-    suspend fun setDeepseekApiKey(apiKey: String) {
-        dataStore.edit { preferences -> 
-            preferences[PreferencesKeys.DEEPSEEK_API_KEY] = apiKey 
-        }
-    }
-    
-    val deepseekModel: Flow<String> =
-        dataStore.data.map { preferences -> 
-            preferences[PreferencesKeys.DEEPSEEK_MODEL] ?: "" 
-        }
-    
-    suspend fun setDeepseekModel(model: String) {
-        dataStore.edit { preferences -> 
-            preferences[PreferencesKeys.DEEPSEEK_MODEL] = model 
-        }
-    }
-
-    val deepseekSystemPrompt: Flow<String> =
-        dataStore.data.map { preferences ->
-            preferences[PreferencesKeys.DEEPSEEK_SYSTEM_PROMPT] ?: DEFAULT_DEEPSEEK_SYSTEM_PROMPT
-        }
-
-    suspend fun setDeepseekSystemPrompt(prompt: String) {
-        dataStore.edit { preferences ->
-            preferences[PreferencesKeys.DEEPSEEK_SYSTEM_PROMPT] = prompt
-        }
-    }
-
-    suspend fun resetDeepseekSystemPrompt() {
-        dataStore.edit { preferences ->
-            preferences[PreferencesKeys.DEEPSEEK_SYSTEM_PROMPT] = DEFAULT_DEEPSEEK_SYSTEM_PROMPT
-        }
     }
 
     val navBarCornerRadiusFlow: Flow<Int> =
@@ -1643,12 +1562,6 @@ constructor(
     suspend fun setKeepPlayingInBackground(enabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.KEEP_PLAYING_IN_BACKGROUND] = enabled
-        }
-    }
-
-    suspend fun setDisableCastAutoplay(disabled: Boolean) {
-        dataStore.edit { preferences ->
-            preferences[PreferencesKeys.DISABLE_CAST_AUTOPLAY] = disabled
         }
     }
 

@@ -320,9 +320,6 @@ fun RecentlyPlayedScreen(
                         coverArtUpdate
                     )
                 },
-                generateAiMetadata = { fields ->
-                    playerViewModel.generateAiMetadata(song, fields)
-                },
                 removeFromListTrigger = {}
             )
 

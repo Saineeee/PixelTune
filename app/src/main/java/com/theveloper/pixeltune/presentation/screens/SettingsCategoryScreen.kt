@@ -176,13 +176,6 @@ fun SettingsCategoryScreen(
     
     // State Collection (Duplicated from SettingsScreen for now to ensure functionality)
     val uiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
-    val geminiApiKey by settingsViewModel.geminiApiKey.collectAsStateWithLifecycle()
-    val geminiModel by settingsViewModel.geminiModel.collectAsStateWithLifecycle()
-    val geminiSystemPrompt by settingsViewModel.geminiSystemPrompt.collectAsStateWithLifecycle()
-    val aiProvider by settingsViewModel.aiProvider.collectAsStateWithLifecycle()
-    val deepseekApiKey by settingsViewModel.deepseekApiKey.collectAsStateWithLifecycle()
-    val deepseekModel by settingsViewModel.deepseekModel.collectAsStateWithLifecycle()
-    val deepseekSystemPrompt by settingsViewModel.deepseekSystemPrompt.collectAsStateWithLifecycle()
     val currentPath by settingsViewModel.currentPath.collectAsStateWithLifecycle()
     val directoryChildren by settingsViewModel.currentDirectoryChildren.collectAsStateWithLifecycle()
     val availableStorages by settingsViewModel.availableStorages.collectAsStateWithLifecycle()
@@ -191,6 +184,7 @@ fun SettingsCategoryScreen(
     val isExplorerPriming by settingsViewModel.isExplorerPriming.collectAsStateWithLifecycle()
     val isExplorerReady by settingsViewModel.isExplorerReady.collectAsStateWithLifecycle()
     val isSyncing by settingsViewModel.isSyncing.collectAsStateWithLifecycle()
+    val onlineArtistArtwork by settingsViewModel.onlineArtistArtworkEnabled.collectAsStateWithLifecycle()
     val syncProgress by settingsViewModel.syncProgress.collectAsStateWithLifecycle()
     val dataTransferProgress by settingsViewModel.dataTransferProgress.collectAsStateWithLifecycle()
     val allSongs by playerViewModel.allSongsFlow.collectAsStateWithLifecycle()
@@ -266,20 +260,6 @@ fun SettingsCategoryScreen(
                 song.title.contains(query, ignoreCase = true) ||
                     song.displayArtist.contains(query, ignoreCase = true) ||
                     song.album.contains(query, ignoreCase = true)
-            }
-        }
-    }
-
-    // Fetch models on page load when API key exists and models are not already loaded
-    LaunchedEffect(category, aiProvider, geminiApiKey, deepseekApiKey) {
-        if (category == SettingsCategory.AI_INTEGRATION && !uiState.isLoadingModels) {
-            val apiKey = when (aiProvider) {
-                "DEEPSEEK" -> deepseekApiKey
-                else -> geminiApiKey
-            }
-            
-            if (apiKey.isNotBlank() && uiState.availableModels.isEmpty()) {
-                settingsViewModel.fetchAvailableModels(apiKey, aiProvider)
             }
         }
     }
@@ -411,6 +391,13 @@ fun SettingsCategoryScreen(
                                     leadingIcon = { Icon(Icons.Outlined.Person, null, tint = MaterialTheme.colorScheme.secondary) },
                                     trailingIcon = { Icon(Icons.Rounded.ChevronRight, "Open", tint = MaterialTheme.colorScheme.onSurfaceVariant) },
                                     onClick = { navController.navigateSafely(Screen.ArtistSettings.route) }
+                                )
+                                SwitchSettingItem(
+                                    title = "Online artist artwork",
+                                    subtitle = "Fetch artist images from the public Deezer API. Off by default; nothing is sent anywhere else.",
+                                    checked = onlineArtistArtwork,
+                                    onCheckedChange = { settingsViewModel.setOnlineArtistArtworkEnabled(it) },
+                                    leadingIcon = { Icon(Icons.Outlined.Person, null, tint = MaterialTheme.colorScheme.secondary) }
                                 )
                             }
 
@@ -719,17 +706,6 @@ fun SettingsCategoryScreen(
                                 }
                             }
 
-                            SettingsSubsection(title = "Cast") {
-                                ThemeSelectorItem(
-                                    label = "Auto-play on cast connect/disconnect",
-                                    description = "Start playing immediately after switching cast connections.",
-                                    options = mapOf("false" to "Enabled", "true" to "Disabled"),
-                                    selectedKey = if (uiState.disableCastAutoplay) "true" else "false",
-                                    onSelectionChanged = { settingsViewModel.setDisableCastAutoplay(it.toBoolean()) },
-                                    leadingIcon = { Icon(painterResource(R.drawable.rounded_cast_24), null, tint = MaterialTheme.colorScheme.secondary) }
-                                )
-                            }
-
                             SettingsSubsection(title = "Queue and Transitions") {
                                 ThemeSelectorItem(
                                     label = "Crossfade",
@@ -806,144 +782,6 @@ fun SettingsCategoryScreen(
                                     onCheckedChange = { settingsViewModel.setHapticsEnabled(it) },
                                     leadingIcon = { Icon(painterResource(R.drawable.rounded_touch_app_24), null, tint = MaterialTheme.colorScheme.secondary) }
                                 )
-                            }
-                        }
-                        SettingsCategory.AI_INTEGRATION -> {
-                            // AI Provider Selection
-                            SettingsSubsection(title = "AI Provider") {
-                                ThemeSelectorItem(
-                                    label = "Provider",
-                                    description = "Choose your AI provider",
-                                    options = mapOf(
-                                        "GEMINI" to "Google Gemini",
-                                        "DEEPSEEK" to "DeepSeek"
-                                    ),
-                                    selectedKey = aiProvider,
-                                    onSelectionChanged = { settingsViewModel.onAiProviderChange(it) },
-                                    leadingIcon = { Icon(Icons.Rounded.Science, null, tint = MaterialTheme.colorScheme.secondary) }
-                                )
-                            }
-                            
-                            // API Key Section
-                            SettingsSubsection(title = "Credentials") {
-                                when (aiProvider) {
-                                    "GEMINI" -> {
-                                        GeminiApiKeyItem(
-                                            apiKey = geminiApiKey,
-                                            onApiKeySave = { settingsViewModel.onGeminiApiKeyChange(it) },
-                                            title = "Gemini API Key",
-                                            subtitle = "Get from Google AI Studio (aistudio.google.com)"
-                                        )
-                                    }
-                                    "DEEPSEEK" -> {
-                                        GeminiApiKeyItem(
-                                            apiKey = deepseekApiKey,
-                                            onApiKeySave = { settingsViewModel.onDeepseekApiKeyChange(it) },
-                                            title = "DeepSeek API Key",
-                                            subtitle = "Get from DeepSeek Platform (api.deepseek.com)"
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Model Selection Section
-                            val hasApiKey = when (aiProvider) {
-                                "DEEPSEEK" -> deepseekApiKey.isNotBlank()
-                                else -> geminiApiKey.isNotBlank()
-                            }
-                            
-                            if (hasApiKey) {
-                                SettingsSubsection(title = "Model Selection") {
-                                    if (uiState.isLoadingModels) {
-                                        Surface(
-                                            color = MaterialTheme.colorScheme.surfaceContainer,
-                                            shape = RoundedCornerShape(10.dp),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(16.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                CircularProgressIndicator(
-                                                    modifier = Modifier.size(24.dp),
-                                                    strokeWidth = 2.dp
-                                                )
-                                                Text(
-                                                    text = "Loading available models...",
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-                                        }
-                                    } else if (uiState.modelsFetchError != null) {
-                                        Surface(
-                                            color = MaterialTheme.colorScheme.errorContainer,
-                                            shape = RoundedCornerShape(10.dp),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Text(
-                                                text = uiState.modelsFetchError ?: "Error loading models",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                                modifier = Modifier.padding(16.dp)
-                                            )
-                                        }
-                                    } else if (uiState.availableModels.isNotEmpty()) {
-                                        val currentModel = when (aiProvider) {
-                                            "GEMINI" -> geminiModel
-                                            "DEEPSEEK" -> deepseekModel
-                                            else -> ""
-                                        }
-                                        val modelLabel = when (aiProvider) {
-                                            "GEMINI" -> "Select the Gemini model to use."
-                                            "DEEPSEEK" -> "Select the DeepSeek model to use."
-                                            else -> "Select a model."
-                                        }
-                                        ThemeSelectorItem(
-                                            label = "AI Model",
-                                            description = modelLabel,
-                                            options = uiState.availableModels.associate { it.name to it.displayName },
-                                            selectedKey = currentModel.ifEmpty { uiState.availableModels.firstOrNull()?.name ?: "" },
-                                            onSelectionChanged = { 
-                                                when (aiProvider) {
-                                                    "GEMINI" -> settingsViewModel.onGeminiModelChange(it)
-                                                    "DEEPSEEK" -> settingsViewModel.onDeepseekModelChange(it)
-                                                }
-                                            },
-                                            leadingIcon = { Icon(Icons.Rounded.Science, null, tint = MaterialTheme.colorScheme.secondary) }
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Prompt Behavior Section
-                            SettingsSubsection(
-                                title = "Prompt Behavior",
-                                addBottomSpace = false
-                            ) {
-                                when (aiProvider) {
-                                    "GEMINI" -> {
-                                        GeminiSystemPromptItem(
-                                            systemPrompt = geminiSystemPrompt,
-                                            defaultPrompt = com.theveloper.pixeltune.data.preferences.UserPreferencesRepository.DEFAULT_SYSTEM_PROMPT,
-                                            onSystemPromptSave = { settingsViewModel.onGeminiSystemPromptChange(it) },
-                                            onReset = { settingsViewModel.resetGeminiSystemPrompt() },
-                                            title = "System Prompt",
-                                            subtitle = "Customize how the AI behaves."
-                                        )
-                                    }
-                                    "DEEPSEEK" -> {
-                                        GeminiSystemPromptItem(
-                                            systemPrompt = deepseekSystemPrompt,
-                                            defaultPrompt = com.theveloper.pixeltune.data.preferences.UserPreferencesRepository.DEFAULT_DEEPSEEK_SYSTEM_PROMPT,
-                                            onSystemPromptSave = { settingsViewModel.onDeepseekSystemPromptChange(it) },
-                                            onReset = { settingsViewModel.resetDeepseekSystemPrompt() },
-                                            title = "System Prompt",
-                                            subtitle = "Customize how the AI behaves."
-                                        )
-                                    }
-                                }
                             }
                         }
                         SettingsCategory.BACKUP_RESTORE -> {

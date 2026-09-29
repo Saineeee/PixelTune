@@ -43,12 +43,6 @@ enum class SettingsCategory(
         subtitle = "Gestures, haptics, and navigation behavior",
         iconRes = R.drawable.rounded_touch_app_24
     ),
-    AI_INTEGRATION(
-        id = "ai",
-        title = "AI Integration (Beta)",
-        subtitle = "AI providers, API keys, and model settings",
-        iconRes = R.drawable.gemini_ai
-    ),
     BACKUP_RESTORE(
         id = "backup_restore",
         title = "Backup & Restore",

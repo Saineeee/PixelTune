@@ -625,10 +625,7 @@ fun CloudCatalogScreen(
                 onNavigateToArtist = {
                     showSongInfoBottomSheet = false
                 },
-                onEditSong = { _, _, _, _, _, _, _ -> },
-                generateAiMetadata = { fields ->
-                    playerViewModel.generateAiMetadata(currentSong, fields)
-                }
+                onEditSong = { _, _, _, _, _, _, _ -> }
             )
             if (showPlaylistBottomSheet) {
                 val playlistUiState by playlistViewModel.uiState.collectAsStateWithLifecycle()

@@ -19,7 +19,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import com.theveloper.pixeltune.data.model.Song
-import com.google.android.gms.cast.MediaStatus
 import timber.log.Timber
 import com.theveloper.pixeltune.utils.QueueUtils
 import com.theveloper.pixeltune.utils.MediaItemBuilder
@@ -29,7 +28,6 @@ import kotlin.math.abs
 class PlaybackStateHolder @Inject constructor(
     private val dualPlayerEngine: DualPlayerEngine,
     private val userPreferencesRepository: UserPreferencesRepository,
-    private val castStateHolder: CastStateHolder,
     private val queueStateHolder: QueueStateHolder,
     private val listeningStatsTracker: ListeningStatsTracker
 ) {
@@ -94,140 +92,48 @@ class PlaybackStateHolder @Inject constructor(
     /* -------------------------------------------------------------------------- */
 
     fun playPause() {
-        val castSession = castStateHolder.castSession.value
-        val remoteMediaClient = castSession?.remoteMediaClient
-
-        if (castSession != null && remoteMediaClient != null) {
-            if (remoteMediaClient.isPlaying) {
-                castStateHolder.castPlayer?.pause()
-                _stablePlayerState.update {
-                    it.copy(
-                        isPlaying = false,
-                        playWhenReady = false
-                    )
-                }
-            } else {
-                if (remoteMediaClient.mediaQueue.itemCount > 0) {
-                    castStateHolder.castPlayer?.play()
-                    _stablePlayerState.update {
-                        it.copy(
-                            isPlaying = true,
-                            playWhenReady = true
-                        )
-                    }
-                } else {
-                    Timber.w("Remote queue empty, cannot resume.")
-                }
-            }
+        val controller = mediaController ?: return
+        if (controller.isPlaying) {
+            controller.pause()
         } else {
-            val controller = mediaController ?: return
-            if (controller.isPlaying) {
-                controller.pause()
-            } else {
-                controller.play()
-            }
+            controller.play()
         }
     }
 
     fun seekTo(position: Long) {
-        val castSession = castStateHolder.castSession.value
-        if (castSession != null && castSession.remoteMediaClient != null) {
-            val targetPosition = position.coerceAtLeast(0L)
-            castStateHolder.setRemotelySeeking(true)
-            castStateHolder.setRemotePosition(targetPosition)
-            setCurrentPosition(targetPosition)
-            castStateHolder.castPlayer?.seek(targetPosition)
-
-            remoteSeekUnlockJob?.cancel()
-            remoteSeekUnlockJob = scope?.launch {
-                // Fail-safe: never keep remote seeking lock indefinitely.
-                delay(1800)
-                castStateHolder.setRemotelySeeking(false)
-                castSession.remoteMediaClient?.requestStatus()
-            }
-        } else {
-            remoteSeekUnlockJob?.cancel()
-            castStateHolder.setRemotelySeeking(false)
-            mediaController?.seekTo(position)
-            setCurrentPosition(position)
-        }
+        remoteSeekUnlockJob?.cancel()
+        mediaController?.seekTo(position)
+        setCurrentPosition(position)
     }
 
     fun previousSong() {
-        val castSession = castStateHolder.castSession.value
-        if (castSession != null && castSession.remoteMediaClient != null) {
-            castStateHolder.castPlayer?.previous()
+        val controller = mediaController ?: return
+        if (controller.currentPosition > 10000) { // 10 seconds
+            controller.seekTo(0)
         } else {
-            val controller = mediaController ?: return
-             if (controller.currentPosition > 10000) { // 10 seconds
-                 controller.seekTo(0)
-            } else {
-                 controller.seekToPrevious()
-            }
+            controller.seekToPrevious()
         }
     }
 
     fun nextSong() {
-        val castSession = castStateHolder.castSession.value
-        if (castSession != null && castSession.remoteMediaClient != null) {
-            castStateHolder.castPlayer?.next()
-        } else {
-             mediaController?.seekToNext()
-        }
+        mediaController?.seekToNext()
     }
 
     fun cycleRepeatMode() {
-        val castSession = castStateHolder.castSession.value
-        val remoteMediaClient = castSession?.remoteMediaClient
-
-        if (castSession != null && remoteMediaClient != null) {
-            val currentRepeatMode = remoteMediaClient.mediaStatus?.getQueueRepeatMode() ?: MediaStatus.REPEAT_MODE_REPEAT_OFF
-            val newMode = when (currentRepeatMode) {
-                MediaStatus.REPEAT_MODE_REPEAT_OFF -> MediaStatus.REPEAT_MODE_REPEAT_ALL
-                MediaStatus.REPEAT_MODE_REPEAT_ALL -> MediaStatus.REPEAT_MODE_REPEAT_SINGLE
-                MediaStatus.REPEAT_MODE_REPEAT_SINGLE -> MediaStatus.REPEAT_MODE_REPEAT_OFF
-                MediaStatus.REPEAT_MODE_REPEAT_ALL_AND_SHUFFLE -> MediaStatus.REPEAT_MODE_REPEAT_OFF
-                else -> MediaStatus.REPEAT_MODE_REPEAT_OFF
-            }
-            castStateHolder.castPlayer?.setRepeatMode(newMode)
-            
-            // Map remote mode back to local constant for persistence/UI
-            val mappedLocalMode = when (newMode) {
-                MediaStatus.REPEAT_MODE_REPEAT_SINGLE -> Player.REPEAT_MODE_ONE
-                MediaStatus.REPEAT_MODE_REPEAT_ALL, MediaStatus.REPEAT_MODE_REPEAT_ALL_AND_SHUFFLE -> Player.REPEAT_MODE_ALL
-                else -> Player.REPEAT_MODE_OFF
-            }
-            scope?.launch { userPreferencesRepository.setRepeatMode(mappedLocalMode) }
-            _stablePlayerState.update { it.copy(repeatMode = mappedLocalMode) }
-        } else {
-            val currentMode = _stablePlayerState.value.repeatMode
-            val newMode = when (currentMode) {
-                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ONE
-                Player.REPEAT_MODE_ONE -> Player.REPEAT_MODE_ALL
-                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_OFF
-                else -> Player.REPEAT_MODE_OFF
-            }
-            mediaController?.repeatMode = newMode
-            scope?.launch { userPreferencesRepository.setRepeatMode(newMode) }
-            _stablePlayerState.update { it.copy(repeatMode = newMode) }
+        val currentMode = _stablePlayerState.value.repeatMode
+        val newMode = when (currentMode) {
+            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ONE
+            Player.REPEAT_MODE_ONE -> Player.REPEAT_MODE_ALL
+            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_OFF
+            else -> Player.REPEAT_MODE_OFF
         }
+        mediaController?.repeatMode = newMode
+        scope?.launch { userPreferencesRepository.setRepeatMode(newMode) }
+        _stablePlayerState.update { it.copy(repeatMode = newMode) }
     }
 
     fun setRepeatMode(mode: Int) {
-        val castSession = castStateHolder.castSession.value
-        val remoteMediaClient = castSession?.remoteMediaClient
-
-        if (castSession != null && remoteMediaClient != null) {
-            val remoteMode = when (mode) {
-                Player.REPEAT_MODE_ONE -> MediaStatus.REPEAT_MODE_REPEAT_SINGLE
-                Player.REPEAT_MODE_ALL -> MediaStatus.REPEAT_MODE_REPEAT_ALL
-                else -> MediaStatus.REPEAT_MODE_REPEAT_OFF
-            }
-            castStateHolder.castPlayer?.setRepeatMode(remoteMode)
-        } else {
-             mediaController?.repeatMode = mode
-        }
-        
+        mediaController?.repeatMode = mode
         scope?.launch { userPreferencesRepository.setRepeatMode(mode) }
         _stablePlayerState.update { it.copy(repeatMode = mode) }
     }
@@ -295,88 +201,45 @@ class PlaybackStateHolder @Inject constructor(
         stopProgressUpdates()
         progressJob = scope?.launch {
             while (true) {
-                val castSession = castStateHolder.castSession.value
-                val isRemote = castSession?.remoteMediaClient != null
-                
-                if (isRemote) {
-                    val remoteClient = castSession?.remoteMediaClient
-                    if (remoteClient != null) {
-                        val isRemotePlaying = remoteClient.isPlaying
-                        val currentPosition = remoteClient.approximateStreamPosition.coerceAtLeast(0L)
-                        val songDurationHint = _stablePlayerState.value.currentSong?.duration ?: 0L
-                        val duration = resolveEffectiveDuration(
-                            reportedDurationMs = remoteClient.streamDuration,
-                            songDurationHintMs = songDurationHint,
-                            currentPositionMs = currentPosition
+                val controller = mediaController
+                // Media3: Check isPlaying or playbackState == READY/BUFFERING
+                if (controller != null && controller.isPlaying && !isSeeking) {
+                    val visibleSong = _stablePlayerState.value.currentSong
+                    val currentMediaId = controller.currentMediaItem?.mediaId
+                    val hasMediaMismatch = visibleSong?.id != null &&
+                        currentMediaId != null &&
+                        visibleSong.id != currentMediaId
+
+                    if (hasMediaMismatch) {
+                        Timber.tag(TAG).v(
+                            "Skipping local progress tick due media mismatch (visible=%s, player=%s)",
+                            visibleSong?.id,
+                            currentMediaId
                         )
-                        val isRemotelySeeking = castStateHolder.isRemotelySeeking.value
-                        if (!isRemotelySeeking) {
-                            castStateHolder.setRemotePosition(currentPosition)
-                        }
+                        delay(PROGRESS_TICK_MS)
+                        continue
+                    }
 
-                        listeningStatsTracker.onProgress(currentPosition, isRemotePlaying)
-                        val nextPosition = if (isRemotelySeeking) _currentPosition.value else currentPosition
-                        if (_currentPosition.value != nextPosition) {
-                            _currentPosition.value = nextPosition
-                        }
+                    val currentPosition = controller.currentPosition.coerceAtLeast(0L)
+                    val songDurationHint = visibleSong?.duration ?: 0L
+                    val duration = resolveEffectiveDuration(
+                        reportedDurationMs = controller.duration,
+                        songDurationHintMs = songDurationHint,
+                        currentPositionMs = currentPosition
+                    )
 
-                        _stablePlayerState.update { state ->
-                            if (
-                                state.totalDuration == duration &&
-                                state.isPlaying == isRemotePlaying &&
-                                state.playWhenReady == isRemotePlaying
-                            ) {
-                                state
-                            } else {
-                                state.copy(
-                                    totalDuration = duration,
-                                    isPlaying = isRemotePlaying,
-                                    playWhenReady = isRemotePlaying
-                                )
-                            }
+                    listeningStatsTracker.onProgress(currentPosition, true)
+                    if (_currentPosition.value != currentPosition) {
+                        _currentPosition.value = currentPosition
+                    }
+
+                    _stablePlayerState.update { state ->
+                        if (state.totalDuration == duration) {
+                            state
+                        } else {
+                            state.copy(totalDuration = duration)
                         }
                     }
-                } else {
-                     val controller = mediaController
-                     // Media3: Check isPlaying or playbackState == READY/BUFFERING
-                     if (controller != null && controller.isPlaying && !isSeeking) {
-                         val visibleSong = _stablePlayerState.value.currentSong
-                         val currentMediaId = controller.currentMediaItem?.mediaId
-                         val hasMediaMismatch = visibleSong?.id != null &&
-                             currentMediaId != null &&
-                             visibleSong.id != currentMediaId
-
-                         if (hasMediaMismatch) {
-                             Timber.tag(TAG).v(
-                                 "Skipping local progress tick due media mismatch (visible=%s, player=%s)",
-                                 visibleSong?.id,
-                                 currentMediaId
-                             )
-                            delay(PROGRESS_TICK_MS)
-                            continue
-                        }
-
-                         val currentPosition = controller.currentPosition.coerceAtLeast(0L)
-                         val songDurationHint = visibleSong?.duration ?: 0L
-                         val duration = resolveEffectiveDuration(
-                             reportedDurationMs = controller.duration,
-                             songDurationHintMs = songDurationHint,
-                             currentPositionMs = currentPosition
-                         )
-                         
-                         listeningStatsTracker.onProgress(currentPosition, true)
-                         if (_currentPosition.value != currentPosition) {
-                             _currentPosition.value = currentPosition
-                         }
-                         
-                         _stablePlayerState.update { state ->
-                             if (state.totalDuration == duration) {
-                                 state
-                             } else {
-                                 state.copy(totalDuration = duration)
-                             }
-                        }
-                     }
                 }
                 delay(PROGRESS_TICK_MS)
             }
@@ -472,102 +335,91 @@ class PlaybackStateHolder @Inject constructor(
         currentQueueSourceName: String,
         updateQueueCallback: (List<Song>) -> Unit
     ) {
-        val castSession = castStateHolder.castSession.value
-        if (castSession != null && castSession.remoteMediaClient != null) {
-            val remoteMediaClient = castSession.remoteMediaClient
-            val newRepeatMode = if (remoteMediaClient?.mediaStatus?.getQueueRepeatMode() == MediaStatus.REPEAT_MODE_REPEAT_ALL_AND_SHUFFLE) {
-                MediaStatus.REPEAT_MODE_REPEAT_ALL
-            } else {
-                MediaStatus.REPEAT_MODE_REPEAT_ALL_AND_SHUFFLE
-            }
-            castStateHolder.castPlayer?.setRepeatMode(newRepeatMode)
-        } else {
-            scope?.launch {
-                val player = mediaController ?: return@launch
-                if (currentSongs.isEmpty()) return@launch
+        scope?.launch {
+            val player = mediaController ?: return@launch
+            if (currentSongs.isEmpty()) return@launch
 
-                val isCurrentlyShuffled = _stablePlayerState.value.isShuffleEnabled
+            val isCurrentlyShuffled = _stablePlayerState.value.isShuffleEnabled
 
-                if (!isCurrentlyShuffled) {
-                    // Enable Shuffle
-                    if (!queueStateHolder.hasOriginalQueue()) {
-                        queueStateHolder.setOriginalQueueOrder(currentSongs)
-                        queueStateHolder.saveOriginalQueueState(currentSongs, currentQueueSourceName)
-                    }
+            if (!isCurrentlyShuffled) {
+                // Enable Shuffle
+                if (!queueStateHolder.hasOriginalQueue()) {
+                    queueStateHolder.setOriginalQueueOrder(currentSongs)
+                    queueStateHolder.saveOriginalQueueState(currentSongs, currentQueueSourceName)
+                }
 
-                    val currentMediaId = player.currentMediaItem?.mediaId ?: currentSong?.id
-                    val currentIndex = currentMediaId
-                        ?.let { mediaId -> currentSongs.indexOfFirst { it.id == mediaId }.takeIf { it >= 0 } }
-                        ?: player.currentMediaItemIndex.coerceIn(0, (currentSongs.size - 1).coerceAtLeast(0))
-                    val currentPosition = player.currentPosition
-                    val wasPlaying = player.isPlaying
+                val currentMediaId = player.currentMediaItem?.mediaId ?: currentSong?.id
+                val currentIndex = currentMediaId
+                    ?.let { mediaId -> currentSongs.indexOfFirst { it.id == mediaId }.takeIf { it >= 0 } }
+                    ?: player.currentMediaItemIndex.coerceIn(0, (currentSongs.size - 1).coerceAtLeast(0))
+                val currentPosition = player.currentPosition
+                val wasPlaying = player.isPlaying
 
-                    // Run heavy shuffle work off main to keep UI and playback responsive.
-                    val shuffledQueue = withContext(Dispatchers.Default) {
-                        QueueUtils.buildAnchoredShuffleQueueSuspending(currentSongs, currentIndex)
-                    }
+                // Run heavy shuffle work off main to keep UI and playback responsive.
+                val shuffledQueue = withContext(Dispatchers.Default) {
+                    QueueUtils.buildAnchoredShuffleQueueSuspending(currentSongs, currentIndex)
+                }
 
-                    // For large queues, use bulk replace (1 IPC call) instead of
-                    // per-item moveMediaItem (n IPC calls) which freezes the UI.
-                    if (currentSongs.size > BULK_REPLACE_THRESHOLD) {
-                        replacePlayerQueue(player, shuffledQueue, currentMediaId, currentPosition)
-                    } else {
-                        val reordered = reorderQueueInPlace(player, shuffledQueue)
-                        if (!reordered) {
-                            replacePlayerQueue(player, shuffledQueue, currentMediaId, currentPosition)
-                        }
-                    }
-
-                    updateQueueCallback(shuffledQueue)
-                    _stablePlayerState.update { it.copy(isShuffleEnabled = true) }
-                    if (wasPlaying && !player.isPlaying) {
-                        player.play()
-                    }
-
-                    scope?.launch {
-                        if (userPreferencesRepository.persistentShuffleEnabledFlow.first()) {
-                            userPreferencesRepository.setShuffleOn(true)
-                        }
-                    }
+                // For large queues, use bulk replace (1 IPC call) instead of
+                // per-item moveMediaItem (n IPC calls) which freezes the UI.
+                if (currentSongs.size > BULK_REPLACE_THRESHOLD) {
+                    replacePlayerQueue(player, shuffledQueue, currentMediaId, currentPosition)
                 } else {
-                    // Disable Shuffle
-                    scope?.launch {
-                        if (userPreferencesRepository.persistentShuffleEnabledFlow.first()) {
-                            userPreferencesRepository.setShuffleOn(false)
-                        }
+                    val reordered = reorderQueueInPlace(player, shuffledQueue)
+                    if (!reordered) {
+                        replacePlayerQueue(player, shuffledQueue, currentMediaId, currentPosition)
                     }
+                }
 
-                    if (!queueStateHolder.hasOriginalQueue()) {
-                        _stablePlayerState.update { it.copy(isShuffleEnabled = false) }
-                        return@launch
+                updateQueueCallback(shuffledQueue)
+                _stablePlayerState.update { it.copy(isShuffleEnabled = true) }
+                if (wasPlaying && !player.isPlaying) {
+                    player.play()
+                }
+
+                scope?.launch {
+                    if (userPreferencesRepository.persistentShuffleEnabledFlow.first()) {
+                        userPreferencesRepository.setShuffleOn(true)
                     }
-
-                    val originalQueue = queueStateHolder.originalQueueOrder
-                    val wasPlaying = player.isPlaying
-                    val currentPosition = player.currentPosition
-                    val currentSongId = currentSong?.id ?: player.currentMediaItem?.mediaId
-                    val originalIndex = originalQueue.indexOfFirst { it.id == currentSongId }.takeIf { it >= 0 }
-
-                    if (originalIndex == null) {
-                        _stablePlayerState.update { it.copy(isShuffleEnabled = false) }
-                        return@launch
+                }
+            } else {
+                // Disable Shuffle
+                scope?.launch {
+                    if (userPreferencesRepository.persistentShuffleEnabledFlow.first()) {
+                        userPreferencesRepository.setShuffleOn(false)
                     }
+                }
 
-                    // Use bulk replace for large queues to avoid UI freeze
-                    if (originalQueue.size > BULK_REPLACE_THRESHOLD) {
-                        replacePlayerQueue(player, originalQueue, currentSongId, currentPosition)
-                    } else {
-                        val reordered = reorderQueueInPlace(player, originalQueue)
-                        if (!reordered) {
-                            replacePlayerQueue(player, originalQueue, currentSongId, currentPosition)
-                        }
-                    }
-
-                    updateQueueCallback(originalQueue)
+                if (!queueStateHolder.hasOriginalQueue()) {
                     _stablePlayerState.update { it.copy(isShuffleEnabled = false) }
-                    if (wasPlaying && !player.isPlaying) {
-                        player.play()
+                    return@launch
+                }
+
+                val originalQueue = queueStateHolder.originalQueueOrder
+                val wasPlaying = player.isPlaying
+                val currentPosition = player.currentPosition
+                val currentSongId = currentSong?.id ?: player.currentMediaItem?.mediaId
+                val originalIndex = originalQueue.indexOfFirst { it.id == currentSongId }.takeIf { it >= 0 }
+
+                if (originalIndex == null) {
+                    _stablePlayerState.update { it.copy(isShuffleEnabled = false) }
+                    return@launch
+                }
+
+                // Use bulk replace for large queues to avoid UI freeze
+                if (originalQueue.size > BULK_REPLACE_THRESHOLD) {
+                    replacePlayerQueue(player, originalQueue, currentSongId, currentPosition)
+                } else {
+                    val reordered = reorderQueueInPlace(player, originalQueue)
+                    if (!reordered) {
+                        replacePlayerQueue(player, originalQueue, currentSongId, currentPosition)
                     }
+                }
+
+                updateQueueCallback(originalQueue)
+                _stablePlayerState.update { it.copy(isShuffleEnabled = false) }
+                if (wasPlaying && !player.isPlaying) {
+                    player.play()
                 }
             }
         }

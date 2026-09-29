@@ -142,7 +142,6 @@ import com.theveloper.pixeltune.presentation.components.MultiSelectionBottomShee
 import com.theveloper.pixeltune.presentation.components.AlbumMultiSelectionOptionSheet
 import com.theveloper.pixeltune.presentation.components.PlaylistMultiSelectionBottomSheet
 import com.theveloper.pixeltune.presentation.components.PlaylistCreationTypeDialog
-import com.theveloper.pixeltune.presentation.components.CreateAiPlaylistDialog
 import com.theveloper.pixeltune.presentation.components.subcomps.SelectionActionRow
 import com.theveloper.pixeltune.presentation.components.subcomps.SelectionCountPill
 import com.theveloper.pixeltune.presentation.viewmodel.ColorSchemePair
@@ -247,7 +246,6 @@ private data class LibraryScreenPlayerProjection(
     val isSdCardAvailable: Boolean = false,
     val musicFolders: ImmutableList<MusicFolder> = persistentListOf(),
     val isLoadingLibraryCategories: Boolean = true,
-    val isGeneratingAiMetadata: Boolean = false,
     val isSyncingLibrary: Boolean = false,
     val isLoadingInitialSongs: Boolean = true
 )
@@ -269,7 +267,6 @@ private fun PlayerUiState.toLibraryScreenProjection(): LibraryScreenPlayerProjec
         isSdCardAvailable = isSdCardAvailable,
         musicFolders = musicFolders,
         isLoadingLibraryCategories = isLoadingLibraryCategories,
-        isGeneratingAiMetadata = isGeneratingAiMetadata,
         isSyncingLibrary = isSyncingLibrary,
         isLoadingInitialSongs = isLoadingInitialSongs
     )
@@ -361,13 +358,8 @@ fun LibraryScreen(
             .map { uiState -> uiState.currentFolder != null && uiState.folderBackGestureNavigationEnabled }
             .distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = false)
-    val hasActiveAiProviderApiKey by playerViewModel.hasActiveAiProviderApiKey.collectAsStateWithLifecycle()
-    val isGeneratingAiPlaylist by playerViewModel.isGeneratingAiPlaylist.collectAsStateWithLifecycle()
-    val aiError by playerViewModel.aiError.collectAsStateWithLifecycle()
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var showPlaylistCreationTypeDialog by remember { mutableStateOf(false) }
-    var showCreateAiPlaylistDialog by remember { mutableStateOf(false) }
-    var aiGenerationRequestedFromDialog by remember { mutableStateOf(false) }
 
     val m3uImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -513,30 +505,6 @@ fun LibraryScreen(
         }
     }
 
-    LaunchedEffect(
-        showCreateAiPlaylistDialog,
-        aiGenerationRequestedFromDialog,
-        isGeneratingAiPlaylist,
-        aiError
-    ) {
-        if (!showCreateAiPlaylistDialog || !aiGenerationRequestedFromDialog || isGeneratingAiPlaylist) {
-            return@LaunchedEffect
-        }
-
-        if (aiError == null) {
-            showCreateAiPlaylistDialog = false
-            playerViewModel.clearAiPlaylistError()
-        }
-        aiGenerationRequestedFromDialog = false
-    }
-
-    LaunchedEffect(hasActiveAiProviderApiKey, showCreateAiPlaylistDialog) {
-        if (!hasActiveAiProviderApiKey && showCreateAiPlaylistDialog) {
-            showCreateAiPlaylistDialog = false
-            aiGenerationRequestedFromDialog = false
-            playerViewModel.clearAiPlaylistError()
-        }
-    }
     // La lógica de carga diferida (lazy loading) se mantiene.
     LaunchedEffect(Unit) {
         Trace.beginSection("LibraryScreen.InitialTabLoad")
@@ -1328,24 +1296,7 @@ fun LibraryScreen(
                         }
                     }
                 }
-                if (playerUiState.isGeneratingAiMetadata) {
-                    Surface( // Fondo semitransparente para el indicador
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                LoadingIndicator(modifier = Modifier.size(64.dp))
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text(
-                                    text = "Generating metadata with AI...",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        }
-                    }
-                } else if (
+                if (
                     playerUiState.isSyncingLibrary ||
                     (
                         (playerUiState.isLoadingInitialSongs || playerUiState.isLoadingLibraryCategories) &&
@@ -1412,19 +1363,6 @@ fun LibraryScreen(
         onManualSelected = {
             showPlaylistCreationTypeDialog = false
             showCreatePlaylistDialog = true
-        },
-        onAiSelected = {
-            if (hasActiveAiProviderApiKey) {
-                showPlaylistCreationTypeDialog = false
-                playerViewModel.clearAiPlaylistError()
-                showCreateAiPlaylistDialog = true
-            } else {
-                Toast.makeText(context, "Set your AI provider API key first", Toast.LENGTH_SHORT).show()
-            }
-        },
-        isAiEnabled = hasActiveAiProviderApiKey,
-        onSetupAiClick = {
-            navController.navigateSafely(Screen.SettingsCategory.createRoute("ai"))
         }
     )
 
@@ -1433,15 +1371,6 @@ fun LibraryScreen(
         visible = showCreatePlaylistDialog,
         allSongs = allSongsForPlaylistDialog,
         onDismiss = { showCreatePlaylistDialog = false },
-        onGenerateClick = {
-            showCreatePlaylistDialog = false
-            if (hasActiveAiProviderApiKey) {
-                playerViewModel.clearAiPlaylistError()
-                showCreateAiPlaylistDialog = true
-            } else {
-                Toast.makeText(context, "Set your Gemini API key first", Toast.LENGTH_SHORT).show()
-            }
-        },
         onCreate = { name, imageUri, color, icon, songIds, cropScale, cropPanX, cropPanY, shapeType, d1, d2, d3, d4 ->
             playlistViewModel.createPlaylist(
                 name = name,
@@ -1463,26 +1392,6 @@ fun LibraryScreen(
         }
     )
 
-    CreateAiPlaylistDialog(
-        visible = showCreateAiPlaylistDialog && hasActiveAiProviderApiKey,
-        isGenerating = isGeneratingAiPlaylist,
-        error = aiError,
-        onDismiss = {
-            showCreateAiPlaylistDialog = false
-            aiGenerationRequestedFromDialog = false
-            playerViewModel.clearAiPlaylistError()
-        },
-        onGenerate = { playlistName, prompt, minLength, maxLength ->
-            aiGenerationRequestedFromDialog = true
-            playerViewModel.generateAiPlaylist(
-                prompt = prompt,
-                minLength = minLength,
-                maxLength = maxLength,
-                saveAsPlaylist = true,
-                playlistName = playlistName
-            )
-        }
-    )
 
     if (showSongInfoBottomSheet && selectedSongForInfo != null) {
         val currentSong = selectedSongForInfo
@@ -1552,9 +1461,6 @@ fun LibraryScreen(
                 },
                 onEditSong = { newTitle, newArtist, newAlbum, newGenre, newLyrics, newTrackNumber, coverArtUpdate ->
                     playerViewModel.editSongMetadata(currentSong, newTitle, newArtist, newAlbum, newGenre, newLyrics, newTrackNumber, coverArtUpdate)
-                },
-                generateAiMetadata = { fields ->
-                    playerViewModel.generateAiMetadata(currentSong, fields)
                 },
                 removeFromListTrigger = {}
             )

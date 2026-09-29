@@ -72,8 +72,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.navigation.NavController
 import com.theveloper.pixeltune.R
 import com.theveloper.pixeltune.data.model.Song
-import com.theveloper.pixeltune.presentation.components.AiPlaylistSheet
-import com.theveloper.pixeltune.presentation.components.DailyMixMenu
 import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
 import com.theveloper.pixeltune.presentation.components.NavBarContentHeight
 import com.theveloper.pixeltune.presentation.components.PlaylistBottomSheet
@@ -110,37 +108,10 @@ fun DailyMixScreen(
     var showPlaylistBottomSheet by remember { mutableStateOf(false) }
     val stablePlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
     val favoriteSongIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle()
-
-    val showAiSheet by playerViewModel.showAiPlaylistSheet.collectAsStateWithLifecycle()
-    val isGeneratingAiPlaylist by playerViewModel.isGeneratingAiPlaylist.collectAsStateWithLifecycle()
-    val aiError by playerViewModel.aiError.collectAsStateWithLifecycle()
     val lazyListState = rememberLazyListState()
 
     var showSongInfoSheet by remember { mutableStateOf(false) }
     var selectedSongForInfo by remember { mutableStateOf<Song?>(null) }
-    var showDailyMixMenu by remember { mutableStateOf(false) }
-
-    if (showDailyMixMenu) {
-        DailyMixMenu(
-            onDismiss = { showDailyMixMenu = false },
-            onApplyPrompt = { prompt ->
-                playerViewModel.regenerateDailyMixWithPrompt(prompt)
-                showDailyMixMenu = false
-            },
-            isLoading = isGeneratingAiPlaylist
-        )
-    }
-
-    if (showAiSheet) {
-        AiPlaylistSheet(
-            onDismiss = { playerViewModel.dismissAiPlaylistSheet() },
-            onGenerateClick = { prompt, minLength, maxLength ->
-                playerViewModel.generateAiPlaylist(prompt, minLength, maxLength, saveAsPlaylist = false)
-            },
-            isGenerating = isGeneratingAiPlaylist,
-            error = aiError
-        )
-    }
 
     val surfaceContainer = MaterialTheme.colorScheme.surface
     val headerColor = MaterialTheme.colorScheme.primary
@@ -195,9 +166,6 @@ fun DailyMixScreen(
             onEditSong = { newTitle, newArtist, newAlbum, newGenre, newLyrics, newTrackNumber, coverArtUpdate ->
                 playerViewModel.editSongMetadata(song, newTitle, newArtist, newAlbum, newGenre, newLyrics, newTrackNumber, coverArtUpdate)
             },
-            generateAiMetadata = { fields ->
-                playerViewModel.generateAiMetadata(song, fields)
-            },
             removeFromListTrigger = removeFromListTrigger
         )
 
@@ -237,8 +205,7 @@ fun DailyMixScreen(
                 item(key = "daily_mix_header") {
                     ExpressiveDailyMixHeader(
                         songs = dailyMixSongs,
-                        scrollState = lazyListState,
-                        onShowMenu = { playerViewModel.showAiPlaylistSheet() }
+                        scrollState = lazyListState
                     )
                 }
 
@@ -380,8 +347,7 @@ fun DailyMixScreen(
 @Composable
 private fun ExpressiveDailyMixHeader(
     songs: List<Song>,
-    scrollState: LazyListState,
-    onShowMenu: () -> Unit
+    scrollState: LazyListState
 ) {
     Trace.beginSection("ExpressiveDailyMixHeader.Composition")
     val albumArts = remember(songs) { songs.map { it.albumArtUriString }.distinct().take(3) }
@@ -514,21 +480,6 @@ private fun ExpressiveDailyMixHeader(
                     text = "${songs.size} Songs • ${formatDuration(totalDuration)}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                )
-            }
-            LargeExtendedFloatingActionButton(
-                modifier = Modifier,
-                onClick = onShowMenu,
-                shape = RoundedStarShape(
-                    sides = 8,
-                    curve = 0.05,
-                    rotation = 0f
-                )
-            ) {
-                Icon(
-                    modifier = Modifier.size(20.dp),
-                    painter = painterResource(R.drawable.gemini_ai),
-                    contentDescription = "Play"
                 )
             }
         }

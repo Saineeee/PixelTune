@@ -152,7 +152,6 @@ fun CreatePlaylistDialog(
     visible: Boolean,
     allSongs: List<Song>,
     onDismiss: () -> Unit,
-    onGenerateClick: () -> Unit,
     onCreate: (String, String?, Int?, String?, List<String>, Float, Float, Float, String?, Float?, Float?, Float?, Float?) -> Unit // ... d4
 ) {
     val transitionState = remember { MutableTransitionState(false) }
@@ -175,7 +174,6 @@ fun CreatePlaylistDialog(
                 CreatePlaylistContent(
                     allSongs = allSongs,
                     onDismiss = onDismiss,
-                    onGenerateClick = onGenerateClick,
                     onCreate = onCreate
                 )
             }
@@ -239,7 +237,7 @@ fun EditPlaylistDialog(
 private fun CreatePlaylistContent(
     allSongs: List<Song>,
     onDismiss: () -> Unit,
-    onGenerateClick: () -> Unit,
+    
     onCreate: (String, String?, Int?, String?, List<String>, Float, Float, Float, String?, Float?, Float?, Float?, Float?) -> Unit
 ) {
     val context = LocalContext.current
@@ -461,8 +459,7 @@ private fun CreatePlaylistContent(
                      onStarRotationChange = { starRotation = it },
                      starScale = starScale,
                      onStarScaleChange = { starScale = it },
-                     onGenerateClick = onGenerateClick
-                 )
+                  )
             } else {
                  val filteredSongs = remember(searchQuery, allSongs) {
                       if (searchQuery.isBlank()) allSongs 
@@ -990,29 +987,6 @@ private fun PlaylistFormContent(
             )
             
             Spacer(modifier = Modifier.height(8.dp))
-
-            // AI Generation Button - only show in Create mode (not Edit mode)
-            if (onGenerateClick != null) {
-                androidx.compose.material3.FilledTonalButton(
-                    onClick = onGenerateClick,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 22.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.AutoAwesome, // Use built-in icon
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Generate with AI", fontWeight = FontWeight.SemiBold)
-                }
-            }
 
             val tabs = listOf("Default", "Image", "Icon")
             ExpressiveButtonGroup(

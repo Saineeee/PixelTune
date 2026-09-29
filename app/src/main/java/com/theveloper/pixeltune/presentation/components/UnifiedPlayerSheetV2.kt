@@ -63,7 +63,6 @@ import com.theveloper.pixeltune.presentation.components.scoped.SheetMotionContro
 import com.theveloper.pixeltune.presentation.components.scoped.miniPlayerDismissHorizontalGesture
 import com.theveloper.pixeltune.presentation.components.scoped.playerSheetVerticalDragGesture
 import com.theveloper.pixeltune.presentation.components.scoped.rememberFullPlayerCompositionPolicy
-import com.theveloper.pixeltune.presentation.components.scoped.rememberCastSheetState
 import com.theveloper.pixeltune.presentation.components.scoped.rememberFullPlayerVisualState
 import com.theveloper.pixeltune.presentation.components.scoped.rememberMiniPlayerDismissGestureHandler
 import com.theveloper.pixeltune.presentation.components.scoped.rememberPrewarmFullPlayer
@@ -140,13 +139,8 @@ fun UnifiedPlayerSheetV2(
     val infrequentPlayerState = infrequentPlayerStateReference.value
 
     val currentPositionState = playerViewModel.currentPlaybackPosition.collectAsStateWithLifecycle()
-    val remotePositionState = playerViewModel.remotePosition.collectAsStateWithLifecycle()
-    val isRemotePlaybackActive by playerViewModel.isRemotePlaybackActive.collectAsStateWithLifecycle()
-    val positionToDisplayProvider = remember(isRemotePlaybackActive) {
-        {
-            if (isRemotePlaybackActive) remotePositionState.value
-            else currentPositionState.value
-        }
+    val positionToDisplayProvider = remember {
+        { currentPositionState.value }
     }
 
     val isFavorite by playerViewModel.isCurrentSongFavorite.collectAsStateWithLifecycle()
@@ -200,9 +194,8 @@ fun UnifiedPlayerSheetV2(
     }
     val miniPlayerContentHeightPx = remember { with(density) { MiniPlayerHeight.toPx() } }
 
-    val isCastConnecting by playerViewModel.isCastConnecting.collectAsStateWithLifecycle()
-    val showPlayerContentArea by remember(infrequentPlayerState.currentSong, isCastConnecting) {
-        derivedStateOf { infrequentPlayerState.currentSong != null || isCastConnecting }
+    val showPlayerContentArea by remember(infrequentPlayerState.currentSong) {
+        derivedStateOf { infrequentPlayerState.currentSong != null }
     }
 
     val playerContentExpansionFraction = playerViewModel.playerContentExpansionFraction
@@ -353,7 +346,6 @@ fun UnifiedPlayerSheetV2(
     val queueSheetController = queueSheetState.queueSheetController
     val onQueueSheetHeightPxChange = queueSheetState.onQueueSheetHeightPxChange
 
-    val castSheetState = rememberCastSheetState()
     val sheetBackAndDragState = rememberSheetBackAndDragState(
         showPlayerContentArea = showPlayerContentArea,
         currentSheetContentState = currentSheetContentState
@@ -414,8 +406,7 @@ fun UnifiedPlayerSheetV2(
         hideMiniPlayer = hideMiniPlayer,
         showQueueSheet = showQueueSheet,
         queueHiddenOffsetPx = queueHiddenOffsetPx,
-        screenHeightPx = screenHeightPx,
-        castSheetOpenFraction = castSheetState.castSheetOpenFraction
+        screenHeightPx = screenHeightPx
     )
     val internalIsKeyboardVisible = sheetOverlayState.internalIsKeyboardVisible
     val actuallyShowSheetContent = sheetOverlayState.actuallyShowSheetContent
@@ -432,13 +423,9 @@ fun UnifiedPlayerSheetV2(
     LaunchedEffect(showQueueSheet) {
         playerViewModel.updateQueueSheetVisibility(showQueueSheet)
     }
-    LaunchedEffect(castSheetState.showCastSheet) {
-        playerViewModel.updateCastSheetVisibility(castSheetState.showCastSheet)
-    }
     DisposableEffect(Unit) {
         onDispose {
             playerViewModel.updateQueueSheetVisibility(false)
-            playerViewModel.updateCastSheetVisibility(false)
         }
     }
 
@@ -572,7 +559,6 @@ fun UnifiedPlayerSheetV2(
                             miniPlayerScheme = miniPlayerScheme,
                             overallSheetTopCornerRadius = overallSheetTopCornerRadius,
                             infrequentPlayerState = infrequentPlayerState,
-                            isCastConnecting = isCastConnecting,
                             isPreparingPlayback = isPreparingPlayback,
                             playerContentExpansionFraction = playerContentExpansionFraction,
                             albumColorScheme = albumColorScheme,
@@ -592,7 +578,6 @@ fun UnifiedPlayerSheetV2(
                             onQueueDragStart = sheetActionHandlers.beginQueueDrag,
                             onQueueDrag = sheetActionHandlers.dragQueueBy,
                             onQueueRelease = sheetActionHandlers.endQueueDrag,
-                            onShowCastClicked = castSheetState.openCastSheet
                         )
                     }
                 }
@@ -609,7 +594,6 @@ fun UnifiedPlayerSheetV2(
                     fullPlayerLoadingTweaks = fullPlayerLoadingTweaks,
                     playerViewModel = playerViewModel,
                     currentPositionProvider = positionToDisplayProvider,
-                    isCastConnecting = isCastConnecting,
                     isFavorite = isFavorite,
                     onShowQueueClicked = sheetActionHandlers.openQueueSheet,
                     onQueueDragStart = sheetActionHandlers.beginQueueDrag,
@@ -679,14 +663,6 @@ fun UnifiedPlayerSheetV2(
         }
     }
 
-    UnifiedPlayerCastLayer(
-        showCastSheet = castSheetState.showCastSheet,
-        internalIsKeyboardVisible = internalIsKeyboardVisible,
-        albumColorScheme = albumColorScheme,
-        playerViewModel = playerViewModel,
-        onDismiss = castSheetState.dismissCastSheet,
-        onExpansionChanged = castSheetState.onCastExpansionChanged
-    )
 
     UnifiedPlayerSaveQueueLayer(
         pendingOverlay = pendingSaveQueueOverlay,

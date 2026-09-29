@@ -88,8 +88,6 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
-import com.theveloper.pixeltune.data.github.GitHubAnnouncementPropertiesService
-import com.theveloper.pixeltune.data.github.PlayStoreAnnouncementRemoteConfig
 import com.theveloper.pixeltune.data.preferences.AppThemeMode
 import com.theveloper.pixeltune.data.preferences.NavBarStyle
 import com.theveloper.pixeltune.data.preferences.UserPreferencesRepository
@@ -106,9 +104,6 @@ import com.theveloper.pixeltune.presentation.components.MiniPlayerHeight
 import com.theveloper.pixeltune.presentation.components.NavBarContentHeight
 import com.theveloper.pixeltune.presentation.components.NavBarContentHeightFullWidth
 import com.theveloper.pixeltune.presentation.components.PlayerInternalNavigationBar
-import com.theveloper.pixeltune.presentation.components.PlayStoreAnnouncementDefaults
-import com.theveloper.pixeltune.presentation.components.PlayStoreAnnouncementDialog
-import com.theveloper.pixeltune.presentation.components.PlayStoreAnnouncementUiModel
 import com.theveloper.pixeltune.presentation.components.UnifiedPlayerSheet
 import com.theveloper.pixeltune.presentation.components.UnifiedPlayerSheetV2
 import com.theveloper.pixeltune.presentation.navigation.AppNavigation
@@ -467,18 +462,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun PlayStoreAnnouncementRemoteConfig.toUiModel(): PlayStoreAnnouncementUiModel {
-        val fallback = PlayStoreAnnouncementDefaults.Template
-        return fallback.copy(
-            enabled = enabled,
-            playStoreUrl = playStoreUrl ?: fallback.playStoreUrl,
-            title = title ?: fallback.title,
-            body = body ?: fallback.body,
-            primaryActionLabel = primaryActionLabel ?: fallback.primaryActionLabel,
-            dismissActionLabel = dismissActionLabel ?: fallback.dismissActionLabel,
-            linkPendingMessage = linkPendingMessage ?: fallback.linkPendingMessage,
-        )
-    }
 
     @androidx.annotation.OptIn(UnstableApi::class)
     @Composable
@@ -698,31 +681,6 @@ class MainActivity : ComponentActivity() {
 
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
-        val announcementService = remember { GitHubAnnouncementPropertiesService() }
-        var playStoreAnnouncement by remember { mutableStateOf(PlayStoreAnnouncementDefaults.Template) }
-        var showPlayStoreAnnouncement by remember { mutableStateOf(false) }
-
-        LaunchedEffect(Unit) {
-            if (PlayStoreAnnouncementDefaults.LOCAL_PREVIEW_ENABLED) {
-                playStoreAnnouncement = PlayStoreAnnouncementDefaults.HardcodedPreview
-                showPlayStoreAnnouncement = true
-                return@LaunchedEffect
-            }
-
-            announcementService.fetchPlayStoreAnnouncement()
-                .onSuccess { remoteConfig ->
-                    val resolvedAnnouncement = remoteConfig.toUiModel()
-                    playStoreAnnouncement = resolvedAnnouncement
-                    showPlayStoreAnnouncement = resolvedAnnouncement.enabled
-                }
-                .onFailure { throwable ->
-                    LogUtils.w(
-                        this@MainActivity,
-                        "Remote announcement unavailable. Keeping popup disabled. ${throwable.message ?: ""}",
-                    )
-                }
-        }
-
         CompositionLocalProvider(
             LocalAppHapticsConfig provides appHapticsConfig,
             LocalHapticFeedback provides scopedHapticFeedback
@@ -1021,16 +979,6 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        if (showPlayStoreAnnouncement) {
-                            PlayStoreAnnouncementDialog(
-                                announcement = playStoreAnnouncement,
-                                onDismiss = { showPlayStoreAnnouncement = false },
-                                onOpenPlayStore = { url ->
-                                    showPlayStoreAnnouncement = false
-                                    openExternalUrl(url)
-                                }
-                            )
-                        }
                     }
                 }
             }

@@ -31,6 +31,12 @@ android {
         // (TF Lite / PyTorch deps were already removed from the build).
     }
 
+    // F-Droid: never embed dependency metadata (play-managed updates) in APK/AAB
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
     packaging {
         resources {
             excludes += "META-INF/INDEX.LIST"
@@ -156,10 +162,6 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    // google.genai 1.11.0 — 新版统一 Gemini SDK
-    implementation(libs.google.genai)
-    implementation(libs.androidx.mediarouter)
-    implementation(libs.play.services.cast.framework)
     implementation(libs.androidx.navigation.runtime.ktx)
     implementation(libs.androidx.compose.material3)
     testImplementation(libs.junit.jupiter.api)
@@ -262,8 +264,6 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.session)
-    implementation(libs.androidx.media.router)
-    implementation(libs.google.play.services.cast.framework)
     implementation(libs.androidx.media3.exoplayer.ffmpeg)
 
     // Palette API for color extraction
@@ -295,9 +295,6 @@ dependencies {
 
     // Kotlin Collections
     implementation(libs.kotlinx.collections.immutable) // Verifica la última versión
-
-    // Gemini — 使用 com.google.ai.client.generativeai (已在上方声明)
-    // google.genai (Java JVM SDK) 未被任何代码引用，已移除
 
     //permisisons
     implementation(libs.accompanist.permissions)
@@ -351,11 +348,6 @@ dependencies {
     implementation(libs.androidx.media)
     implementation(libs.androidx.app)
     implementation(libs.androidx.app.projected)
-
-    // Wear OS Data Layer
-    implementation(project(":shared"))
-    implementation(libs.play.services.wearable)
-    implementation(libs.kotlinx.coroutines.play.services)
 
     // Telegram TDLib
     implementation(libs.tdlib)

@@ -77,8 +77,6 @@ fun ExternalPlayerOverlay(
     // (artwork, titles, buttons) on every tick. The States are kept unread
     // here and consumed inside derived states / a snapshotFlow below.
     val playbackPositionState = playerViewModel.currentPlaybackPosition.collectAsStateWithLifecycle()
-    val remotePositionState = playerViewModel.remotePosition.collectAsStateWithLifecycle()
-    val isRemotePlaybackActive by playerViewModel.isRemotePlaybackActive.collectAsStateWithLifecycle()
     val navBarCornerRadius by playerViewModel.navBarCornerRadius.collectAsStateWithLifecycle()
     val currentSong = stablePlayerState.currentSong
 
@@ -169,13 +167,9 @@ fun ExternalPlayerOverlay(
                     // PERF(external-player): fraction derived inside a State —
                     // the overlay composition never reads the ticking position;
                     // only the slider + the 1 s-quantized time label update.
-                    val progressFractionState = remember(totalDuration, isRemotePlaybackActive) {
+                    val progressFractionState = remember(totalDuration) {
                         derivedStateOf {
-                            val rawPosition = if (isRemotePlaybackActive) {
-                                remotePositionState.value
-                            } else {
-                                playbackPositionState.value
-                            }
+                            val rawPosition = playbackPositionState.value
                             val position = rawPosition.coerceIn(0L, totalDuration)
                             if (totalDuration > 0) position.toFloat() / totalDuration else 0f
                         }
@@ -183,13 +177,9 @@ fun ExternalPlayerOverlay(
                     // 1 s-quantized position for the time label: the Text only
                     // recomposes when the displayed second changes (was every
                     // tick, with a fresh formatted String each time).
-                    val positionLabelSeconds by remember(totalDuration, isRemotePlaybackActive) {
+                    val positionLabelSeconds by remember(totalDuration) {
                         derivedStateOf {
-                            val rawPosition = if (isRemotePlaybackActive) {
-                                remotePositionState.value
-                            } else {
-                                playbackPositionState.value
-                            }
+                            val rawPosition = playbackPositionState.value
                             rawPosition.coerceIn(0L, totalDuration) / 1000L
                         }
                     }
@@ -197,7 +187,7 @@ fun ExternalPlayerOverlay(
                     var sliderPosition by remember(currentSong.id) { mutableStateOf(progressFractionState.value) }
                     var isUserScrubbing by remember { mutableStateOf(false) }
 
-                    LaunchedEffect(currentSong.id, totalDuration, isRemotePlaybackActive) {
+                    LaunchedEffect(currentSong.id, totalDuration) {
                         snapshotFlow { progressFractionState.value }
                             .collect { fraction ->
                                 if (!isUserScrubbing) {
