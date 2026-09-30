@@ -3,8 +3,8 @@ package com.saine.pixeltune.presentation.components.scoped
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -15,14 +15,24 @@ import com.saine.pixeltune.presentation.viewmodel.PlayerSheetState
 private const val PREDICTIVE_BACK_SWIPE_EDGE_LEFT = 0
 private const val PREDICTIVE_BACK_SWIPE_EDGE_RIGHT = 1
 
-internal data class SheetVisualState(
-    val currentBottomPadding: Dp,
-    val playerContentAreaHeightDp: Dp,
-    val visualSheetTranslationY: Float,
-    val overallSheetTopCornerRadius: Dp,
-    val playerContentActualBottomRadius: Dp,
-    val currentHorizontalPaddingStart: Dp,
-    val currentHorizontalPaddingEnd: Dp
+/**
+ * Per-frame morphing visual values of the player sheet, exposed as [State]s so they can be read
+ * inside layout (`Modifier.layout` / `Modifier.offset {}` lambdas) and draw
+ * (`graphicsLayer {}` / `drawBehind {}`) blocks without subscribing the sheet host's composition
+ * scope to every animation frame.
+ *
+ * Callers that still read `.value` in composition (legacy V1 path) get the exact same numbers as
+ * before — but the V2 host reads them only from deferred modifier blocks, which removes the
+ * per-frame whole-sheet recomposition that made the drag / expand / collapse gestures janky.
+ */
+internal class SheetVisualState(
+    val currentBottomPadding: State<Dp>,
+    val playerContentAreaHeight: State<Dp>,
+    val visualSheetTranslationY: State<Float>,
+    val overallSheetTopCornerRadius: State<Dp>,
+    val playerContentActualBottomRadius: State<Dp>,
+    val currentHorizontalPaddingStart: State<Dp>,
+    val currentHorizontalPaddingEnd: State<Dp>
 )
 
 @Composable
@@ -43,7 +53,7 @@ internal fun rememberSheetVisualState(
     hasCurrentSong: Boolean,
     swipeDismissProgress: Float
 ): SheetVisualState {
-    val currentBottomPadding by remember(
+    val currentBottomPadding = remember(
         showPlayerContentArea,
         collapsedStateHorizontalPadding,
         predictiveBackCollapseProgress,
@@ -61,7 +71,7 @@ internal fun rememberSheetVisualState(
         }
     }
 
-    val playerContentAreaHeightDp by remember(
+    val playerContentAreaHeight = remember(
         showPlayerContentArea,
         playerContentExpansionFraction,
         containerHeight
@@ -79,14 +89,14 @@ internal fun rememberSheetVisualState(
         }
     }
 
-    val visualSheetTranslationY by remember {
+    val visualSheetTranslationY = remember {
         derivedStateOf {
             currentSheetTranslationY.value * (1f - predictiveBackCollapseProgress) +
                 (sheetCollapsedTargetY * predictiveBackCollapseProgress)
         }
     }
 
-    val overallSheetTopCornerRadius by remember(
+    val overallSheetTopCornerRadius = remember(
         showPlayerContentArea,
         playerContentExpansionFraction,
         predictiveBackCollapseProgress,
@@ -127,7 +137,7 @@ internal fun rememberSheetVisualState(
         }
     }
 
-    val playerContentActualBottomRadius by remember(
+    val playerContentActualBottomRadius = remember(
         navBarStyle,
         showPlayerContentArea,
         playerContentExpansionFraction,
@@ -187,7 +197,7 @@ internal fun rememberSheetVisualState(
     val actualCollapsedStateHorizontalPadding =
         if (navBarStyle == NavBarStyle.FULL_WIDTH) 14.dp else collapsedStateHorizontalPadding
 
-    val currentHorizontalPadding by remember(
+    val currentHorizontalPadding = remember(
         showPlayerContentArea,
         playerContentExpansionFraction,
         actualCollapsedStateHorizontalPadding
@@ -205,7 +215,7 @@ internal fun rememberSheetVisualState(
         }
     }
 
-    val currentHorizontalPaddingStart by remember(
+    val currentHorizontalPaddingStart = remember(
         showPlayerContentArea,
         currentSheetContentState,
         predictiveBackCollapseProgress,
@@ -227,15 +237,15 @@ internal fun rememberSheetVisualState(
                 when (predictiveBackSwipeEdge) {
                     PREDICTIVE_BACK_SWIPE_EDGE_LEFT -> gestureSidePadding
                     PREDICTIVE_BACK_SWIPE_EDGE_RIGHT -> 0.dp
-                    else -> currentHorizontalPadding
+                    else -> currentHorizontalPadding.value
                 }
             } else {
-                currentHorizontalPadding
+                currentHorizontalPadding.value
             }
         }
     }
 
-    val currentHorizontalPaddingEnd by remember(
+    val currentHorizontalPaddingEnd = remember(
         showPlayerContentArea,
         currentSheetContentState,
         predictiveBackCollapseProgress,
@@ -257,17 +267,17 @@ internal fun rememberSheetVisualState(
                 when (predictiveBackSwipeEdge) {
                     PREDICTIVE_BACK_SWIPE_EDGE_LEFT -> 0.dp
                     PREDICTIVE_BACK_SWIPE_EDGE_RIGHT -> gestureSidePadding
-                    else -> currentHorizontalPadding
+                    else -> currentHorizontalPadding.value
                 }
             } else {
-                currentHorizontalPadding
+                currentHorizontalPadding.value
             }
         }
     }
 
     return SheetVisualState(
         currentBottomPadding = currentBottomPadding,
-        playerContentAreaHeightDp = playerContentAreaHeightDp,
+        playerContentAreaHeight = playerContentAreaHeight,
         visualSheetTranslationY = visualSheetTranslationY,
         overallSheetTopCornerRadius = overallSheetTopCornerRadius,
         playerContentActualBottomRadius = playerContentActualBottomRadius,

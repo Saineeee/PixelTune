@@ -81,7 +81,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -105,6 +104,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.res.stringResource
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -1153,7 +1153,7 @@ private fun FullPlayerSongMetadataSection(
                 Box(Modifier.fillMaxWidth().height(56.dp))
             } else {
                 MetadataPlaceholder(
-                    expansionFraction = expansionFractionProvider(),
+                    expansionFractionProvider = expansionFractionProvider,
                     color = placeholderColor,
                     onColor = placeholderOnColor,
                     showQueueButtons = isLandscape
@@ -1478,9 +1478,18 @@ private fun PlayerProgressBarSection(
     modifier: Modifier = Modifier
 ) {
     val progressSectionHorizontalInset = 0.dp
-    val expansionFraction = expansionFractionProvider()
-    val isVisible = expansionFraction > 0.01f
-    val isExpanded = currentSheetState == PlayerSheetState.EXPANDED && expansionFraction >= 0.995f
+    // PERF(drag-jank): derive threshold Booleans instead of reading the per-frame expansion
+    // fraction in composition — this section (slider + time labels + DelayedContent) used to
+    // recompose on every drag/open/close frame.
+    val isVisible by remember {
+        derivedStateOf { expansionFractionProvider() > 0.01f }
+    }
+    val isExpanded by remember(currentSheetState) {
+        derivedStateOf {
+            currentSheetState == PlayerSheetState.EXPANDED &&
+                expansionFractionProvider() >= 0.995f
+        }
+    }
     val shouldRunRealtimeUpdates = allowRealtimeUpdates && isVisible
 
     val reportedDuration = totalDurationValue.coerceAtLeast(0L)
@@ -1607,7 +1616,7 @@ private fun PlayerProgressBarSection(
                  Box(Modifier.fillMaxWidth().heightIn(min = 56.dp))
              } else {
                  ProgressPlaceholder(
-                     expansionFraction = expansionFraction,
+                     expansionFractionProvider = expansionFractionProvider,
                      color = placeholderColor,
                      onColor = placeholderOnColor,
                      showAudioMetaChip = showAudioFileInfo && !displayAudioMetaLabel.isNullOrBlank()
@@ -1618,8 +1627,13 @@ private fun PlayerProgressBarSection(
         Column(
             modifier = modifier
                 .fillMaxWidth()
-                .padding(vertical = lerp(2.dp, 0.dp, expansionFraction))
                 .heightIn(min = 56.dp)
+                .graphicsLayer {
+                    // 2dp -> 0dp settle as the player expands, applied in the draw phase
+                    // instead of an animated layout padding.
+                    translationY =
+                        (1f - expansionFractionProvider().coerceIn(0f, 1f)) * 2.dp.toPx()
+                }
         ) {
             
             // Isolated Slider Component
@@ -1785,89 +1799,104 @@ private fun DelayedContent(
     placeholder: @Composable () -> Unit,
     content: @Composable () -> Unit
 ) {
-    val rawExpansionFraction by remember {
-        derivedStateOf {
-            expansionFractionProvider().coerceIn(0f, 1f)
-        }
+    // PERF(drag-jank): the expansion fraction changes on EVERY frame of the sheet drag /
+    // open / close animation. It used to be read via delegated `by` states in this scope and
+    // used as a `LaunchedEffect` key, which (a) recomposed this content gate once per frame and
+    // (b) cancelled + relaunched the effect coroutine on every one of those frames. Both the
+    // reads and the direction bookkeeping now happen inside a snapshotFlow collector, so a
+    // morphing frame costs zero recomposition here.
+    val rawExpansionFractionState = remember {
+        derivedStateOf { expansionFractionProvider().coerceIn(0f, 1f) }
     }
-    // Some carousel styles can leave the fraction just shy of 1f at rest.
-    val effectiveExpansionFraction by remember {
-        derivedStateOf {
-            if (isExpandedOverride && rawExpansionFraction >= 0.985f) 1f else rawExpansionFraction
-        }
-    }
-    var previousExpansionFraction by remember { mutableStateOf(rawExpansionFraction) }
-    var previousExpandedOverride by remember { mutableStateOf(isExpandedOverride) }
-    val isCollapsingByFraction = rawExpansionFraction < previousExpansionFraction - 0.001f
-    val isExpandingByFraction = rawExpansionFraction > previousExpansionFraction + 0.001f
-    val justStartedCollapsing = previousExpandedOverride && !isExpandedOverride
-    val justStartedExpanding = !previousExpandedOverride && isExpandedOverride
-    val isCollapsing = isCollapsingByFraction || justStartedCollapsing
-    val isExpanding = isExpandingByFraction || justStartedExpanding
+    val isExpandedOverrideState = rememberUpdatedState(isExpandedOverride)
 
-    LaunchedEffect(rawExpansionFraction, isExpandedOverride) {
-        previousExpansionFraction = rawExpansionFraction
-        previousExpandedOverride = isExpandedOverride
+    // Some carousel styles can leave the fraction just shy of 1f at rest.
+    val effectiveExpansionFractionState = remember {
+        derivedStateOf {
+            val raw = rawExpansionFractionState.value
+            if (isExpandedOverrideState.value && raw >= 0.985f) 1f else raw
+        }
     }
 
     val appearThreshold = delayAppearThreshold.coerceIn(0f, 1f)
     val closeThreshold = delayCloseThreshold.coerceIn(0f, 1f)
-    val isFullyExpanded = isExpandedOverride && effectiveExpansionFraction >= 0.985f
     var isDelayGateOpen by remember(shouldDelay) { mutableStateOf(!shouldDelay) }
+
+    // Direction bookkeeping (previous fraction / override) persists across effect restarts.
+    var previousExpansionFraction by remember { mutableStateOf(Float.NaN) }
+    var previousExpandedOverride by remember { mutableStateOf(isExpandedOverride) }
 
     LaunchedEffect(
         shouldDelay,
         appearThreshold,
         closeThreshold,
-        effectiveExpansionFraction,
         applyPlaceholderDelayOnClose,
         switchOnDragRelease,
-        isSheetDragGestureActive,
-        isCollapsing,
-        isExpanding,
         isExpandedOverride,
-        isFullyExpanded
+        isSheetDragGestureActive
     ) {
         if (!shouldDelay) {
             isDelayGateOpen = true
             return@LaunchedEffect
         }
 
-        if (switchOnDragRelease) {
-            if (isSheetDragGestureActive) {
-                return@LaunchedEffect
+        snapshotFlow { rawExpansionFractionState.value }
+            .collect { rawFraction ->
+                // isExpandedOverride / isSheetDragGestureActive are captured fresh by the
+                // effect restart keys above.
+                val effectiveExpansionFraction = effectiveExpansionFractionState.value
+                val isFullyExpanded =
+                    isExpandedOverride && effectiveExpansionFraction >= 0.985f
+
+                val hasPrevious = !previousExpansionFraction.isNaN()
+                val isCollapsingByFraction =
+                    hasPrevious && rawFraction < previousExpansionFraction - 0.001f
+                val isExpandingByFraction =
+                    hasPrevious && rawFraction > previousExpansionFraction + 0.001f
+                val justStartedCollapsing = previousExpandedOverride && !isExpandedOverride
+                val justStartedExpanding = !previousExpandedOverride && isExpandedOverride
+                val isCollapsing = isCollapsingByFraction || justStartedCollapsing
+                val isExpanding = isExpandingByFraction || justStartedExpanding
+                previousExpansionFraction = rawFraction
+                previousExpandedOverride = isExpandedOverride
+
+                if (switchOnDragRelease) {
+                    if (isSheetDragGestureActive) {
+                        return@collect
+                    }
+
+                    isDelayGateOpen = isExpandedOverride
+                    return@collect
+                }
+
+                if (effectiveExpansionFraction <= 0.001f && !isExpandedOverride) {
+                    isDelayGateOpen = false
+                    return@collect
+                }
+
+                // Keep gate open only when truly expanded, so delay toggles still apply during opening motion.
+                if (isFullyExpanded) {
+                    isDelayGateOpen = true
+                    return@collect
+                }
+
+                if (isDelayGateOpen) {
+                    if (applyPlaceholderDelayOnClose && isCollapsing && effectiveExpansionFraction <= closeThreshold) {
+                        isDelayGateOpen = false
+                    }
+                } else if (
+                    effectiveExpansionFraction >= appearThreshold &&
+                        (!applyPlaceholderDelayOnClose || isExpanding || isExpandedOverride)
+                ) {
+                    isDelayGateOpen = true
+                }
             }
-
-            isDelayGateOpen = isExpandedOverride
-            return@LaunchedEffect
-        }
-
-        if (effectiveExpansionFraction <= 0.001f && !isExpandedOverride) {
-            isDelayGateOpen = false
-            return@LaunchedEffect
-        }
-
-        // Keep gate open only when truly expanded, so delay toggles still apply during opening motion.
-        if (isFullyExpanded) {
-            isDelayGateOpen = true
-            return@LaunchedEffect
-        }
-
-        if (isDelayGateOpen) {
-            if (applyPlaceholderDelayOnClose && isCollapsing && effectiveExpansionFraction <= closeThreshold) {
-                isDelayGateOpen = false
-            }
-        } else if (
-            effectiveExpansionFraction >= appearThreshold &&
-                (!applyPlaceholderDelayOnClose || isExpanding || isExpandedOverride)
-        ) {
-            isDelayGateOpen = true
-        }
     }
 
-    val baseAlpha by remember(normalStartThreshold, effectiveExpansionFraction) {
+    val baseAlpha = remember(normalStartThreshold) {
         derivedStateOf {
-            ((effectiveExpansionFraction - normalStartThreshold) / (1f - normalStartThreshold))
+            val fraction = effectiveExpansionFractionState.value
+            ((fraction - normalStartThreshold) / (1f - normalStartThreshold))
                 .coerceIn(0f, 1f)
         }
     }
@@ -1892,12 +1921,15 @@ private fun DelayedContent(
 
     if (shouldDelay) {
         Box(modifier = sharedBoundsModifier) {
-            val effectiveContentAlpha = (contentBlendAlpha * baseAlpha).coerceIn(0f, 1f)
             val shouldComposeContent = isDelayGateOpen
 
             if (shouldComposeContent) {
                 Box(
-                    modifier = Modifier.graphicsLayer { alpha = effectiveContentAlpha }
+                    // Both alphas are read inside the graphicsLayer block (draw phase) so the
+                    // expansion-driven fade never recomposes this scope.
+                    modifier = Modifier.graphicsLayer {
+                        alpha = (contentBlendAlpha * baseAlpha.value).coerceIn(0f, 1f)
+                    }
                 ) {
                     content()
                 }
@@ -1912,7 +1944,7 @@ private fun DelayedContent(
         }
     } else {
         Box(
-            modifier = sharedBoundsModifier.graphicsLayer { alpha = baseAlpha }
+            modifier = sharedBoundsModifier.graphicsLayer { alpha = baseAlpha.value }
         ) {
             content()
         }
@@ -2058,7 +2090,7 @@ private fun AlbumPlaceholder(
 
 @Composable
 private fun MetadataPlaceholder(
-    expansionFraction: Float,
+    expansionFractionProvider: () -> Float,
     color: Color,
     onColor: Color,
     showQueueButtons: Boolean
@@ -2068,8 +2100,10 @@ private fun MetadataPlaceholder(
             .fillMaxWidth()
             .heightIn(min = 70.dp)
             .graphicsLayer {
-                alpha = expansionFraction.coerceIn(0f, 1f)
-                translationY = (1f - expansionFraction.coerceIn(0f, 1f)) * 24f
+                // Read the live fraction inside the draw phase — no per-frame recomposition.
+                val expansionFraction = expansionFractionProvider().coerceIn(0f, 1f)
+                alpha = expansionFraction
+                translationY = (1f - expansionFraction) * 24f
             },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -2136,7 +2170,7 @@ private fun MetadataPlaceholder(
 
 @Composable
 private fun ProgressPlaceholder(
-    expansionFraction: Float,
+    expansionFractionProvider: () -> Float,
     color: Color,
     onColor: Color,
     showAudioMetaChip: Boolean
@@ -2145,7 +2179,12 @@ private fun ProgressPlaceholder(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 70.dp)
-            .padding(vertical = lerp(2.dp, 0.dp, expansionFraction.coerceIn(0f, 1f))),
+            .graphicsLayer {
+                // 2dp -> 0dp settle as the player expands, applied in the draw phase
+                // instead of an animated layout padding.
+                translationY =
+                    (1f - expansionFractionProvider().coerceIn(0f, 1f)) * 2.dp.toPx()
+            },
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(

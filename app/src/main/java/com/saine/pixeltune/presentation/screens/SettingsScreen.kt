@@ -3,14 +3,8 @@ package com.saine.pixeltune.presentation.screens
 import com.saine.pixeltune.presentation.navigation.navigateSafely
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDp
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.rememberTransition
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -49,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,7 +55,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -100,24 +94,10 @@ fun SettingsScreen(
         settingsViewModel: SettingsViewModel = hiltViewModel()
 ) {
 
-    // Animation effects
-    val transitionState = remember { MutableTransitionState(false) }
-    LaunchedEffect(true) { transitionState.targetState = true }
-
-    val transition = rememberTransition(transitionState, label = "SettingsAppearTransition")
-
-    val contentAlpha by
-            transition.animateFloat(
-                    label = "ContentAlpha",
-                    transitionSpec = { tween(durationMillis = 500) }
-            ) { if (it) 1f else 0f }
-
-    val contentOffset by
-            transition.animateDp(
-                    label = "ContentOffset",
-                    transitionSpec = { tween(durationMillis = 400, easing = FastOutSlowInEasing) }
-            ) { if (it) 0.dp else 40.dp }
-
+    // PERF(entry-jank): this screen used to run its OWN appear transition (alpha 500 ms +
+    // offset 400 ms) on top of the NavHost slide-in — two concurrent animations evaluated
+    // during the exact frames where the screen is first composed. The nav transition alone
+    // provides the motion; the redundant internal one is gone.
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
     val lazyListState = rememberLazyListState()
@@ -137,14 +117,17 @@ fun SettingsScreen(
     var showImportSheet by remember { mutableStateOf(false) }
 
     val topBarHeight = remember { Animatable(maxTopBarHeightPx) }
-    var collapseFraction by remember { mutableStateOf(0f) }
 
-    LaunchedEffect(topBarHeight.value) {
-        collapseFraction =
-                1f -
-                        ((topBarHeight.value - minTopBarHeightPx) /
-                                        (maxTopBarHeightPx - minTopBarHeightPx))
-                                .coerceIn(0f, 1f)
+    // PERF(header-jank): derived in a snapshot-aware state instead of a LaunchedEffect keyed
+    // on `topBarHeight.value` — the old effect relaunched a coroutine (and recomposed this
+    // screen) on every frame of the header collapse animation.
+    val collapseFraction by remember(minTopBarHeightPx, maxTopBarHeightPx) {
+        derivedStateOf {
+            1f -
+                    ((topBarHeight.value - minTopBarHeightPx) /
+                            (maxTopBarHeightPx - minTopBarHeightPx))
+                        .coerceIn(0f, 1f)
+        }
     }
 
     val nestedScrollConnection = remember {
@@ -195,10 +178,7 @@ fun SettingsScreen(
 
     Box(
             modifier =
-                    Modifier.nestedScroll(nestedScrollConnection).fillMaxSize().graphicsLayer {
-                        alpha = contentAlpha
-                        translationY = contentOffset.toPx()
-                    }
+                    Modifier.nestedScroll(nestedScrollConnection).fillMaxSize()
     ) {
         val currentTopBarHeightDp = with(density) { topBarHeight.value.toDp() }
         LazyColumn(

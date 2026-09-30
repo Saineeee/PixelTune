@@ -3,6 +3,7 @@ package com.saine.pixeltune.presentation.components.scoped
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -31,7 +32,7 @@ internal fun rememberQueueSheetState(
     scope: CoroutineScope,
     screenHeightPx: Float,
     density: Density,
-    currentBottomPadding: Dp,
+    currentBottomPaddingState: State<Dp>,
     showPlayerContentArea: Boolean,
     currentSheetContentState: PlayerSheetState
 ): QueueSheetState {
@@ -43,9 +44,9 @@ internal fun rememberQueueSheetState(
     }
     val queueSheetOffset = remember(screenHeightPx) { Animatable(screenHeightPx) }
     var queueSheetHeightPx by remember { mutableFloatStateOf(0f) }
-    val queueHiddenOffsetPx by remember(currentBottomPadding, queueSheetHeightPx, density) {
+    val queueHiddenOffsetPx by remember(currentBottomPaddingState, queueSheetHeightPx, density) {
         derivedStateOf {
-            val basePadding = with(density) { currentBottomPadding.toPx() }
+            val basePadding = with(density) { currentBottomPaddingState.value.toPx() }
             if (queueSheetHeightPx == 0f) 0f else queueSheetHeightPx + basePadding
         }
     }

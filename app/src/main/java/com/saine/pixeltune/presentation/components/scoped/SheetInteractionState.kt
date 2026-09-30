@@ -4,8 +4,8 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,8 +17,14 @@ import com.saine.pixeltune.presentation.viewmodel.PlayerSheetState
 import kotlinx.coroutines.CoroutineScope
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
 
-internal data class SheetInteractionState(
-    val playerShadowShape: Shape,
+internal class SheetInteractionState(
+    /**
+     * Card shape as a [State] so it can be consumed inside draw-phase modifier blocks
+     * (`graphicsLayer { shape = ... }`). The shape is rebuilt only when the corner radii /
+     * smooth-corner toggle actually change, and reading it from the draw phase means the drag /
+     * expand morph no longer recomposes the sheet host or reallocates shapes in composition.
+     */
+    val playerShadowShapeState: State<Shape>,
     val sheetVerticalDragGestureHandler: SheetVerticalDragGestureHandler,
     val canDragSheet: Boolean
 )
@@ -36,8 +42,8 @@ internal fun rememberSheetInteractionState(
     miniPlayerContentHeightPx: Float,
     currentSheetContentState: PlayerSheetState,
     showPlayerContentArea: Boolean,
-    overallSheetTopCornerRadius: Dp,
-    playerContentActualBottomRadius: Dp,
+    overallSheetTopCornerRadiusState: State<Dp>,
+    playerContentActualBottomRadiusState: State<Dp>,
     useSmoothCorners: Boolean,
     isDragging: Boolean,
     onAnimateSheet: suspend (
@@ -50,35 +56,37 @@ internal fun rememberSheetInteractionState(
     onDraggingChange: (Boolean) -> Unit,
     onDraggingPlayerAreaChange: (Boolean) -> Unit
 ): SheetInteractionState {
-    val useSmoothShape by remember(useSmoothCorners, isDragging, playerContentExpansionFraction.isRunning) {
-        derivedStateOf {
-            useSmoothCorners && !isDragging && !playerContentExpansionFraction.isRunning
-        }
-    }
-
-    val playerShadowShape = remember(
-        overallSheetTopCornerRadius,
-        playerContentActualBottomRadius,
-        useSmoothShape
+    // Smooth corners are only rendered while the sheet is at rest; while dragging or animating we
+    // fall back to plain rounded corners. Both inputs are read inside the derived state so the
+    // running flag flips do not recompose this scope.
+    val playerShadowShapeState = remember(
+        overallSheetTopCornerRadiusState,
+        playerContentActualBottomRadiusState,
+        useSmoothCorners,
+        isDragging
     ) {
-        if (useSmoothShape) {
-            AbsoluteSmoothCornerShape(
-                cornerRadiusTL = overallSheetTopCornerRadius,
-                smoothnessAsPercentBL = 60,
-                cornerRadiusTR = overallSheetTopCornerRadius,
-                smoothnessAsPercentBR = 60,
-                cornerRadiusBR = playerContentActualBottomRadius,
-                smoothnessAsPercentTL = 60,
-                cornerRadiusBL = playerContentActualBottomRadius,
-                smoothnessAsPercentTR = 60
-            )
-        } else {
-            RoundedCornerShape(
-                topStart = overallSheetTopCornerRadius,
-                topEnd = overallSheetTopCornerRadius,
-                bottomStart = playerContentActualBottomRadius,
-                bottomEnd = playerContentActualBottomRadius
-            )
+        derivedStateOf {
+            val overallSheetTopCornerRadius = overallSheetTopCornerRadiusState.value
+            val playerContentActualBottomRadius = playerContentActualBottomRadiusState.value
+            if (useSmoothCorners && !isDragging && !playerContentExpansionFraction.isRunning) {
+                AbsoluteSmoothCornerShape(
+                    cornerRadiusTL = overallSheetTopCornerRadius,
+                    smoothnessAsPercentBL = 60,
+                    cornerRadiusTR = overallSheetTopCornerRadius,
+                    smoothnessAsPercentBR = 60,
+                    cornerRadiusBR = playerContentActualBottomRadius,
+                    smoothnessAsPercentTL = 60,
+                    cornerRadiusBL = playerContentActualBottomRadius,
+                    smoothnessAsPercentTR = 60
+                )
+            } else {
+                RoundedCornerShape(
+                    topStart = overallSheetTopCornerRadius,
+                    topEnd = overallSheetTopCornerRadius,
+                    bottomStart = playerContentActualBottomRadius,
+                    bottomEnd = playerContentActualBottomRadius
+                )
+            }
         }
     }
 
@@ -124,7 +132,7 @@ internal fun rememberSheetInteractionState(
     }
 
     return SheetInteractionState(
-        playerShadowShape = playerShadowShape,
+        playerShadowShapeState = playerShadowShapeState,
         sheetVerticalDragGestureHandler = sheetVerticalDragGestureHandler,
         canDragSheet = showPlayerContentArea
     )

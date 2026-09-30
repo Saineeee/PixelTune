@@ -15,6 +15,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -40,7 +41,7 @@ internal data class SaveQueueOverlayData(
 internal fun UnifiedPlayerQueueLayer(
     shouldRenderLayer: Boolean,
     albumColorScheme: ColorScheme,
-    queueScrimAlpha: Float,
+    queueScrimAlphaState: State<Float>,
     showQueueSheet: Boolean,
     queueHiddenOffsetPx: Float,
     queueSheetOffset: Animatable<Float, AnimationVector1D>,
@@ -78,13 +79,18 @@ internal fun UnifiedPlayerQueueLayer(
         onQueueSheetHeightPxChange(0f)
     }
 
+    // Scrim visibility only flips while crossing the alpha boundaries — not per frame.
+    val isScrimVisible by remember(queueScrimAlphaState) {
+        derivedStateOf { queueScrimAlphaState.value > 0f }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
-        if (queueScrimAlpha > 0f) {
+        if (isScrimVisible) {
             Box(
                 modifier = Modifier
                     .matchParentSize()
                     .zIndex(0f)
-                    .graphicsLayer { alpha = queueScrimAlpha }
+                    .graphicsLayer { alpha = queueScrimAlphaState.value }
                     .background(MaterialTheme.colorScheme.scrim)
             )
         }
@@ -243,7 +249,7 @@ internal fun UnifiedPlayerQueueAndSongInfoHost(
     shouldRenderHost: Boolean,
     isQueueTelemetryActive: Boolean,
     albumColorScheme: ColorScheme,
-    queueScrimAlpha: Float,
+    queueScrimAlphaState: State<Float>,
     showQueueSheet: Boolean,
     queueHiddenOffsetPx: Float,
     queueSheetOffset: Animatable<Float, AnimationVector1D>,
@@ -348,7 +354,7 @@ internal fun UnifiedPlayerQueueAndSongInfoHost(
             UnifiedPlayerQueueLayer(
                 shouldRenderLayer = true,
                 albumColorScheme = albumColorScheme,
-                queueScrimAlpha = queueScrimAlpha,
+                queueScrimAlphaState = queueScrimAlphaState,
                 showQueueSheet = showQueueSheet,
                 queueHiddenOffsetPx = queueHiddenOffsetPx,
                 queueSheetOffset = queueSheetOffset,

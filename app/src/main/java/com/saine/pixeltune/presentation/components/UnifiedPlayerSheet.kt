@@ -67,7 +67,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -97,7 +96,9 @@ import com.saine.pixeltune.data.model.Song
 import com.saine.pixeltune.presentation.components.scoped.PlayerArtistNavigationEffect
 import com.saine.pixeltune.presentation.components.scoped.PlayerSheetPredictiveBackHandler
 import com.saine.pixeltune.presentation.components.scoped.QueueSheetRuntimeEffects
+import com.saine.pixeltune.presentation.components.scoped.deferredBottomPadding
 import com.saine.pixeltune.presentation.components.scoped.miniPlayerDismissHorizontalGesture
+import com.saine.pixeltune.presentation.components.scoped.playerCardSurface
 import com.saine.pixeltune.presentation.components.scoped.playerSheetVerticalDragGesture
 import com.saine.pixeltune.presentation.components.scoped.rememberFullPlayerVisualState
 import com.saine.pixeltune.presentation.components.scoped.rememberMiniPlayerDismissGestureHandler
@@ -110,6 +111,7 @@ import com.saine.pixeltune.presentation.components.scoped.rememberSheetOverlaySt
 import com.saine.pixeltune.presentation.components.scoped.rememberSheetActionHandlers
 import com.saine.pixeltune.presentation.components.scoped.rememberSheetThemeState
 import com.saine.pixeltune.presentation.components.scoped.rememberSheetVisualState
+import com.saine.pixeltune.presentation.components.scoped.sheetMorphGeometry
 import com.saine.pixeltune.presentation.components.scoped.SheetMotionController
 import com.saine.pixeltune.presentation.viewmodel.PlayerSheetState
 import com.saine.pixeltune.presentation.viewmodel.PlayerViewModel
@@ -349,19 +351,11 @@ fun UnifiedPlayerSheet(
         hasCurrentSong = infrequentPlayerState.currentSong != null,
         swipeDismissProgress = swipeDismissProgress
     )
-    val currentBottomPadding = sheetVisualState.currentBottomPadding
-    val playerContentAreaHeightDp = sheetVisualState.playerContentAreaHeightDp
-    val visualSheetTranslationY = sheetVisualState.visualSheetTranslationY
-    val overallSheetTopCornerRadius = sheetVisualState.overallSheetTopCornerRadius
-    val playerContentActualBottomRadius = sheetVisualState.playerContentActualBottomRadius
-    val currentHorizontalPaddingStart = sheetVisualState.currentHorizontalPaddingStart
-    val currentHorizontalPaddingEnd = sheetVisualState.currentHorizontalPaddingEnd
-
     val queueSheetState = rememberQueueSheetState(
         scope = scope,
         screenHeightPx = screenHeightPx,
         density = density,
-        currentBottomPadding = currentBottomPadding,
+        currentBottomPaddingState = sheetVisualState.currentBottomPadding,
         showPlayerContentArea = showPlayerContentArea,
         currentSheetContentState = currentSheetContentState
     )
@@ -438,8 +432,8 @@ fun UnifiedPlayerSheet(
     val internalIsKeyboardVisible = sheetOverlayState.internalIsKeyboardVisible
     val actuallyShowSheetContent = sheetOverlayState.actuallyShowSheetContent
     val isQueueVisible = sheetOverlayState.isQueueVisible
-    val bottomSheetOpenFraction = sheetOverlayState.bottomSheetOpenFraction
-    val queueScrimAlpha = sheetOverlayState.queueScrimAlpha
+    val bottomSheetOpenFractionState = sheetOverlayState.bottomSheetOpenFractionState
+    val queueScrimAlphaState = sheetOverlayState.queueScrimAlphaState
 
     LaunchedEffect(showQueueSheet) {
         playerViewModel.updateQueueSheetVisibility(showQueueSheet)
@@ -469,7 +463,7 @@ fun UnifiedPlayerSheet(
     val miniReadyAlpha = sheetThemeState.miniReadyAlpha
     val miniAppearScale = sheetThemeState.miniAppearScale
     val playerAreaBackground = sheetThemeState.playerAreaBackground
-    val visualCardShadowElevation by remember(showQueueSheet, miniReadyAlpha) {
+    val visualCardShadowElevationState = remember(showQueueSheet, miniReadyAlpha) {
         derivedStateOf {
             if (showQueueSheet || playerContentExpansionFraction.value > 0.18f) 0.dp
             else (3f * miniReadyAlpha).dp
@@ -488,8 +482,8 @@ fun UnifiedPlayerSheet(
         miniPlayerContentHeightPx = miniPlayerContentHeightPx,
         currentSheetContentState = currentSheetContentState,
         showPlayerContentArea = showPlayerContentArea,
-        overallSheetTopCornerRadius = overallSheetTopCornerRadius,
-        playerContentActualBottomRadius = playerContentActualBottomRadius,
+        overallSheetTopCornerRadiusState = sheetVisualState.overallSheetTopCornerRadius,
+        playerContentActualBottomRadiusState = sheetVisualState.playerContentActualBottomRadius,
         useSmoothCorners = useSmoothCorners,
         isDragging = sheetBackAndDragState.isDragging,
         onAnimateSheet = { targetExpanded, animationSpec, initialVelocity ->
@@ -513,7 +507,7 @@ fun UnifiedPlayerSheet(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .offset { IntOffset(0, visualSheetTranslationY.roundToInt()) }
+                .offset { IntOffset(0, sheetVisualState.visualSheetTranslationY.value.roundToInt()) }
                 .height(containerHeight),
             shadowElevation = 0.dp,
             color = Color.Transparent
@@ -521,7 +515,7 @@ fun UnifiedPlayerSheet(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(bottom = currentBottomPadding)
+                    .deferredBottomPadding { sheetVisualState.currentBottomPadding.value }
             ) {
                 Column(
                     modifier = Modifier.fillMaxSize()
@@ -535,11 +529,11 @@ fun UnifiedPlayerSheet(
                                     enabled = currentSheetContentState == PlayerSheetState.COLLAPSED,
                                     handler = miniDismissGestureHandler
                                 )
-                                .padding(
-                                    start = currentHorizontalPaddingStart,
-                                    end = currentHorizontalPaddingEnd
+                                .sheetMorphGeometry(
+                                    startInset = { sheetVisualState.currentHorizontalPaddingStart.value },
+                                    endInset = { sheetVisualState.currentHorizontalPaddingEnd.value },
+                                    height = { sheetVisualState.playerContentAreaHeight.value }
                                 )
-                                .height(playerContentAreaHeightDp)
                                 .graphicsLayer {
                                     translationX = offsetAnimatable.value
                                     scaleX = miniAppearScale
@@ -547,20 +541,10 @@ fun UnifiedPlayerSheet(
                                     alpha = miniReadyAlpha
                                     transformOrigin = TransformOrigin(0.5f, 1f)
                                 }
-                                .then(
-                                    if (visualCardShadowElevation > 0.dp) {
-                                        Modifier.shadow(
-                                            elevation = visualCardShadowElevation,
-                                            shape = sheetInteractionState.playerShadowShape,
-                                            clip = false
-                                        )
-                                    } else {
-                                        Modifier
-                                    }
-                                )
-                                .background(
-                                    color = playerAreaBackground,
-                                    shape = sheetInteractionState.playerShadowShape
+                                .playerCardSurface(
+                                    shapeState = sheetInteractionState.playerShadowShapeState,
+                                    colorProvider = { playerAreaBackground },
+                                    shadowElevationProvider = { visualCardShadowElevationState.value }
                                 )
                                 .clipToBounds()
                                 .playerSheetVerticalDragGesture(
@@ -578,12 +562,11 @@ fun UnifiedPlayerSheet(
                             UnifiedPlayerMiniAndFullLayers(
                                 currentSong = infrequentPlayerState.currentSong,
                                 miniPlayerScheme = miniPlayerScheme,
-                                overallSheetTopCornerRadius = overallSheetTopCornerRadius,
                                 infrequentPlayerState = infrequentPlayerState,
                                 isPreparingPlayback = isPreparingPlayback,
                                 playerContentExpansionFraction = playerContentExpansionFraction,
                                 albumColorScheme = albumColorScheme,
-                                bottomSheetOpenFraction = bottomSheetOpenFraction,
+                                bottomSheetOpenFractionState = bottomSheetOpenFractionState,
                                 fullPlayerVisualState = fullPlayerVisualState,
                                 currentPlaybackQueue = currentPlaybackQueue,
                                 currentQueueSourceName = currentQueueSourceName,
@@ -632,7 +615,7 @@ fun UnifiedPlayerSheet(
                     shouldRenderHost = !internalIsKeyboardVisible || selectedSongForInfo != null,
                     isQueueTelemetryActive = showQueueSheet,
                     albumColorScheme = albumColorScheme,
-                    queueScrimAlpha = queueScrimAlpha,
+                    queueScrimAlphaState = queueScrimAlphaState,
                     showQueueSheet = showQueueSheet,
                     queueHiddenOffsetPx = queueHiddenOffsetPx,
                     queueSheetOffset = queueSheetOffset,
@@ -705,7 +688,6 @@ internal fun MiniPlayerContentInternal(
     isPreparingPlayback: Boolean,
     onPlayPause: () -> Unit,
     onPrevious: () -> Unit,
-    cornerRadiusAlb: Dp,
     onNext: () -> Unit,
     modifier: Modifier = Modifier
 ) {

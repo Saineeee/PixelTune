@@ -77,14 +77,11 @@ internal class MiniPlayerDismissGestureHandler(
             }
 
             MiniDismissDragPhase.FREE_DRAG -> {
+                // Track the finger 1:1. Retargeting a spring per move event cancelled and
+                // relaunched an animation on every event — a plain snap is visually identical
+                // at StiffnessHigh and allocation-free.
                 scope.launch {
-                    offsetAnimatable.animateTo(
-                        targetValue = accumulatedDragX,
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessHigh
-                        )
-                    )
+                    offsetAnimatable.snapTo(accumulatedDragX)
                 }
             }
 

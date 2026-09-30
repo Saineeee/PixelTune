@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -23,7 +24,6 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.util.lerp
 import androidx.compose.ui.zIndex
@@ -43,12 +43,11 @@ import kotlinx.collections.immutable.ImmutableList
 internal fun BoxScope.UnifiedPlayerMiniAndFullLayers(
     currentSong: Song?,
     miniPlayerScheme: ColorScheme?,
-    overallSheetTopCornerRadius: Dp,
     infrequentPlayerState: StablePlayerState,
     isPreparingPlayback: Boolean,
     playerContentExpansionFraction: Animatable<Float, AnimationVector1D>,
     albumColorScheme: ColorScheme,
-    bottomSheetOpenFraction: Float,
+    bottomSheetOpenFractionState: State<Float>,
     fullPlayerVisualState: FullPlayerVisualState,
     currentPlaybackQueue: ImmutableList<Song>,
     currentQueueSourceName: String,
@@ -88,7 +87,6 @@ internal fun BoxScope.UnifiedPlayerMiniAndFullLayers(
                 ) {
                     MiniPlayerContentInternal(
                         song = currentSongNonNull,
-                        cornerRadiusAlb = (overallSheetTopCornerRadius.value * 0.5).dp,
                         isPlaying = infrequentPlayerState.isPlaying,
                         isPreparingPlayback = isPreparingPlayback,
                         onPlayPause = { playerViewModel.playPause() },
@@ -104,11 +102,6 @@ internal fun BoxScope.UnifiedPlayerMiniAndFullLayers(
             CompositionLocalProvider(
                 LocalMaterialTheme provides albumColorScheme
             ) {
-                val fullPlayerScale by remember(bottomSheetOpenFraction) {
-                    // Keep the depth effect, but avoid aggressive full-screen rescaling on every frame.
-                    derivedStateOf { lerp(1f, 0.972f, bottomSheetOpenFraction) }
-                }
-
                 val fullPlayerZIndex by remember {
                     derivedStateOf {
                         if (playerContentExpansionFraction.value >= 0.5f) 1f else 0f
@@ -123,7 +116,7 @@ internal fun BoxScope.UnifiedPlayerMiniAndFullLayers(
                 val fullPlayerRuntimePolicy = rememberFullPlayerRuntimePolicy(
                     currentSheetState = currentSheetContentState,
                     expansionFraction = playerContentExpansionFraction,
-                    bottomSheetOpenFraction = bottomSheetOpenFraction
+                    bottomSheetOpenFractionState = bottomSheetOpenFractionState
                 )
 
                 Box(
@@ -133,8 +126,12 @@ internal fun BoxScope.UnifiedPlayerMiniAndFullLayers(
                             // these read Animatable.value internally → re-draw only, no recomposition.
                             alpha = fullPlayerVisualState.contentAlpha
                             translationY = fullPlayerVisualState.translationY
-                            scaleX = fullPlayerScale
-                            scaleY = fullPlayerScale
+                            // Depth effect while the queue sheet overlays the player; read from
+                            // the State directly here so the queue open/close animation also
+                            // stays out of recomposition.
+                            val depthScale = lerp(1f, 0.972f, bottomSheetOpenFractionState.value)
+                            scaleX = depthScale
+                            scaleY = depthScale
                         }
                         .zIndex(fullPlayerZIndex)
                         .offset { fullPlayerOffset }
