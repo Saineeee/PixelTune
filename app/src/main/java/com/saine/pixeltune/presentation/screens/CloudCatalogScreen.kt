@@ -100,6 +100,7 @@ import com.saine.pixeltune.presentation.viewmodel.CloudCatalogViewModel
 import com.saine.pixeltune.presentation.viewmodel.PlayerViewModel
 import com.saine.pixeltune.presentation.viewmodel.PlaylistViewModel
 import com.saine.pixeltune.ui.theme.LocalPixelTuneDarkTheme
+import com.saine.pixeltune.utils.SearchResultKeys
 import com.saine.pixeltune.utils.shapes.RoundedStarShape
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -277,6 +278,21 @@ fun CloudCatalogScreen(
         else -> {
             val songs = uiState.songs
             val lazyListState = rememberLazyListState()
+
+            // FIX(online-search-chip-crash): globally-unique LazyColumn keys
+            // for the track list. The old raw key ("cloud_song_<id>") crashed
+            // the app with "Key was used multiple times" when a playlist /
+            // channel page repeated a track — YouTube playlists regularly
+            // contain the same video twice and SoundCloud playlists repeat
+            // tracks even more often. The repositories now dedupe their pages;
+            // these keys keep the crash class dead at the crash site itself
+            // (unique ids keep the exact historical key format).
+            //
+            // Computed on the FULL list: the pre-transition slice below is a
+            // prefix, so index-based lookup stays aligned when the list grows.
+            val songKeys = remember(songs) {
+                SearchResultKeys.disambiguate(songs.map { "cloud_song_${it.id}" })
+            }
 
             val statusBarHeight = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
             val minTopBarHeight = 64.dp + statusBarHeight
@@ -483,8 +499,13 @@ fun CloudCatalogScreen(
                             // PERF(scroll): keys must not bake in the index —
                             // "cloud_song_<id>_<index>" shifted every subsequent key
                             // when a song was removed, recomposing the whole visible
-                            // list and losing item state. Song ids are already unique.
-                            key = { _, song -> "cloud_song_${song.id}" },
+                            // list and losing item state.
+                            //
+                            // FIX(online-search-chip-crash): …and where the provider
+                            // data still repeats an id (hash collision), the
+                            // disambiguated key keeps the layout crash-free — see
+                            // songKeys above.
+                            key = { index, _ -> songKeys[index] },
                             contentType = { _, _ -> "song" }
                         ) { _, song ->
                             EnhancedSongListItem(

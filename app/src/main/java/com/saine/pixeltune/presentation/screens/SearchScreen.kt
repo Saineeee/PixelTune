@@ -124,6 +124,7 @@ import com.saine.pixeltune.presentation.components.PlaylistCover
 import com.saine.pixeltune.presentation.navigation.Screen
 import com.saine.pixeltune.presentation.screens.search.components.GenreCategoriesGrid
 import com.saine.pixeltune.presentation.viewmodel.PlaylistViewModel
+import com.saine.pixeltune.utils.SearchResultKeys
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -146,6 +147,30 @@ private enum class SearchBodyMode { GENRE_BROWSE, ONLINE_HISTORY, RESULTS }
 
 /** IMPROVE(search-loading): what the results area shows. */
 private enum class SearchResultsViewState { LOADING, EMPTY, RESULTS }
+
+/**
+ * FIX(online-search-chip-crash): a search result paired with its globally-
+ * unique LazyColumn key (see [SearchResultKeys.uniqueKeysFor]).
+ */
+private data class KeyedSearchResult(
+    val item: SearchResultItem,
+    val key: String
+)
+
+/**
+ * The results-list section a search result belongs to — cloud catalog
+ * entries join the matching section (albums from the YT Music albums index
+ * group under Albums, playlists under Playlists, artists under Artists).
+ */
+private fun sectionForResultItem(item: SearchResultItem): SearchFilterType = when (item) {
+    is SearchResultItem.SongItem -> SearchFilterType.SONGS
+    is SearchResultItem.AlbumItem -> SearchFilterType.ALBUMS
+    is SearchResultItem.ArtistItem -> SearchFilterType.ARTISTS
+    is SearchResultItem.PlaylistItem -> SearchFilterType.PLAYLISTS
+    is SearchResultItem.CloudPlaylistItem ->
+        if (item.playlist.isAlbum) SearchFilterType.ALBUMS else SearchFilterType.PLAYLISTS
+    is SearchResultItem.CloudArtistItem -> SearchFilterType.ARTISTS
+}
 
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -989,21 +1014,21 @@ fun SearchResultsList(
     // PERF(scroll): groupBy + section order were rebuilt on every
     // recomposition of the results list (play/pause flips, library emissions).
     // Remembered on the results list so they only recompute when results change.
-    val groupedResults = remember(results) {
-        results.groupBy { item ->
-            when (item) {
-                is SearchResultItem.SongItem -> SearchFilterType.SONGS
-                is SearchResultItem.AlbumItem -> SearchFilterType.ALBUMS
-                is SearchResultItem.ArtistItem -> SearchFilterType.ARTISTS
-                is SearchResultItem.PlaylistItem -> SearchFilterType.PLAYLISTS
-                // FIX(online-filter-chips): cloud catalog entries join the
-                // matching section — albums from the YT Music albums index group
-                // under Albums, playlists under Playlists, artists under Artists.
-                is SearchResultItem.CloudPlaylistItem ->
-                    if (item.playlist.isAlbum) SearchFilterType.ALBUMS else SearchFilterType.PLAYLISTS
-                is SearchResultItem.CloudArtistItem -> SearchFilterType.ARTISTS
-            }
-        }
+    //
+    // FIX(online-search-chip-crash): every result is paired ONCE with its
+    // GLOBALLY-unique LazyColumn key ([SearchResultKeys.uniqueKeysFor]). The
+    // old raw keys ("cloud_playlist_<id>" / "cloud_artist_<id>" …) crashed
+    // the app with "Key was used multiple times" whenever the provider search
+    // page repeated an entry — which YouTube Music / SoundCloud routinely do
+    // (the same playlist in the top-result shelf AND the list; the same channel
+    // in several musicShelfRenderers) — because the ids are url hashcodes.
+    // Keys for unique ids stay byte-identical to the historical format.
+    val keyedResults = remember(results) {
+        val keys = SearchResultKeys.uniqueKeysFor(results)
+        results.mapIndexed { index, item -> KeyedSearchResult(item, keys[index]) }
+    }
+    val groupedResults = remember(keyedResults) {
+        keyedResults.groupBy { keyed -> sectionForResultItem(keyed.item) }
     }
 
     val sectionOrder = listOf(
@@ -1062,20 +1087,13 @@ fun SearchResultsList(
 
                 items(
                     count = itemsForSection.size,
+                    // FIX(online-search-chip-crashes): globally-unique, index-free
+                    // keys from [SearchResultKeys.uniqueKeysFor] — see
+                    // keyedResults above. Two simultaneously-composed rows can
+                    // never share a key, no matter what the provider returns
+                    // (repeated entries or id hash collisions).
                     key = { index ->
-                        val item = itemsForSection[index]
-                        when (item) {
-                            is SearchResultItem.SongItem -> "song_${item.song.id}"
-                            is SearchResultItem.AlbumItem -> "album_${item.album.id}"
-                            is SearchResultItem.ArtistItem -> "artist_${item.artist.id}"
-                            // PERF(scroll): no index suffix — an index-baked key
-                            // shifts every subsequent key on list mutation,
-                            // recomposing the whole visible list and losing item
-                            // state. The ids are already unique per section.
-                            is SearchResultItem.PlaylistItem -> "playlist_${item.playlist.id}"
-                            is SearchResultItem.CloudPlaylistItem -> "cloud_playlist_${item.playlist.id}"
-                            is SearchResultItem.CloudArtistItem -> "cloud_artist_${item.artist.id}"
-                        }
+                        itemsForSection[index].key
                     },
                     // PERF: each SearchResultItem variant renders a completely
                     // different composable subtree. Without contentType the lazy
@@ -1084,9 +1102,9 @@ fun SearchResultsList(
                     // down and rebuilding the whole subtree every time the type
                     // changes. Keying reuse on the runtime class keeps slot
                     // recycling type-stable.
-                    contentType = { index -> itemsForSection[index]::class }
+                    contentType = { index -> itemsForSection[index].item::class }
                 ) { index ->
-                    val item = itemsForSection[index]
+                    val item = itemsForSection[index].item
                     Box(modifier = Modifier.padding(bottom = 12.dp)) {
                         when (item) {
                             is SearchResultItem.SongItem -> {

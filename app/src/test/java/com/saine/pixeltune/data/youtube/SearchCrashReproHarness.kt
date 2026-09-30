@@ -2,6 +2,8 @@ package com.saine.pixeltune.data.youtube
 
 import com.saine.pixeltune.data.model.SearchFilterType
 import com.saine.pixeltune.data.model.SearchResultItem
+import com.saine.pixeltune.data.model.Song
+import com.saine.pixeltune.utils.SearchResultKeys
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.junit.Assert.fail
@@ -68,21 +70,40 @@ class SearchCrashReproHarness {
             "CloudArtistItem(id=${item.artist.id}, subs=${item.artist.subscriberCount}, monthly=${item.artist.monthlyAudienceCount})"
     }
 
-    /** The EXACT LazyColumn key logic SearchScreen generates for results. */
+    /**
+     * The EXACT LazyColumn key logic the FIXED SearchScreen generates for
+     * results: index-free base keys ("song_<id>" / "cloud_playlist_<id>" / …)
+     * globally disambiguated by [SearchResultKeys] — the same helper the UI
+     * calls ([SearchResultKeys.uniqueKeysFor]).
+     *
+     * Before the fix the keys were the raw base keys — provider pages that
+     * repeat an entry (the same playlist in the top-result shelf AND the
+     * list; the same channel in several musicShelfRenderers) then produced
+     * "Key was used multiple times" crashes; the id hashcodes can collide
+     * for DIFFERENT urls on top of that.
+     */
     private fun lazyColumnKeys(results: List<SearchResultItem>): List<String> {
-        // section grouping identical to SearchResultsList
-        data class Section(val type: SearchFilterType, val items: List<SearchResultItem>)
-        val grouped = results.groupBy { item: SearchResultItem ->
-            when (item) {
-                is SearchResultItem.SongItem -> SearchFilterType.SONGS
-                is SearchResultItem.AlbumItem -> SearchFilterType.ALBUMS
-                is SearchResultItem.ArtistItem -> SearchFilterType.ARTISTS
-                is SearchResultItem.PlaylistItem -> SearchFilterType.PLAYLISTS
-                is SearchResultItem.CloudPlaylistItem ->
-                    if (item.playlist.isAlbum) SearchFilterType.ALBUMS else SearchFilterType.PLAYLISTS
-                is SearchResultItem.CloudArtistItem -> SearchFilterType.ARTISTS
+        // The FIXED key derivation: globally-unique keys over the whole list,
+        // paired to items BY POSITION (exactly what SearchResultsList's
+        // keyedResults does — equals-based lookup would collapse duplicates).
+        val uniqueKeys = SearchResultKeys.uniqueKeysFor(results)
+
+        // section grouping identical to SearchResultsList, keeping each
+        // element's global index
+        val grouped = results
+            .mapIndexed { index, item -> index to item }
+            .groupBy { (_, item) ->
+                when (item) {
+                    is SearchResultItem.SongItem -> SearchFilterType.SONGS
+                    is SearchResultItem.AlbumItem -> SearchFilterType.ALBUMS
+                    is SearchResultItem.ArtistItem -> SearchFilterType.ARTISTS
+                    is SearchResultItem.PlaylistItem -> SearchFilterType.PLAYLISTS
+                    is SearchResultItem.CloudPlaylistItem ->
+                        if (item.playlist.isAlbum) SearchFilterType.ALBUMS else SearchFilterType.PLAYLISTS
+                    is SearchResultItem.CloudArtistItem -> SearchFilterType.ARTISTS
+                }
             }
-        }
+
         val keys = mutableListOf<String>()
         // sectionOrder: SONGS, ALBUMS, ARTISTS, PLAYLISTS
         listOf(
@@ -94,15 +115,8 @@ class SearchCrashReproHarness {
             val sectionItems = grouped[filterType] ?: emptyList()
             if (sectionItems.isNotEmpty()) {
                 keys += "header_${filterType.name}"
-                sectionItems.forEachIndexed { index, item ->
-                    keys += when (item) {
-                        is SearchResultItem.SongItem -> "song_${item.song.id}"
-                        is SearchResultItem.AlbumItem -> "album_${item.album.id}"
-                        is SearchResultItem.ArtistItem -> "artist_${item.artist.id}"
-                        is SearchResultItem.PlaylistItem -> "playlist_${item.playlist.id}_${index}"
-                        is SearchResultItem.CloudPlaylistItem -> "cloud_playlist_${item.playlist.id}_${index}"
-                        is SearchResultItem.CloudArtistItem -> "cloud_artist_${item.artist.id}_${index}"
-                    }
+                sectionItems.forEach { (globalIndex, _) ->
+                    keys += uniqueKeys[globalIndex]
                 }
             }
         }
@@ -119,6 +133,51 @@ class SearchCrashReproHarness {
             fail("Duplicate LazyColumn keys detected: ${dupes.keys} — two simultaneously composed items share a key, which SaveableStateProvider rejects with IllegalArgumentException")
         } else {
             println("no duplicate keys — list structure is crash-safe")
+        }
+    }
+
+    /**
+     * FIX(online-search-chip-crash): models the CloudCatalogScreen track-list
+     * keys for a playlist's extracted tracks — the "app crashes after OPENING
+     * a playlist" repro. YouTube playlists regularly list the same video
+     * twice; the repository now dedupes and the screen's keys are
+     * disambiguated via [SearchResultKeys.disambiguate], so this must never
+     * produce a duplicate.
+     */
+    private fun cloudCatalogKeys(songs: List<Song>): List<String> {
+        val keys = SearchResultKeys.disambiguate(songs.map { "cloud_song_${it.id}" })
+        val dupes = keys.groupBy { it }.filter { it.value.size > 1 }
+        if (dupes.isNotEmpty()) {
+            fail("Duplicate CloudCatalog track keys detected: ${dupes.keys}")
+        }
+        // Report the RAW duplicate song ids the provider returned — the
+        // repository-level dedupe should have removed them BEFORE the list
+        // reached the screen; a non-empty report here means the dedupe
+        // regressed (the screen keys would still be safe, but the rows would
+        // be duplicated).
+        val rawDupes = songs.map { it.id }.groupBy { it }.filter { it.value.size > 1 }
+        if (rawDupes.isNotEmpty()) {
+            println("NOTE — provider returned repeated track ids (repository dedupe should filter these): ${rawDupes.keys}")
+        } else {
+            println("track ids are unique after repository dedupe")
+        }
+        return keys
+    }
+
+    @Test
+    fun `artists chip search - the shelf-repeat crash case`() = runBlocking {
+        println("\n================ YT ARTISTS CHIP ================")
+        try {
+            val page = repo.searchYouTubePaged("coldplay", SearchFilterType.ARTISTS) { id -> "http://127.0.0.1:1/yt/$id" }
+            println("result count: ${page.results.size}, hasMore: ${page.hasMore}, continuation: ${page.continuation?.javaClass?.simpleName}")
+            page.results.take(25).forEach { println("  ${describe(it)}") }
+            // The raw artist URL dedupe contract — the same channel used to
+            // reach the list twice (multiple musicShelfRenderers).
+            val urls = page.results.mapNotNull { (it as? SearchResultItem.CloudArtistItem)?.artist?.url }
+            println("duplicate artist urls in page 1: " + urls.groupBy { it }.filter { it.value.size > 1 }.keys)
+            reportDuplicates(lazyColumnKeys(page.results))
+        } catch (t: Throwable) {
+            fail("ARTISTS search threw: ${t.javaClass.simpleName}: ${t.message}\n${t.stackTraceToString().take(2500)}")
         }
     }
 
@@ -180,6 +239,32 @@ class SearchCrashReproHarness {
             reportDuplicates(lazyColumnKeys(page.results))
         } catch (t: Throwable) {
             fail("ALBUMS search threw: ${t.javaClass.simpleName}: ${t.message}\n${t.stackTraceToString().take(2500)}")
+        }
+    }
+
+    @Test
+    fun `opening a playlist - the cloud catalog track-key crash case`() = runBlocking {
+        println("\n================ YT OPEN PLAYLIST (CloudCatalog keys) ================")
+        try {
+            val page = repo.searchYouTubePaged("coldplay", SearchFilterType.PLAYLISTS) { id -> "http://127.0.0.1:1/yt/$id" }
+            val playlist = (page.results.firstOrNull { it is SearchResultItem.CloudPlaylistItem }
+                as? SearchResultItem.CloudPlaylistItem)?.playlist
+            if (playlist == null) {
+                println("no playlist result — nothing to open, skipping")
+                return@runBlocking
+            }
+            println("opening playlist: ${playlist.name} (${playlist.url})")
+            val tracks = repo.getCloudPlaylistTracks(playlist) { id -> "http://127.0.0.1:1/yt/$id" }
+                .getOrNull()
+            if (tracks == null) {
+                println("track extraction failed (network/provider) — skipping key check")
+                return@runBlocking
+            }
+            println("tracks: ${tracks.songs.size}, hasMore: ${tracks.hasMore}")
+            tracks.songs.take(10).forEach { println("  song id=${it.id} title=${it.title}") }
+            cloudCatalogKeys(tracks.songs)
+        } catch (t: Throwable) {
+            fail("OPEN PLAYLIST threw: ${t.javaClass.simpleName}: ${t.message}\n${t.stackTraceToString().take(2500)}")
         }
     }
 
