@@ -95,6 +95,7 @@ themeable interface, with Android Auto and home-screen widgets.
 | 📱 **Everywhere** | Android Auto, Quick Settings tiles, sleep timer, home-screen widgets |
 
 ## ⬇️ Download & install
+
 ### Store download Links
 <p align="center">
   <a href="https://f-droid.org/packages/<YOUR_PACKAGE>/"><img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" height="60" alt="Get it on F-Droid" align="middle"/></a>
