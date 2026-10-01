@@ -43,14 +43,6 @@ themeable interface, with Android Auto and home-screen widgets.
 > layer. See [Credits & attribution](#-credits--attribution) and
 > [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 
-> [!IMPORTANT]
-> This is the **FOSS edition** of PixelTune, prepared for F-Droid: it contains
-> no proprietary SDKs (Google Cast / Play services / cloud AI are removed) and
-> every optional network feature is **off by default**. The only optional
-> online lookup — artist artwork from Deezer's public API — runs exclusively
-> if you enable it in *Settings → Music Management → Download online artist
-> images*. The package id is `com.saine.pixeltune`.
-
 ## ✨ Features
 
 ### What PixelTune adds
