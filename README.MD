@@ -14,7 +14,7 @@ streaming catalogs, in one expressive player for Android.**
 
 | Home | Player | Cloud Catalog | Library |
 |:---:|:---:|:---:|:---:|
-| ![](assets/Home.png) | ![](assets/Player.png) | ![](assets/Cloud.png) | ![](assets/Library.png) |
+| ![](assets/Home.png) | ![](assets/Player.png) | ![](assets/Cloud-cat.png) | ![](assets/Library.png) |
 
 **[Download](#-download--install) · [Features](#-features) · [Build from source](#️-building-from-source) · [FAQ](#-faq--troubleshooting) · [Contributing](#-contributing)**
 
