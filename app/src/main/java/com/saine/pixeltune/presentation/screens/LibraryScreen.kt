@@ -319,6 +319,29 @@ fun LibraryScreen(
         }
     }
 
+    // FIX(library-tab-flicker): the SHARED action row (Shuffle/New button,
+    // storage & playlist-source filter buttons, breadcrumbs) sits above the
+    // pager and is visible on every tab — its per-tab visibility must be
+    // derived from the pager's SETTLED page, not from [currentTabIndex]
+    // (currentPage), which transiently reports every intermediate page a
+    // multi-page animation crosses (e.g. Playlists -> Songs passes Artists /
+    // Albums) nor from the ViewModel tab id, whose async DataStore echoes can
+    // briefly revert to an intermediate tab. Both used to flip the shared
+    // filter button's visibility mid-gesture (appear -> disappear ->
+    // re-appear) even when the start and end tabs BOTH show it. Deriving from
+    // settledPage makes the action row switch exactly once per gesture.
+    val currentSettledTabIndex by remember(pagerState, tabTitles, isCompactNavigation) {
+        derivedStateOf {
+            resolveTabIndex(
+                page = pagerState.settledPage,
+                tabCount = tabTitles.size,
+                compactMode = isCompactNavigation
+            )
+        }
+    }
+    val settledTabId =
+        tabTitles.getOrNull(currentSettledTabIndex)?.toLibraryTabIdOrNull() ?: currentTabId
+
     // IMPROVE(downloads-chip): external tab selections (e.g. tapping a
     // download notification, which asks for the DOWNLOADS chip) update the
     // ViewModel's tab id directly — sync the pager when it diverges. User
@@ -892,8 +915,14 @@ fun LibraryScreen(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(end = 4.dp),
+                                    // FIX(library-tab-flicker): the action row's
+                                    // per-tab affordances are keyed off the
+                                    // pager's SETTLED page ([settledTabId]) so
+                                    // intermediate pages crossed during a
+                                    // multi-page swipe can't flip the shared
+                                    // filter button's visibility mid-gesture.
                                     onMainActionClick = {
-                                        when (tabTitles.getOrNull(currentTabIndex)?.toLibraryTabIdOrNull()) {
+                                        when (settledTabId) {
                                             LibraryTabId.PLAYLISTS -> showPlaylistCreationTypeDialog = true
                                             LibraryTabId.LIKED -> playerViewModel.shuffleFavoriteSongs()
                                             LibraryTabId.ALBUMS -> playerViewModel.shuffleRandomAlbum()
@@ -910,8 +939,8 @@ fun LibraryScreen(
                                     showLocateButton = showLocateButton,
                                     onSortClick = { playerViewModel.showSortingSheet() },
                                     onLocateClick = { locateAction?.invoke() },
-                                    isPlaylistTab = currentTabId == LibraryTabId.PLAYLISTS,
-                                    isFoldersTab = currentTabId == LibraryTabId.FOLDERS && (!playerUiState.isFoldersPlaylistView || playerUiState.currentFolder != null),
+                                    isPlaylistTab = settledTabId == LibraryTabId.PLAYLISTS,
+                                    isFoldersTab = settledTabId == LibraryTabId.FOLDERS && (!playerUiState.isFoldersPlaylistView || playerUiState.currentFolder != null),
                                     onImportM3uClick = { m3uImportLauncher.launch("audio/x-mpegurl") },
                                     currentFolder = playerUiState.currentFolder,
                                     folderRootPath = playerUiState.folderSourceRootPath.ifBlank {
@@ -921,11 +950,11 @@ fun LibraryScreen(
                                     onFolderClick = { playerViewModel.navigateToFolder(it) },
                                     onNavigateBack = { playerViewModel.navigateBackFolder() },
                                     isShuffleEnabled = stablePlayerState.isShuffleEnabled,
-                                    showStorageFilterButton = currentTabId == LibraryTabId.SONGS ||
-                                        currentTabId == LibraryTabId.ALBUMS ||
-                                        currentTabId == LibraryTabId.ARTISTS ||
-                                        currentTabId == LibraryTabId.LIKED ||
-                                        (ENABLE_FOLDERS_STORAGE_FILTER && currentTabId == LibraryTabId.FOLDERS),
+                                    showStorageFilterButton = settledTabId == LibraryTabId.SONGS ||
+                                        settledTabId == LibraryTabId.ALBUMS ||
+                                        settledTabId == LibraryTabId.ARTISTS ||
+                                        settledTabId == LibraryTabId.LIKED ||
+                                        (ENABLE_FOLDERS_STORAGE_FILTER && settledTabId == LibraryTabId.FOLDERS),
                                     currentStorageFilter = playerUiState.currentStorageFilter,
                                     onStorageFilterClick = { playerViewModel.toggleStorageFilter() },
                                     // IMPROVE(cloud-playlist-source-filter): the
@@ -933,7 +962,7 @@ fun LibraryScreen(
                                     // the same filter-button affordance as the
                                     // other library tabs, placed beside the Sort
                                     // button (the old filter chip row is gone).
-                                    showPlaylistSourceFilterButton = currentTabId == LibraryTabId.PLAYLISTS,
+                                    showPlaylistSourceFilterButton = settledTabId == LibraryTabId.PLAYLISTS,
                                     currentPlaylistSourceFilter = playlistUiState.currentPlaylistSourceFilter,
                                     onPlaylistSourceFilterClick = { playlistViewModel.togglePlaylistSourceFilter() }
                                 )

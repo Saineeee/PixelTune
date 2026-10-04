@@ -510,7 +510,8 @@ fun SearchScreen(
                             onQuerySelected = onHistoryQuerySelected,
                             onQueryFill = onHistoryQueryFill,
                             onDeleteEntry = onDeleteHistoryEntry,
-                            onClearAll = onClearHistory
+                            onClearAll = onClearHistory,
+                            currentPlayingSongId = stablePlayerState.currentSong?.id
                         )
                     }
 
@@ -702,10 +703,33 @@ fun OnlineSearchHistorySection(
     onQueryFill: (String) -> Unit,
     onDeleteEntry: (String) -> Unit,
     onClearAll: () -> Unit,
+    // FIX(search-history-bottom-padding): whether the mini player overlay is
+    // visible — the list must reserve room for it so the bottom-most (oldest)
+    // search entry is not hidden behind it.
+    currentPlayingSongId: String? = null,
     modifier: Modifier = Modifier
 ) {
     val systemBarPaddingBottom =
         WindowInsets.systemBars.asPaddingValues().calculateBottomPadding() + 94.dp
+
+    // FIX(search-history-bottom-padding): the history list used to reserve
+    // only `systemBars.bottom + 94.dp`, which is roughly one history row
+    // SHORT of the real bottom overlay (app navigation bar + mini player +
+    // its spacer). After a significant number of searches, the oldest entry
+    // at the bottom sat underneath the mini player — impossible to see or
+    // tap. Reserve the REAL overlay exactly like the sibling search
+    // RESULTS list (and the library tabs): nav bar content + system inset,
+    // plus the mini player and its spacer when a song is loaded, with a bit
+    // of breathing room so the last row is comfortably tappable. The legacy
+    // reservation is kept as a floor for tall-overlay devices.
+    val miniPlayerVisible = currentPlayingSongId != null
+    val bottomOverlay = if (miniPlayerVisible) {
+        bottomBarHeightDpForResults() + MiniPlayerHeight + MiniPlayerBottomSpacer + 24.dp
+    } else {
+        bottomBarHeightDpForResults() + 24.dp
+    }
+    val legacyBottomPadding = MiniPlayerHeight + systemBarPaddingBottom
+    val historyBottomPadding = if (bottomOverlay > legacyBottomPadding) bottomOverlay else legacyBottomPadding
 
     Column(
         modifier = modifier
@@ -775,7 +799,7 @@ fun OnlineSearchHistorySection(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = PaddingValues(
                     top = 4.dp,
-                    bottom = systemBarPaddingBottom
+                    bottom = historyBottomPadding
                 )
             ) {
                 items(

@@ -77,6 +77,7 @@ import com.saine.pixeltune.utils.CloudUriUtils
 import com.saine.pixeltune.utils.MediaItemBuilder
 import com.saine.pixeltune.data.preferences.LastPlaybackSnapshot
 import com.saine.pixeltune.data.preferences.LastPlaybackSongSnapshot
+import com.saine.pixeltune.data.preferences.toSong
 import kotlin.math.abs
 
 import javax.inject.Inject
@@ -288,6 +289,108 @@ class MusicService : MediaLibraryService() {
         }
     }
 
+    /**
+     * FIX(playback-resumption): rebuilds the last persisted playback session
+     * for a play request arriving on a freshly (re)started service whose
+     * player is still EMPTY — i.e. tapping PLAY on the media notification
+     * after the app was killed. Invoked by the MediaLibrarySession callback's
+     * [onPlaybackResumption]; Media3 then sets the returned items, seeks to
+     * the saved position and starts playback.
+     *
+     * Local (MediaStore) songs are re-resolved fresh from the library so
+     * deleted songs drop out cleanly; cloud-streamed songs (YouTube /
+     * SoundCloud) never exist in the songs table and fall back to their
+     * persisted snapshot metadata. The restored song's cloud URI is resolved
+     * through the engine BEFORE the items are handed to Media3 — the
+     * synchronous resolveDataSpec only sees pre-warmed resolvedUriCache
+     * entries, so without this the restored online song would stall at 00:00.
+     * The next upcoming cloud item is warmed too so the first auto-advance
+     * works (prefetchUpcomingStreamUrls keeps the rest alive afterwards).
+     *
+     * When [isForPlayback] is false the caller only wants metadata (e.g.
+     * System UI populating a resumption chip at boot) — the full queue with
+     * just the current song is returned, skipping any network resolution.
+     */
+    private suspend fun restoreSnapshotForPlaybackResumption(
+        isForPlayback: Boolean
+    ): MediaSession.MediaItemsWithStartPosition? {
+        val snapshot = try {
+            userPreferencesRepository.lastPlaybackSnapshotFlow.first()
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "Playback resumption: failed to read persisted snapshot")
+            null
+        } ?: run {
+            Timber.tag(TAG).d("Playback resumption: no snapshot persisted")
+            return null
+        }
+
+        // Re-resolve local songs fresh from Room where possible. Cloud songs
+        // (string ids like YouTube video ids) are never in the MediaStore
+        // table and fall through to their snapshot metadata.
+        val librarySongsById = try {
+            musicRepository.getSongsByIds(snapshot.queue.map { it.id }).first()
+                .associateBy { it.id }
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "Playback resumption: library re-resolution failed")
+            emptyMap<String, com.saine.pixeltune.data.model.Song>()
+        }
+
+        val restoredQueue = snapshot.queue.mapNotNull { entry ->
+            librarySongsById[entry.id] ?: entry.toSong()
+        }
+        if (restoredQueue.isEmpty()) {
+            Timber.tag(TAG).d("Playback resumption: snapshot queue fully unresolvable")
+            return null
+        }
+
+        val restoredIndex = restoredQueue
+            .indexOfFirst { it.id == snapshot.current.id }
+            .takeIf { it >= 0 } ?: 0
+
+        val restoredPositionMs = snapshot.positionMs.coerceAtLeast(0L)
+
+        if (!isForPlayback) {
+            // Metadata-only request (e.g. System UI after reboot): one item,
+            // persisted metadata, no network resolution.
+            return MediaSession.MediaItemsWithStartPosition(
+                listOf(MediaItemBuilder.build(restoredQueue[restoredIndex])),
+                0,
+                restoredPositionMs
+            )
+        }
+
+        // Warm the engine's resolved-URI cache for the restored song (and
+        // the next one up) so the synchronous resolveDataSpec hits when
+        // Media3 prepares and starts playback.
+        try {
+            val startUri = MediaItemBuilder.playbackUri(restoredQueue[restoredIndex].contentUriString)
+            if (startUri.scheme == "youtube" || startUri.scheme == "soundcloud") {
+                engine.resolveCloudUri(startUri)
+            }
+            val nextSong = restoredQueue.getOrNull(restoredIndex + 1)
+            if (nextSong != null) {
+                val nextUri = MediaItemBuilder.playbackUri(nextSong.contentUriString)
+                if (nextUri.scheme == "youtube" || nextUri.scheme == "soundcloud") {
+                    engine.resolveCloudUri(nextUri)
+                }
+            }
+        } catch (e: Exception) {
+            // Resolution is best-effort — a stale/failed resolve falls back
+            // to the raw scheme URI, same as every other cloud play path.
+            Timber.tag(TAG).d(e, "Playback resumption: cloud URI pre-warm skipped")
+        }
+
+        Timber.tag(TAG).d(
+            "Playback resumption: restoring queue of %d songs at index %d (pos %d ms)",
+            restoredQueue.size, restoredIndex, restoredPositionMs
+        )
+        return MediaSession.MediaItemsWithStartPosition(
+            restoredQueue.map { MediaItemBuilder.build(it) },
+            restoredIndex,
+            restoredPositionMs
+        )
+    }
+
     private fun startEngineSnapshotTicker() {
         if (engineSnapshotJob?.isActive == true) return
         engineSnapshotJob = serviceScope.launch {
@@ -342,15 +445,16 @@ class MusicService : MediaLibraryService() {
         private const val AUTO_CONTEXT_ARTIST = "artist"
         private const val AUTO_CONTEXT_PLAYLIST = "playlist"
 
-        // Endless-radio tuning: start refilling while 2 songs are still
-        // unplayed, so the network fetch (1-3 s) always completes before the
-        // queue can run dry. How many upcoming songs the queue is topped up
-        // to (the fetch target) is user-tunable via the "Next up queue fetch
-        // count" preference (default 7, range 1..30) — see
-        // [radioTargetUpcoming]. A failed fetch retries with exponential
-        // backoff (12s -> 96s max). The queue is bounded so a multi-hour radio
-        // session cannot grow it without limit.
-        private const val RADIO_REFILL_RUNWAY = 2
+        // Endless-radio tuning: the "Next up" queue is MAINTAINED — a refill
+        // launches the moment the number of upcoming songs drops below the
+        // user's "Next up queue fetch count" preference (default 7, range
+        // 1..30) — see [radioTargetUpcoming]. That means the queue is topped
+        // back up as soon as the SECOND song in the list starts playing (the
+        // first transition after the initial fill), instead of draining all
+        // the way down to the 6th song before a batch fetch kicks in. A
+        // failed fetch retries with exponential backoff (12s -> 96s max).
+        // The queue is bounded so a multi-hour radio session cannot grow it
+        // without limit.
         private const val RADIO_RETRY_BASE_DELAY_MS = 12_000L
         private const val RADIO_MAX_CONSECUTIVE_FAILURES = 4
         private const val RADIO_MAX_QUEUE_ITEMS = 120
@@ -809,6 +913,32 @@ class MusicService : MediaLibraryService() {
                     )
                 }
             }
+
+            // FIX(playback-resumption): tapping PLAY on the media
+            // notification after the app's process was killed (swipe-away
+            // with background playback off, aggressive OEM task managers,
+            // or a system media-resumption chip) restarts MusicService with
+            // an EMPTY player. Media3 then asks the session callback to
+            // rebuild the last queue through onPlaybackResumption; the
+            // default implementation fails the future, so the play request
+            // silently did nothing — in particular in ONLINE streaming mode,
+            // where only the persisted snapshot can bring the queue back
+            // (cloud songs are never in the MediaStore-backed songs table
+            // and their proxy URLs die with the old process). Restoring the
+            // snapshot here makes play-from-notification work for BOTH
+            // local and online streaming sessions.
+            override fun onPlaybackResumption(
+                mediaSession: MediaSession,
+                controller: MediaSession.ControllerInfo,
+                isForPlayback: Boolean
+            ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+                return serviceScope.future {
+                    restoreSnapshotForPlaybackResumption(isForPlayback = isForPlayback)
+                        ?: throw UnsupportedOperationException(
+                            "No persisted playback snapshot to resume"
+                        )
+                }
+            }
         }
 
         mediaSession = MediaLibrarySession.Builder(this, engine.masterPlayer, callback)
@@ -1197,10 +1327,14 @@ class MusicService : MediaLibraryService() {
     // loops" behavior the user reported.
     //
     // Strategy (and why it stays cheap):
-    //  1. TRIGGER EARLY — refill while up to RADIO_REFILL_RUNWAY songs are
-    //     still unplayed, so the network fetch always completes before the
-    //     queue can run dry. One NewPipe page fetch tops the queue back up to
-    //     ~5 upcoming songs — no per-song requests.
+    //  1. MAINTAIN THE TARGET — a refill launches as soon as the next-up
+    //     count drops below the user's chosen "Next up queue fetch count"
+    //     (default 7), e.g. the moment the SECOND song in the list starts
+    //     playing, so the "Next up" list always shows the number of songs
+    //     the user chose instead of draining to the last couple of entries
+    //     before a batch fetch kicks in. One NewPipe page fetch still serves
+    //     the whole top-up, and a follow-up pass ("<trigger>-topup") covers
+    //     songs consumed while a fetch was in flight (rapid skips).
     //  2. ONE FETCH AT A TIME — an in-flight guard stops rapid skip-presses
     //     from spawning duplicate fetches.
     //  3. QUEUE-GENERATION GUARD — the append is anchored on the FIRST item's
@@ -1237,17 +1371,6 @@ class MusicService : MediaLibraryService() {
 
         val currentMediaItemIndex = player.currentMediaItemIndex
         val upcoming = (mediaItemCount - 1) - currentMediaItemIndex
-        // Refill while up to RADIO_REFILL_RUNWAY songs are still unplayed, so
-        // the 1-3 s network fetch always completes before the queue runs dry.
-        if (upcoming > RADIO_REFILL_RUNWAY) return
-
-        val currentItem = player.currentMediaItem ?: return
-        val anchorMediaId = player.getMediaItemAt(0).mediaId
-        val excludeIds = ArrayList<String>(mediaItemCount + radioRecentIds.size)
-        for (i in 0 until mediaItemCount) {
-            excludeIds.add(player.getMediaItemAt(i).mediaId)
-        }
-        excludeIds.addAll(radioRecentIds)
 
         // IMPROVE(next-up-queue-fetcher): the fetch target (how many "next
         // up" songs the queue is topped up to per refill) is the user's
@@ -1257,10 +1380,32 @@ class MusicService : MediaLibraryService() {
             UserPreferencesRepository.MIN_RADIO_QUEUE_FETCH_COUNT,
             UserPreferencesRepository.MAX_RADIO_QUEUE_FETCH_COUNT
         )
+
+        // FIX(radio-queue-maintenance): MAINTAIN the user's chosen "Next up"
+        // queue size instead of waiting until only 2 songs remain unplayed.
+        // The old `upcoming > RADIO_REFILL_RUNWAY` guard let the queue drain
+        // from the user's chosen fetch count all the way down to the last
+        // couple of songs before the next batch landed (with the default
+        // target of 7, that meant the refill only fired when playback reached
+        // the 6th song of the list). Refilling as soon as the upcoming count
+        // drops below the target — i.e., the moment the SECOND song in the
+        // list starts playing — keeps the "Next up" list permanently at the
+        // size the user picked (default or the settings slider value).
+        if (upcoming >= targetUpcoming) return
+
+        val currentItem = player.currentMediaItem ?: return
+        val anchorMediaId = player.getMediaItemAt(0).mediaId
+        val excludeIds = ArrayList<String>(mediaItemCount + radioRecentIds.size)
+        for (i in 0 until mediaItemCount) {
+            excludeIds.add(player.getMediaItemAt(i).mediaId)
+        }
+        excludeIds.addAll(radioRecentIds)
+
         val toFetch = (targetUpcoming - upcoming)
             .coerceIn(1, targetUpcoming)
 
         radioFetchJob = serviceScope.launch(Dispatchers.IO) {
+            val selfJob = coroutineContext[Job]
             val recommendations = fetchRadioRecommendations(currentItem, excludeIds, toFetch)
             withContext(Dispatchers.Main) {
                 // Re-read the player — the engine may have swapped players
@@ -1294,6 +1439,23 @@ class MusicService : MediaLibraryService() {
                             currentPlayer.seekToNextMediaItem()
                             currentPlayer.prepare()
                             currentPlayer.play()
+                        }
+                        // FIX(radio-queue-maintenance): follow-up pass. Several
+                        // songs may have been consumed while this fetch was in
+                        // flight (rapid skips), and the provider may have
+                        // returned fewer songs than requested — in both cases
+                        // the queue can still be below the user's target.
+                        // Re-evaluate immediately (instead of waiting for the
+                        // next track transition) so the "Next up" list really
+                        // stays maintained at the chosen size. Releasing the
+                        // in-flight slot first lets the re-check launch the
+                        // top-up fetch; each successful iteration appends at
+                        // least one song, so the chain is bounded by the
+                        // deficit (failures are left to the backoff retry,
+                        // which is why this pass only runs on success).
+                        if (radioFetchJob === selfJob) {
+                            radioFetchJob = null
+                            maybeRefillRadioQueue(trigger = "$trigger-topup")
                         }
                     } else {
                         Timber.tag(TAG).d(
@@ -1356,14 +1518,31 @@ class MusicService : MediaLibraryService() {
             val nextItem = player.getMediaItemAt(nextIndex)
 
             // The playback URI ExoPlayer will actually request — for cloud
-            // songs this is the current session's local proxy URL
-            // (http://127.0.0.1:<port>/youtube/<id> or /soundcloud/<encoded>).
-            val playbackUri = nextItem.localConfiguration?.uri?.toString() ?: return
+            // songs this is either the current session's local proxy URL
+            // (http://127.0.0.1:<port>/youtube/<id> or /soundcloud/<encoded>)
+            // or, for items restored from a persisted snapshot, the
+            // restart-safe scheme form (youtube://<id> / soundcloud://<…>).
+            val playbackUri = nextItem.localConfiguration?.uri ?: return
             when {
-                playbackUri.contains("/youtube/") ->
-                    youtubeStreamProxy.prefetch(playbackUri)
-                playbackUri.contains("/soundcloud/") ->
-                    soundCloudStreamProxy.prefetch(playbackUri)
+                playbackUri.toString().contains("/youtube/") ->
+                    youtubeStreamProxy.prefetch(playbackUri.toString())
+                playbackUri.toString().contains("/soundcloud/") ->
+                    soundCloudStreamProxy.prefetch(playbackUri.toString())
+                // FIX(playback-resumption): restored cloud items keep their
+                // scheme URI — the synchronous resolveDataSpec only sees
+                // entries pre-warmed in the engine's resolvedUriCache, so a
+                // restored online queue would fail to auto-advance without
+                // this warm-up pass. resolveCloudUri is a suspend function
+                // (proxy readiness / network), so it runs on a coroutine.
+                playbackUri.scheme == "youtube" || playbackUri.scheme == "soundcloud" -> {
+                    serviceScope.launch {
+                        try {
+                            engine.resolveCloudUri(playbackUri)
+                        } catch (e: Exception) {
+                            Timber.tag(TAG).d(e, "Skipped scheme URI prefetch")
+                        }
+                    }
+                }
                 // Local files resolve their URIs through other/cheap paths —
                 // nothing to warm here.
             }

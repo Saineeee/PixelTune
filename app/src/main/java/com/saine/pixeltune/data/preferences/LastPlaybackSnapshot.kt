@@ -1,5 +1,6 @@
 package com.saine.pixeltune.data.preferences
 
+import com.saine.pixeltune.data.model.Song
 import kotlinx.serialization.Serializable
 
 /**
@@ -54,4 +55,39 @@ data class LastPlaybackSongSnapshot(
     val contentUri: String = "",
     val durationMs: Long = 0L,
     val youtubeId: String? = null
+)
+
+/**
+ * Rebuilds a playable [Song] from a persisted snapshot (the cloud-song
+ * fallback path — local songs are re-resolved fresh from the library instead).
+ *
+ * FIX(playback-resumption): extracted from PlayerViewModel's private
+ * `toSong()` so the service-side playback resumption
+ * (MusicService onPlaybackResumption) rebuilds the exact same [Song] shape
+ * as the in-app restore path — one mapper, one behavior.
+ */
+fun LastPlaybackSongSnapshot.toSong(): Song = Song(
+    id = id,
+    title = title.ifBlank { "Unknown" },
+    artist = artist.ifBlank { "Unknown Artist" },
+    artistId = -1L,
+    artists = emptyList(),
+    album = album.orEmpty(),
+    albumId = -1L,
+    albumArtist = null,
+    path = "",
+    contentUriString = contentUri,
+    albumArtUriString = albumArtUri,
+    duration = durationMs.coerceAtLeast(0L),
+    genre = null,
+    lyrics = null,
+    isFavorite = false,
+    trackNumber = 0,
+    year = 0,
+    dateAdded = 0,
+    dateModified = 0,
+    mimeType = null,
+    bitrate = null,
+    sampleRate = null,
+    youtubeId = youtubeId
 )

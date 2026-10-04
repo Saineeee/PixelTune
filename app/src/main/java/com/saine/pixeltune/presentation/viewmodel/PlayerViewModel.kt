@@ -59,6 +59,7 @@ import com.saine.pixeltune.data.preferences.UserPreferencesRepository
 import com.saine.pixeltune.data.preferences.AlbumArtQuality
 import com.saine.pixeltune.data.preferences.LastPlaybackSnapshot
 import com.saine.pixeltune.data.preferences.LastPlaybackSongSnapshot
+import com.saine.pixeltune.data.preferences.toSong
 import com.saine.pixeltune.data.preferences.ThemePreference
 import com.saine.pixeltune.data.repository.LyricsSearchResult
 import com.saine.pixeltune.data.repository.MusicRepository
@@ -787,6 +788,20 @@ class PlayerViewModel @Inject constructor(
     private val _currentLibraryTabId = MutableStateFlow(LibraryTabId.SONGS)
     val currentLibraryTabId: StateFlow<LibraryTabId> = _currentLibraryTabId.asStateFlow()
 
+    /**
+     * FIX(library-tab-flicker): the index most recently requested by
+     * [onLibraryTabSelected], set synchronously BEFORE the (async) DataStore
+     * write is launched. The DataStore re-sync collector below uses it to
+     * tell a STALE write echo (an intermediate page crossed during a pager
+     * animation whose write lands after a newer request) from the final one.
+     * Without this guard, stale echoes temporarily reverted
+     * [_currentLibraryTabId] to an intermediate tab, which made the shared
+     * library action row's filter buttons visibly disappear and re-appear
+     * while switching tabs (and even yanked the pager back and forth).
+     */
+    @Volatile
+    private var lastRequestedLibraryTabIndex: Int? = null
+
     private val _isSortingSheetVisible = MutableStateFlow(false)
     val isSortingSheetVisible: StateFlow<Boolean> = _isSortingSheetVisible.asStateFlow()
 
@@ -985,32 +1000,11 @@ class PlayerViewModel @Inject constructor(
             youtubeId = youtubeId
         )
 
-    /** Rebuilds a playable [Song] from a persisted snapshot (cloud-song fallback path). */
-    private fun LastPlaybackSongSnapshot.toSong(): Song = Song(
-        id = id,
-        title = title.ifBlank { "Unknown" },
-        artist = artist.ifBlank { "Unknown Artist" },
-        artistId = -1L,
-        artists = emptyList(),
-        album = album.orEmpty(),
-        albumId = -1L,
-        albumArtist = null,
-        path = "",
-        contentUriString = contentUri,
-        albumArtUriString = albumArtUri,
-        duration = durationMs.coerceAtLeast(0L),
-        genre = null,
-        lyrics = null,
-        isFavorite = false,
-        trackNumber = 0,
-        year = 0,
-        dateAdded = 0,
-        dateModified = 0,
-        mimeType = null,
-        bitrate = null,
-        sampleRate = null,
-        youtubeId = youtubeId
-    )
+    // NOTE(playback-resumption): rebuilding a Song from a persisted snapshot
+    // is the shared `LastPlaybackSongSnapshot.toSong()` extension in the data
+    // layer (also used by MusicService's onPlaybackResumption, so the
+    // service-side notification restore and this in-app restore build the
+    // exact same Song shape).
 
     /**
      * Builds the snapshot of the current playback session, or null when
@@ -1631,8 +1625,21 @@ class PlayerViewModel @Inject constructor(
 
         viewModelScope.launch {
             combine(libraryTabsFlow, lastLibraryTabIndexFlow) { tabs, index ->
-                tabs.getOrNull(index)?.toLibraryTabIdOrNull() ?: LibraryTabId.SONGS
-            }.collect { tabId ->
+                // FIX(library-tab-flicker): carry the persisted index alongside
+                // the resolved tab id so the collector can drop stale echoes.
+                index to (tabs.getOrNull(index)?.toLibraryTabIdOrNull() ?: LibraryTabId.SONGS)
+            }.collect { (persistedIndex, tabId) ->
+                // Skip any emission that is just an older write landing after
+                // a newer selection (DataStore edits serialize FIFO, so during a
+                // multi-page pager animation the intermediate pages' writes can
+                // arrive after the pager already settled on the final tab).
+                // Re-applying them caused the filter button to flicker and the
+                // pager to oscillate. Values from before any user interaction
+                // (cold start / tab reorder) are always applied.
+                val latestRequest = lastRequestedLibraryTabIndex
+                if (latestRequest != null && persistedIndex != latestRequest) {
+                    return@collect
+                }
                 _currentLibraryTabId.value = tabId
             }
         }
@@ -4097,6 +4104,10 @@ class PlayerViewModel @Inject constructor(
 
     fun onLibraryTabSelected(tabIndex: Int) {
         Trace.beginSection("PlayerViewModel.onLibraryTabSelected")
+        // FIX(library-tab-flicker): record the request BEFORE launching the
+        // async persist so the DataStore re-sync collector can distinguish
+        // this intent from the stale echoes of older writes.
+        lastRequestedLibraryTabIndex = tabIndex
         saveLastLibraryTabIndex(tabIndex)
 
         val tabIdentifier = libraryTabsFlow.value.getOrNull(tabIndex) ?: return
