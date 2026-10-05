@@ -350,10 +350,25 @@ fun LibraryScreen(
     // skipped on purpose: at initial composition the ViewModel's tab id can
     // legitimately differ from the pager's restored last-tab page, and the
     // existing PageChangeTabLoad effect is what reconciles them.
+    // FIX(library-tab-flicker): the pager-driven tab updates land in the
+    // PageChangeTabLoad effect one recomposition AFTER the page was crossed,
+    // so during a fast multi-page swipe the ViewModel's tab id can trail the
+    // pager by a page for a single frame. That transient divergence must not
+    // be mistaken for an external selection, or this effect would call
+    // animateScrollToPage back to the stale tab — hijacking (and in the worst
+    // case ping-ponging) the user's in-flight gesture. So the effect stands
+    // down whenever the pager is actively dragging / flinging / snapping.
     var handledInitialTabSync by remember { mutableStateOf(false) }
     LaunchedEffect(currentTabId, tabTitles) {
         if (!handledInitialTabSync) {
             handledInitialTabSync = true
+            return@LaunchedEffect
+        }
+        if (pagerState.isScrollInProgress) {
+            // A gesture/animation owns the pager right now — never fight it.
+            // If this was a genuine external selection that arrived mid-gesture
+            // the user's own swipe wins; the ViewModel tab id is re-synced from
+            // wherever the pager lands by the PageChangeTabLoad effect.
             return@LaunchedEffect
         }
         val requestedIndex = tabTitles.indexOfFirst {

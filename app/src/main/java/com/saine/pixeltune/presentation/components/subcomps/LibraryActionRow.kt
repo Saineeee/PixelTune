@@ -2,10 +2,12 @@ package com.saine.pixeltune.presentation.components.subcomps
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -57,7 +59,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -80,6 +84,19 @@ import java.io.File
 
 val defaultShape = RoundedCornerShape(26.dp) // Fallback shape
 val genHeight = 42.dp
+
+/**
+ * FIX(playlists-filter-flicker): which flavor of the library action row's
+ * shared online/offline/all filter affordance is active — the storage filter
+ * (Songs / Albums / Artists / Liked) or the playlist-source filter
+ * (Playlists). Both flavors render into the SAME single button slot, so
+ * switching between their tabs never removes + re-adds the button (the old
+ * two-button exit/enter overlap looked like the filter being duplicated).
+ */
+private enum class FilterButtonFlavor {
+    STORAGE,
+    PLAYLIST_SOURCE
+}
 
 @Composable
 fun LibraryActionRow(
@@ -338,88 +355,96 @@ fun LibraryActionRow(
                 
                 Spacer(modifier = Modifier.width(gapBetweenLocateAndNext))
 
-                // Storage Filter Button
-                AnimatedVisibility(
-                    visible = showStorageFilterButton,
-                    enter = slideInHorizontally(initialOffsetX = { it / 2 }) + fadeIn(),
-                    exit = slideOutHorizontally(targetOffsetX = { it / 2 }) + fadeOut()
-                ) {
-                     val finalIcon = when(currentStorageFilter) {
-                         com.saine.pixeltune.data.model.StorageFilter.ALL -> Icons.Rounded.Dataset
-                         com.saine.pixeltune.data.model.StorageFilter.ONLINE -> Icons.Rounded.Cloud
-                         com.saine.pixeltune.data.model.StorageFilter.OFFLINE -> Icons.Rounded.PhoneAndroid
-                     }
-                     val tooltipText = when(currentStorageFilter) {
-                         com.saine.pixeltune.data.model.StorageFilter.ALL -> "All Songs"
-                         com.saine.pixeltune.data.model.StorageFilter.ONLINE -> "Online"
-                         com.saine.pixeltune.data.model.StorageFilter.OFFLINE -> "Offline"
-                     }
-                     val tooltipState = rememberTooltipState()
-
-                    @OptIn(ExperimentalMaterial3Api::class)
-                    TooltipBox(
-                        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-                        tooltip = {
-                            PlainTooltip {
-                                Text(tooltipText)
-                            }
-                        },
-                        state = tooltipState
-                    ) {
-                        FilledTonalIconButton(
-                            onClick = onStorageFilterClick,
-                            shape = RoundedCornerShape(
-                                topStart = filterStartCorner,
-                                bottomStart = filterStartCorner,
-                                topEnd = filterEndCorner,
-                                bottomEnd = filterEndCorner
-                            ),
-                            modifier = Modifier.size(genHeight)
-                        ) {
-                             Icon(
-                                imageVector = finalIcon,
-                                contentDescription = tooltipText
-                            )
-                        }
+                // FIX(playlists-filter-flicker): the online/offline/all filter
+                // affordance used to be TWO sibling AnimatedVisibility blocks
+                // (a storage filter button for Songs/Albums/Artists/Liked and a
+                // playlist-source filter button for Playlists). Switching
+                // between Playlists and any storage-filter tab flipped one
+                // block's exit (slide + fade) and the other's enter (slide +
+                // fade) at the SAME time: for the whole transition BOTH nearly
+                // identical filter buttons were composed and laid out side by
+                // side, visually duplicating the filter button and shoving
+                // the Sort button sideways before snapping back — even though
+                // the button "already exists" on both tabs. The two flavors
+                // are now ONE persistent slot: a single AnimatedVisibility
+                // (still slide + fade, but only for tabs that genuinely lack
+                // the affordance — Folders / Downloads) wrapping a single
+                // button whose icon (short crossfade), tooltip and click
+                // handler follow the active flavor. Switching Playlists <->
+                // Songs/Albums/Artists/Liked therefore keeps the button
+                // steadily in place; at most the icon crossfades, which is
+                // invisible when both filters sit on the same value (e.g.
+                // Dataset for ALL).
+                val activeFilterFlavor = when {
+                    showPlaylistSourceFilterButton -> FilterButtonFlavor.PLAYLIST_SOURCE
+                    showStorageFilterButton -> FilterButtonFlavor.STORAGE
+                    else -> null
+                }
+                // The flavor rendered while the button is on screen. Seeded
+                // with the flavor active at first composition (no stale first
+                // frame) and updated from a LaunchedEffect (post-composition),
+                // so during an EXIT animation the outgoing flavor — its icon
+                // AND its click handler — is kept exactly like the old
+                // per-button blocks did, instead of morphing toward the
+                // hidden state.
+                var shownFilterFlavor by remember {
+                    mutableStateOf(activeFilterFlavor ?: FilterButtonFlavor.STORAGE)
+                }
+                LaunchedEffect(activeFilterFlavor) {
+                    if (activeFilterFlavor != null) {
+                        shownFilterFlavor = activeFilterFlavor
                     }
                 }
-
-                // IMPROVE(cloud-playlist-source-filter): Playlist Source
-                // Filter Button — the Playlists tab counterpart of the storage
-                // filter button above. Occupies the exact same middle slot
-                // (beside the Sort button): same size, shape animation, slide +
-                // fade reveal and tooltip convention, so the tab feels native
-                // next to its siblings. Only one of the two filter buttons is
-                // ever visible at a time (they belong to different tabs).
-                AnimatedVisibility(
-                    visible = showPlaylistSourceFilterButton,
-                    enter = slideInHorizontally(initialOffsetX = { it / 2 }) + fadeIn(),
-                    exit = slideOutHorizontally(targetOffsetX = { it / 2 }) + fadeOut()
-                ) {
-                    val playlistFilterIcon = when (currentPlaylistSourceFilter) {
+                val isPlaylistSourceFilter = shownFilterFlavor == FilterButtonFlavor.PLAYLIST_SOURCE
+                val filterIcon = if (isPlaylistSourceFilter) {
+                    when (currentPlaylistSourceFilter) {
                         PlaylistSourceFilter.ALL -> Icons.Rounded.Dataset
                         PlaylistSourceFilter.LOCAL -> Icons.Rounded.PhoneAndroid
                         PlaylistSourceFilter.CLOUD -> Icons.Rounded.Cloud
                     }
-                    val playlistFilterTooltip = when (currentPlaylistSourceFilter) {
+                } else {
+                    when (currentStorageFilter) {
+                        com.saine.pixeltune.data.model.StorageFilter.ALL -> Icons.Rounded.Dataset
+                        com.saine.pixeltune.data.model.StorageFilter.ONLINE -> Icons.Rounded.Cloud
+                        com.saine.pixeltune.data.model.StorageFilter.OFFLINE -> Icons.Rounded.PhoneAndroid
+                    }
+                }
+                val filterTooltip = if (isPlaylistSourceFilter) {
+                    when (currentPlaylistSourceFilter) {
                         PlaylistSourceFilter.ALL -> "All Playlists"
                         PlaylistSourceFilter.LOCAL -> "Local Playlists"
                         PlaylistSourceFilter.CLOUD -> "Cloud Playlists"
                     }
-                    val playlistFilterTooltipState = rememberTooltipState()
+                } else {
+                    when (currentStorageFilter) {
+                        com.saine.pixeltune.data.model.StorageFilter.ALL -> "All Songs"
+                        com.saine.pixeltune.data.model.StorageFilter.ONLINE -> "Online"
+                        com.saine.pixeltune.data.model.StorageFilter.OFFLINE -> "Offline"
+                    }
+                }
+                val filterTooltipState = rememberTooltipState()
 
+                AnimatedVisibility(
+                    visible = activeFilterFlavor != null,
+                    enter = slideInHorizontally(initialOffsetX = { it / 2 }) + fadeIn(),
+                    exit = slideOutHorizontally(targetOffsetX = { it / 2 }) + fadeOut()
+                ) {
                     @OptIn(ExperimentalMaterial3Api::class)
                     TooltipBox(
                         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
                         tooltip = {
                             PlainTooltip {
-                                Text(playlistFilterTooltip)
+                                Text(filterTooltip)
                             }
                         },
-                        state = playlistFilterTooltipState
+                        state = filterTooltipState
                     ) {
                         FilledTonalIconButton(
-                            onClick = onPlaylistSourceFilterClick,
+                            onClick = if (isPlaylistSourceFilter) {
+                                onPlaylistSourceFilterClick
+                            } else {
+                                onStorageFilterClick
+                            },
                             shape = RoundedCornerShape(
                                 topStart = filterStartCorner,
                                 bottomStart = filterStartCorner,
@@ -428,10 +453,21 @@ fun LibraryActionRow(
                             ),
                             modifier = Modifier.size(genHeight)
                         ) {
-                            Icon(
-                                imageVector = playlistFilterIcon,
-                                contentDescription = playlistFilterTooltip
-                            )
+                            // Crossfade keyed on the icon vector itself: when
+                            // both tabs show the same icon (the common
+                            // Dataset/ALL case) nothing animates at all; when
+                            // the active filter states differ, the icon melts
+                            // into the new one with no layout shift.
+                            Crossfade(
+                                targetState = filterIcon,
+                                animationSpec = tween(durationMillis = 150),
+                                label = "FilterButtonIcon"
+                            ) { icon ->
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = filterTooltip
+                                )
+                            }
                         }
                     }
                 }
