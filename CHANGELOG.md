@@ -5,9 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.1.0-beta] - YYYY-MM-DD
 
 **First public beta.** PixelTune is a fork of
-[PixelPlayer](https://github.com/PixelPlayerHQ/PixelPlayer) with an original streaming and cloud-catalog layer on top. It is a beta, so
-expect rough edges, and please report problems in
-[Issues](https://github.com/Saineeee/PixelTune/issues).
+[PixelPlayer](https://github.com/PixelPlayerHQ/PixelPlayer) with an original streaming and cloud-catalog layer on top.
 
 ### Added
 
