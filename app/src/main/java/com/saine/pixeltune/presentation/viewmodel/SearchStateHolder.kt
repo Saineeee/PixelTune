@@ -7,6 +7,7 @@ import com.saine.pixeltune.data.model.SearchPage
 import com.saine.pixeltune.data.model.SearchResultItem
 import com.saine.pixeltune.data.model.Song
 import com.saine.pixeltune.data.repository.MusicRepository
+import com.saine.pixeltune.data.preferences.UserPreferencesRepository
 import com.saine.pixeltune.utils.SearchResultKeys
 import com.saine.pixeltune.data.youtube.YouTubeRepository
 import com.saine.pixeltune.data.youtube.YouTubeStreamProxy
@@ -23,6 +24,7 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.first
@@ -47,7 +49,12 @@ class SearchStateHolder @Inject constructor(
     private val youTubeRepository: YouTubeRepository,
     private val youTubeStreamProxy: YouTubeStreamProxy,
     private val soundCloudRepository: SoundCloudRepository,
-    private val soundCloudStreamProxy: SoundCloudStreamProxy
+    private val soundCloudStreamProxy: SoundCloudStreamProxy,
+    // IMPROVE(history-limit-settings): the max number of recent online
+    // searches the app collects — user-tunable from Settings -> Appearance
+    // ("Max Search History" slider). Observed live so slider changes trim +
+    // reload the history without an app restart.
+    private val userPreferencesRepository: UserPreferencesRepository
 ) {
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 300L
@@ -162,11 +169,40 @@ class SearchStateHolder @Inject constructor(
     private var searchJob: Job? = null
 
     /**
+     * IMPROVE(history-limit-settings): the user's search-history cap
+     * (Settings -> Appearance). Starts at the DataStore default and is kept
+     * in sync by the collector launched in [initialize]; volatile because the
+     * collector coroutine and the UI-facing loaders read it concurrently.
+     */
+    @Volatile
+    private var searchHistoryLimit: Int = UserPreferencesRepository.DEFAULT_ONLINE_SEARCH_HISTORY_LIMIT
+
+    /**
      * Initialize with ViewModel scope.
      */
     fun initialize(scope: CoroutineScope) {
         this.scope = scope
         observeSearchRequests()
+        // IMPROVE(history-limit-settings): observe the "Max Search History"
+        // preference. On change: trim the STORED history down to the new cap
+        // (a lowered slider shrinks the collected history immediately — not
+        // just on the next search) and reload the visible list with the new
+        // limit so the recent-searches landing reflects it right away.
+        scope.launch {
+            userPreferencesRepository.onlineSearchHistoryLimitFlow.collect { limit ->
+                if (limit != searchHistoryLimit) {
+                    searchHistoryLimit = limit
+                    try {
+                        withContext(Dispatchers.IO) {
+                            musicRepository.trimSearchHistory(limit)
+                        }
+                        loadSearchHistory()
+                    } catch (e: Exception) {
+                        Log.e("SearchStateHolder", "Error applying search history limit", e)
+                    }
+                }
+            }
+        }
     }
 
     private fun observeSearchRequests() {
@@ -404,11 +440,15 @@ class SearchStateHolder @Inject constructor(
         _isOnlineSearch.value = isOnline
     }
 
-    fun loadSearchHistory(limit: Int = 15) {
+    fun loadSearchHistory(limit: Int = 0) {
+        // IMPROVE(history-limit-settings): no explicit limit → use the user's
+        // configured cap (Settings -> Appearance). An explicit positive limit
+        // (e.g. from a caller requesting a preview window) still wins.
+        val effectiveLimit = if (limit > 0) limit else searchHistoryLimit
         scope?.launch {
             try {
                 val history = withContext(Dispatchers.IO) {
-                    musicRepository.getRecentSearchHistory(limit)
+                    musicRepository.getRecentSearchHistory(effectiveLimit)
                 }
                 _searchHistory.value = history.toImmutableList()
             } catch (e: Exception) {
@@ -422,7 +462,10 @@ class SearchStateHolder @Inject constructor(
             if (query.isNotBlank()) {
                 try {
                     withContext(Dispatchers.IO) {
-                        musicRepository.addSearchHistoryItem(query)
+                        musicRepository.addSearchHistoryItem(
+                            query = query,
+                            maxEntries = searchHistoryLimit
+                        )
                     }
                     loadSearchHistory()
                 } catch (e: Exception) {

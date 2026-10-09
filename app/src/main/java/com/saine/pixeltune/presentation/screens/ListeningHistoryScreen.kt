@@ -88,7 +88,8 @@ import java.time.format.FormatStyle
  * Replaces the old partial-height ModalBottomSheet that opened from the Home
  * top-bar history button (IMPROVE: "make the listening history page a
  * stretchable full screen page"). The history now fills the whole screen and
- * shows up to 30 songs — the most recently listened ones, grouped by day.
+ * shows the most recently listened songs (up to the user's configurable cap —
+ * Settings -> Appearance "Max Listening History", default 30), grouped by day.
  *
  * Cloud-streamed songs (YouTube / SoundCloud) are fully supported: history
  * entries carry a metadata snapshot (title / artist / artwork / normalized
@@ -103,6 +104,12 @@ fun ListeningHistoryScreen(
     navController: NavController
 ) {
     val playbackHistory by playerViewModel.playbackHistory.collectAsStateWithLifecycle()
+    // IMPROVE(history-limit-settings): the user's listening-history cap
+    // (Settings -> Appearance "Max Listening History" slider, default 30).
+    // Sizes the mapping below to exactly what the ListeningStatsTracker
+    // collects, so raising the slider immediately shows the older entries
+    // that rejoin the history.
+    val listeningHistoryLimit by playerViewModel.listeningHistoryLimit.collectAsStateWithLifecycle()
     val allSongs by playerViewModel.allSongsFlow.collectAsStateWithLifecycle()
     val cloudSongsById by playerViewModel.cloudSongsRegistry.collectAsStateWithLifecycle()
     val stablePlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
@@ -145,7 +152,8 @@ fun ListeningHistoryScreen(
     // Merge local library + session cloud registry. Entries that still can't be
     // resolved through this merge (e.g. cloud songs after an app restart) fall
     // back to their persisted metadata snapshot inside mapRecentlyPlayedSongs.
-    val historySongs = remember(playbackHistory, allSongs, cloudSongsById) {
+    // Keyed on listeningHistoryLimit too so a raised cap re-maps immediately.
+    val historySongs = remember(playbackHistory, allSongs, cloudSongsById, listeningHistoryLimit) {
         val mergedSongs = if (cloudSongsById.isEmpty()) {
             allSongs
         } else {
@@ -162,7 +170,7 @@ fun ListeningHistoryScreen(
         mapRecentlyPlayedSongs(
             playbackHistory = playbackHistory,
             songs = mergedSongs,
-            maxItems = 30
+            maxItems = listeningHistoryLimit
         )
     }
     val historyQueue = remember(historySongs) {
@@ -293,10 +301,25 @@ fun ListeningHistoryScreen(
 
             // ---- Song list (stretchable full-screen content) ----
             if (historySongs.isEmpty()) {
+                // FIX(history-empty-center): the "No history yet" placeholder
+                // was centered inside the full-height content box, which runs
+                // all the way down to the physical screen bottom — underneath
+                // the app navigation bar and the floating mini player pill
+                // (both drawn at the MainActivity level over this screen).
+                // Its center therefore sat visibly BELOW the middle of the
+                // actually visible area. Reserving the real bottom overlay
+                // height as padding before centering puts the placeholder in
+                // the middle of the VISIBLE screen area.
+                val emptyStateBottomInset = if (miniPlayerVisible) {
+                    NavBarContentHeight + bottomBarHeightDp + MiniPlayerHeight + MiniPlayerBottomSpacer
+                } else {
+                    NavBarContentHeight + bottomBarHeightDp
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
+                        .weight(1f)
+                        .padding(bottom = emptyStateBottomInset),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {

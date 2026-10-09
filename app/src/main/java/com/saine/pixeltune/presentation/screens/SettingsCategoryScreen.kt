@@ -212,6 +212,15 @@ fun SettingsCategoryScreen(
     var radioQueueFetchCountDraft by remember(uiState.radioQueueFetchCount) {
         mutableStateOf(uiState.radioQueueFetchCount.toFloat())
     }
+    // IMPROVE(history-limit-settings): draft values for the history caps
+    // (Settings -> Appearance). Both snap in steps of 5; persisted only when
+    // the drag finishes — mirrors the queue-fetch slider's draft pattern.
+    var onlineSearchHistoryLimitDraft by remember(uiState.onlineSearchHistoryLimit) {
+        mutableStateOf(uiState.onlineSearchHistoryLimit.toFloat())
+    }
+    var listeningHistoryLimitDraft by remember(uiState.listeningHistoryLimit) {
+        mutableStateOf(uiState.listeningHistoryLimit.toFloat())
+    }
 
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream")
@@ -639,6 +648,53 @@ fun SettingsCategoryScreen(
                                         leadingIcon = { Icon(Icons.Rounded.Timer, null, tint = MaterialTheme.colorScheme.secondary) }
                                     )
                                 }
+                            }
+
+                            // IMPROVE(history-limit-settings): user-tunable caps
+                            // for how much history the app collects. Both use the
+                            // app's existing SliderSettingsItem (Material 3 slider
+                            // inside a surfaceContainer card) so they match the
+                            // sibling sliders (Minimum Song Duration, Next Up Queue
+                            // Fetch Count). Changes apply live — the search state
+                            // holder and the listening stats tracker observe the
+                            // same DataStore flows — no restart needed.
+                            SettingsSubsection(title = "History Collection") {
+                                SliderSettingsItem(
+                                    label = "Max Search History",
+                                    value = onlineSearchHistoryLimitDraft,
+                                    // Snaps to 5, 10, 15, ... 50 (10 positions, 8 steps).
+                                    valueRange = 5f..50f,
+                                    steps = 8,
+                                    onValueChange = { onlineSearchHistoryLimitDraft = it },
+                                    onValueChangeFinished = {
+                                        val selectedLimit = onlineSearchHistoryLimitDraft.toInt()
+                                        if (selectedLimit != uiState.onlineSearchHistoryLimit) {
+                                            settingsViewModel.setOnlineSearchHistoryLimit(selectedLimit)
+                                        }
+                                    },
+                                    valueText = { value ->
+                                        val count = value.toInt()
+                                        if (count == 1) "1 search" else "$count searches"
+                                    }
+                                )
+                                SliderSettingsItem(
+                                    label = "Max Listening History",
+                                    value = listeningHistoryLimitDraft,
+                                    // Snaps to 10, 15, 20, ... 100 (19 positions, 17 steps).
+                                    valueRange = 10f..100f,
+                                    steps = 17,
+                                    onValueChange = { listeningHistoryLimitDraft = it },
+                                    onValueChangeFinished = {
+                                        val selectedLimit = listeningHistoryLimitDraft.toInt()
+                                        if (selectedLimit != uiState.listeningHistoryLimit) {
+                                            settingsViewModel.setListeningHistoryLimit(selectedLimit)
+                                        }
+                                    },
+                                    valueText = { value ->
+                                        val count = value.toInt()
+                                        if (count == 1) "1 song" else "$count songs"
+                                    }
+                                )
                             }
 
                             SettingsSubsection(

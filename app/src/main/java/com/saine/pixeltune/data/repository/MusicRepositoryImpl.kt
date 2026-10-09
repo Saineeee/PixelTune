@@ -408,10 +408,23 @@ class MusicRepositoryImpl @Inject constructor(
         }.flowOn(Dispatchers.Default)
     }
 
-    override suspend fun addSearchHistoryItem(query: String) {
+    override suspend fun addSearchHistoryItem(query: String, maxEntries: Int) {
         withContext(Dispatchers.IO) {
             searchHistoryDao.deleteByQuery(query)
             searchHistoryDao.insert(SearchHistoryEntity(query = query, timestamp = System.currentTimeMillis()))
+            // IMPROVE(history-limit-settings): keep the collected history
+            // within the user's cap (Settings -> Appearance slider) — the
+            // oldest entries fall off as new searches are recorded.
+            if (maxEntries > 0) {
+                searchHistoryDao.trimToLimit(maxEntries)
+            }
+        }
+    }
+
+    override suspend fun trimSearchHistory(limit: Int) {
+        if (limit <= 0) return
+        withContext(Dispatchers.IO) {
+            searchHistoryDao.trimToLimit(limit)
         }
     }
 

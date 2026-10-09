@@ -208,6 +208,14 @@ class PlayerViewModel @Inject constructor(
     val currentPlaybackPosition: StateFlow<Long> = playbackStateHolder.currentPosition
     val playbackHistory = listeningStatsTracker.playbackHistory
 
+    /**
+     * IMPROVE(history-limit-settings): the live listening-history cap
+     * (Settings -> Appearance "Max Listening History" slider, default 30).
+     * Exposed so history-rendering screens (Listening History, Recently
+     * Played) can size their mapping to exactly what the tracker collects.
+     */
+    val listeningHistoryLimit = listeningStatsTracker.historyLimit
+
     fun clearPlaybackHistory() {
         listeningStatsTracker.clearHistory()
     }
@@ -3847,7 +3855,12 @@ class PlayerViewModel @Inject constructor(
         performSearch(searchQuery)
     }
 
-    fun loadSearchHistory(limit: Int = 15) {
+    /**
+     * IMPROVE(history-limit-settings): no explicit limit → the SearchStateHolder
+     * falls back to the user's configured "Max Search History" cap
+     * (Settings -> Appearance) instead of the old hard-coded 15.
+     */
+    fun loadSearchHistory(limit: Int = 0) {
         searchStateHolder.loadSearchHistory(limit)
     }
 

@@ -4,6 +4,7 @@ import android.os.SystemClock
 import androidx.media3.common.C
 import com.saine.pixeltune.data.DailyMixManager
 import com.saine.pixeltune.data.model.Song
+import com.saine.pixeltune.data.preferences.UserPreferencesRepository
 import com.saine.pixeltune.data.stats.PlaybackStatsRepository
 import com.saine.pixeltune.utils.CloudUriUtils
 import kotlinx.coroutines.CoroutineScope
@@ -11,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
@@ -41,7 +43,12 @@ import com.saine.pixeltune.data.database.EngagementDao
 class ListeningStatsTracker @Inject constructor(
     private val dailyMixManager: DailyMixManager,
     private val playbackStatsRepository: PlaybackStatsRepository,
-    private val engagementDao: EngagementDao
+    private val engagementDao: EngagementDao,
+    // IMPROVE(history-limit-settings): the max number of distinct songs the
+    // Listening History collects — user-tunable from Settings -> Appearance
+    // ("Max Listening History" slider). Observed live so slider changes grow /
+    // shrink the history without an app restart.
+    private val userPreferencesRepository: UserPreferencesRepository
 ) {
     private var currentSession: ActiveSession? = null
     private var pendingVoluntarySongId: String? = null
@@ -50,14 +57,98 @@ class ListeningStatsTracker @Inject constructor(
     val playbackHistory: StateFlow<List<PlaybackStatsRepository.PlaybackHistoryEntry>> = _playbackHistory.asStateFlow()
 
     /**
+     * IMPROVE(history-limit-settings): the user's listening-history cap,
+     * initialized to the DataStore default and kept in sync by the collector
+     * launched in [initialize]. Replaces the old hard-coded
+     * MAX_INTERNAL_PLAYBACK_HISTORY_ITEMS cap at every call site below.
+     * Volatile because the preference collector and the playback callbacks
+     * read it from different coroutines.
+     */
+    @Volatile
+    private var maxHistoryItems: Int = UserPreferencesRepository.DEFAULT_LISTENING_HISTORY_LIMIT
+
+    /**
+     * IMPROVE(history-limit-settings): the live cap as a StateFlow, so UIs
+     * (Listening History page, Recently Played) can size their history
+     * mapping exactly to what the tracker collects instead of a hard-coded
+     * song count. Mirrors [maxHistoryItems].
+     */
+    private val _historyLimit = MutableStateFlow(UserPreferencesRepository.DEFAULT_LISTENING_HISTORY_LIMIT)
+    val historyLimit: StateFlow<Int> = _historyLimit.asStateFlow()
+
+    /**
+     * IMPROVE(history-limit-settings): latest-wins guard for history reloads.
+     * The eager initial load (default cap) can still be in flight when the
+     * preference collector fires with the user's stored cap — only the most
+     * recently REQUESTED load may publish, so a stale in-flight load with the
+     * wrong cap can never overwrite the correct result.
+     */
+    private val historyLoadGeneration = java.util.concurrent.atomic.AtomicLong(0)
+
+    /**
      * Must be called to set the coroutine scope for async operations.
      */
     fun initialize(coroutineScope: CoroutineScope) {
         scope = coroutineScope
-        scope?.launch(Dispatchers.IO) {
-            _playbackHistory.value = playbackStatsRepository.loadPlaybackHistory(
-                limit = MAX_INTERNAL_PLAYBACK_HISTORY_ITEMS
-            )
+        reloadHistoryFromDisk(maxHistoryItems)
+        // IMPROVE(history-limit-settings): observe the "Max Listening History"
+        // preference (Settings -> Appearance). The equality guard makes the
+        // collector's initial default emission a no-op (the eager load above
+        // already used the default cap), so changing the slider is the only
+        // thing that triggers a re-load / re-trim — while a stored NON-default
+        // cap still applies right after launch (guarded by the generation
+        // counter so the stale default-cap load can't win).
+        scope?.launch {
+            userPreferencesRepository.listeningHistoryLimitFlow.collect { limit ->
+                if (limit != maxHistoryItems) {
+                    applyHistoryLimit(limit)
+                }
+            }
+        }
+    }
+
+    /**
+     * IMPROVE(history-limit-settings): re-loads the persisted history with the
+     * given cap on Dispatchers.IO. Publication is guarded by the generation
+     * counter — if a newer reload/trim has been requested while this one was
+     * reading the events file, this (stale) result is discarded.
+     */
+    private fun reloadHistoryFromDisk(limit: Int) {
+        val generation = historyLoadGeneration.incrementAndGet()
+        val activeScope = scope ?: return
+        activeScope.launch(Dispatchers.IO) {
+            val reloaded = playbackStatsRepository.loadPlaybackHistory(limit)
+            if (generation == historyLoadGeneration.get()) {
+                _playbackHistory.value = reloaded
+            }
+        }
+    }
+
+    /**
+     * IMPROVE(history-limit-settings): applies a new listening-history cap
+     * live. Lowering it trims the in-memory list in place (the live entry of
+     * the currently playing song sits at the head and always survives);
+     * raising it re-loads from the persisted events file so older entries —
+     * previously beyond the old cap — rejoin the list. The persisted stats
+     * events file itself is NEVER truncated, so listening stats are unaffected
+     * and lowering + raising the slider again restores the fuller history.
+     */
+    private fun applyHistoryLimit(limit: Int) {
+        maxHistoryItems = limit
+        _historyLimit.value = limit
+        val current = _playbackHistory.value
+        if (current.size < limit) {
+            // Raised cap (or first sync after start): older entries may
+            // exist in the persisted events file — re-load with the new
+            // limit. The live entry of a currently playing song re-joins
+            // within one LIVE_ENTRY_REFRESH_INTERVAL_MS tick / on finalize.
+            reloadHistoryFromDisk(limit)
+        } else {
+            // Lowered cap: the newest [limit] entries survive (List.take
+            // returns the same instance when nothing is dropped, so the
+            // StateFlow only re-emits when entries are actually trimmed).
+            historyLoadGeneration.incrementAndGet()
+            _playbackHistory.value = current.take(limit)
         }
     }
 
@@ -287,9 +378,9 @@ class ListeningStatsTracker @Inject constructor(
     /**
      * Upserts a [PlaybackStatsRepository.PlaybackHistoryEntry] into the
      * in-memory `_playbackHistory` StateFlow: removes any existing entry with
-     * the same [songId], then prepends the new entry. Capped at
-     * [MAX_INTERNAL_PLAYBACK_HISTORY_ITEMS] (30 songs, per the Listening
-     * History requirement).
+     * the same [songId], then prepends the new entry. Capped at the user's
+     * configured [maxHistoryItems] (default 30, Settings -> Appearance —
+     * previously the hard-coded Listening History requirement).
      *
      * Used by [onSongChanged] (immediate live recording), [onProgress] (live
      * timestamp refresh) and [finalizeCurrentSession] (final timestamp).
@@ -311,7 +402,7 @@ class ListeningStatsTracker @Inject constructor(
         )
         _playbackHistory.update { current ->
             val withoutExisting = current.filterNot { it.songId == songId }
-            (listOf(historyEntry) + withoutExisting).take(MAX_INTERNAL_PLAYBACK_HISTORY_ITEMS)
+            (listOf(historyEntry) + withoutExisting).take(maxHistoryItems)
         }
     }
 
@@ -380,9 +471,11 @@ class ListeningStatsTracker @Inject constructor(
         // 4 Hz re-emission storm of the whole history list.
         private val LIVE_ENTRY_REFRESH_INTERVAL_MS = TimeUnit.SECONDS.toMillis(5)
 
-        // FIX(listening-history-cap): the Listening History records a total of
-        // 30 songs. Older entries fall off the end as new songs are played.
-        private const val MAX_INTERNAL_PLAYBACK_HISTORY_ITEMS = 30
+        // FIX(listening-history-cap): the Listening History used to record a
+        // hard-coded total of 30 songs (older entries fell off the end as new
+        // songs were played). IMPROVE(history-limit-settings): the cap is now
+        // user-tunable — [maxHistoryItems] (default 30, synced live from the
+        // Settings -> Appearance "Max Listening History" slider).
     }
 }
 

@@ -236,6 +236,14 @@ constructor(
         // (YouTube / SoundCloud). Default 7, clamped to 1..30.
         val RADIO_QUEUE_FETCH_COUNT = intPreferencesKey("radio_queue_fetch_count")
 
+        // IMPROVE(history-limit-settings): user-tunable caps for how much
+        // history the app collects — the online search history (recent
+        // searches landing on the Search screen) and the listening history
+        // (Listening History page / Recently Played). Both are exposed as
+        // sliders in Settings -> Appearance.
+        val ONLINE_SEARCH_HISTORY_LIMIT = intPreferencesKey("online_search_history_limit")
+        val LISTENING_HISTORY_LIMIT = intPreferencesKey("listening_history_limit")
+
         // IMPROVE(playback-restore): last playback session snapshot (current
         // song + position + a bounded queue window) so the player can be
         // restored after the app is closed and re-opened.
@@ -871,6 +879,51 @@ constructor(
     }
 
     // ===== End Online Streaming Radio Queue Fetcher =====
+
+    // ===== History Collection Limits =====
+
+    /**
+     * IMPROVE(history-limit-settings): how many recent online searches are
+     * collected (stored AND shown on the Search screen's recent-searches
+     * landing). User-tunable from Settings -> Appearance ("Max Search
+     * History" slider). Default 15 (the previous hard-coded limit), snapped
+     * to 5..50 — new searches push the oldest entries out once the cap is
+     * reached, and lowering the cap immediately trims the stored history.
+     */
+    val onlineSearchHistoryLimitFlow: Flow<Int> =
+        dataStore.data.map { preferences ->
+            (preferences[PreferencesKeys.ONLINE_SEARCH_HISTORY_LIMIT] ?: DEFAULT_ONLINE_SEARCH_HISTORY_LIMIT)
+                .coerceIn(MIN_ONLINE_SEARCH_HISTORY_LIMIT, MAX_ONLINE_SEARCH_HISTORY_LIMIT)
+        }
+
+    suspend fun setOnlineSearchHistoryLimit(limit: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.ONLINE_SEARCH_HISTORY_LIMIT] =
+                limit.coerceIn(MIN_ONLINE_SEARCH_HISTORY_LIMIT, MAX_ONLINE_SEARCH_HISTORY_LIMIT)
+        }
+    }
+
+    /**
+     * IMPROVE(history-limit-settings): how many distinct songs the Listening
+     * History (and the Recently Played surfaces it feeds) collects — online
+     * cloud streams (YouTube / SoundCloud) AND local songs alike. User-tunable
+     * from Settings -> Appearance ("Max Listening History" slider). Default
+     * 30 (the previous hard-coded cap), snapped to 10..100.
+     */
+    val listeningHistoryLimitFlow: Flow<Int> =
+        dataStore.data.map { preferences ->
+            (preferences[PreferencesKeys.LISTENING_HISTORY_LIMIT] ?: DEFAULT_LISTENING_HISTORY_LIMIT)
+                .coerceIn(MIN_LISTENING_HISTORY_LIMIT, MAX_LISTENING_HISTORY_LIMIT)
+        }
+
+    suspend fun setListeningHistoryLimit(limit: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.LISTENING_HISTORY_LIMIT] =
+                limit.coerceIn(MIN_LISTENING_HISTORY_LIMIT, MAX_LISTENING_HISTORY_LIMIT)
+        }
+    }
+
+    // ===== End History Collection Limits =====
 
     // ===== ReplayGain =====
 
@@ -1581,6 +1634,26 @@ constructor(
         const val DEFAULT_RADIO_QUEUE_FETCH_COUNT = 7
         const val MIN_RADIO_QUEUE_FETCH_COUNT = 1
         const val MAX_RADIO_QUEUE_FETCH_COUNT = 30
+
+        /**
+         * IMPROVE(history-limit-settings): bounds for the "Max Search History"
+         * slider (Settings -> Appearance). Default 15 — the exact limit the
+         * recent-searches landing used before the setting existed; minimum 5
+         * (a usable history); maximum 50. Snaps in steps of 5.
+         */
+        const val DEFAULT_ONLINE_SEARCH_HISTORY_LIMIT = 15
+        const val MIN_ONLINE_SEARCH_HISTORY_LIMIT = 5
+        const val MAX_ONLINE_SEARCH_HISTORY_LIMIT = 50
+
+        /**
+         * IMPROVE(history-limit-settings): bounds for the "Max Listening
+         * History" slider (Settings -> Appearance). Default 30 — the exact
+         * song cap the Listening History used before the setting existed;
+         * minimum 10; maximum 100. Snaps in steps of 5.
+         */
+        const val DEFAULT_LISTENING_HISTORY_LIMIT = 30
+        const val MIN_LISTENING_HISTORY_LIMIT = 10
+        const val MAX_LISTENING_HISTORY_LIMIT = 100
     }
 
     val navBarCornerRadiusFlow: Flow<Int> =

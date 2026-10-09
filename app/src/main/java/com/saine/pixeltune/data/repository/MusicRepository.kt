@@ -163,10 +163,24 @@ interface MusicRepository {
     fun searchAll(query: String, filterType: SearchFilterType): Flow<List<SearchResultItem>>
 
     // Search History
-    suspend fun addSearchHistoryItem(query: String)
+    /**
+     * IMPROVE(history-limit-settings): records [query] as the most recent
+     * search and keeps the stored history within [maxEntries] (oldest rows
+     * beyond the cap are deleted in the same transaction-ish pass).
+     * [maxEntries] <= 0 keeps the legacy behavior (no trimming).
+     */
+    suspend fun addSearchHistoryItem(query: String, maxEntries: Int = 0)
     suspend fun getRecentSearchHistory(limit: Int): List<SearchHistoryItem>
     suspend fun deleteSearchHistoryItemByQuery(query: String)
     suspend fun clearSearchHistory()
+
+    /**
+     * IMPROVE(history-limit-settings): deletes all but the [limit] most recent
+     * search history entries. Called when the user lowers the "Max Search
+     * History" slider so the collected history immediately shrinks to the
+     * new cap (instead of lingering until the next search overflows it).
+     */
+    suspend fun trimSearchHistory(limit: Int)
 
     /**
      * Obtiene la lista de canciones para un género específico (placeholder implementation).

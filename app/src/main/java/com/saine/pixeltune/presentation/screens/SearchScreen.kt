@@ -54,6 +54,7 @@ import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SearchBar
 import androidx.compose.material3.SearchBarDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -195,6 +196,13 @@ fun SearchScreen(
     val favoriteSongIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle()
     var showSongInfoBottomSheet by remember { mutableStateOf(false) }
     var selectedSongForInfo by remember { mutableStateOf<Song?>(null) }
+    // IMPROVE(clear-search-history-confirm): tapping "Clear All" on the
+    // recent-searches landing used to wipe the whole online search history
+    // instantly — one accidental tap and every recent query was gone. The
+    // button now opens a confirmation dialog first (same Material 3
+    // AlertDialog pattern the Listening History "Clear" action already
+    // uses) and only wipes the history when the user confirms.
+    var showClearSearchHistoryDialog by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
     val searchInputFocusRequester = remember { FocusRequester() }
 
@@ -255,7 +263,7 @@ fun SearchScreen(
         playerViewModel.deleteSearchHistoryItem(query)
     }
     val onClearHistory: () -> Unit = {
-        playerViewModel.clearSearchHistory()
+        showClearSearchHistoryDialog = true
     }
 
     val handleSongMoreOptionsClick: (Song) -> Unit = { song ->
@@ -591,6 +599,41 @@ fun SearchScreen(
         }
     }
 
+    // IMPROVE(clear-search-history-confirm): Material 3 confirmation dialog
+    // guarding the destructive "Clear All" action on the recent-searches
+    // landing. Mirrors the Listening History clear dialog (title + body +
+    // Cancel/Confirm TextButtons) so both destructive history actions feel
+    // identical across the app.
+    if (showClearSearchHistoryDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearSearchHistoryDialog = false },
+            title = { Text(text = "Clear search history?") },
+            text = {
+                Text(
+                    text = "This removes all ${searchHistory.size} recent searches. " +
+                        "This action can't be undone."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearSearchHistoryDialog = false
+                        playerViewModel.clearSearchHistory()
+                    }
+                ) {
+                    Text(text = "Clear")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showClearSearchHistoryDialog = false }
+                ) {
+                    Text(text = "Cancel")
+                }
+            }
+        )
+    }
+
     if (showSongInfoBottomSheet && selectedSongForInfo != null) {
         val currentSong = selectedSongForInfo
         val isFavorite = remember(currentSong?.id, favoriteSongIds) {
@@ -766,32 +809,50 @@ fun OnlineSearchHistorySection(
         }
 
         if (historyItems.isEmpty()) {
-            Column(
+            // FIX(search-history-empty-center): the "No recent searches"
+            // placeholder used to sit directly under the "Recent Searches"
+            // header (top-heavy — it read as clipped/awkwardly high on the
+            // screen). It now centers vertically in the space between the
+            // header and the bottom overlay (app navigation bar + mini player
+            // pill when a song is loaded), i.e. the middle of the VISIBLE
+            // body area — matching how the sibling empty states (search
+            // results, listening history) are centered.
+            val emptyStateBottomInset = if (miniPlayerVisible) {
+                bottomBarHeightDpForResults() + MiniPlayerHeight + MiniPlayerBottomSpacer
+            } else {
+                bottomBarHeightDpForResults()
+            }
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 48.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .weight(1f)
+                    .padding(bottom = emptyStateBottomInset),
+                contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.History,
-                    contentDescription = "No recent searches",
-                    modifier = Modifier.size(72.dp),
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "No recent searches",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Your online searches will show up here",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.History,
+                        contentDescription = "No recent searches",
+                        modifier = Modifier.size(72.dp),
+                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "No recent searches",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Your online searches will show up here",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         } else {
             LazyColumn(

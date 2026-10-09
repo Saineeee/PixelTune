@@ -24,4 +24,18 @@ interface SearchHistoryDao {
 
     @Query("SELECT * FROM search_history ORDER BY timestamp DESC")
     suspend fun getAll(): List<SearchHistoryEntity>
+
+    /**
+     * IMPROVE(history-limit-settings): keeps only the [limit] most recent
+     * search_history rows (newest first by timestamp, then id as the
+     * deterministic tie-breaker) and deletes everything older. Called after
+     * every insert and whenever the user lowers the "Max Search History"
+     * slider in Settings -> Appearance, so the collected history never
+     * outgrows the user's cap.
+     */
+    @Query(
+        "DELETE FROM search_history WHERE id NOT IN " +
+            "(SELECT id FROM search_history ORDER BY timestamp DESC, id DESC LIMIT :limit)"
+    )
+    suspend fun trimToLimit(limit: Int)
 }

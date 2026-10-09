@@ -86,6 +86,13 @@ data class SettingsUiState(
     // fetched ahead for online cloud streaming radio queues (YouTube /
     // SoundCloud). Default 7, clamped to 1..30 — mirrors the DataStore default.
     val radioQueueFetchCount: Int = 7,
+    // IMPROVE(history-limit-settings): user-tunable caps for how much history
+    // the app collects — recent online searches and listening history songs.
+    // Defaults mirror the DataStore defaults (the values the app used before
+    // the Settings -> Appearance sliders existed). Consumed by the sliders in
+    // SettingsCategoryScreen (APPEARANCE).
+    val onlineSearchHistoryLimit: Int = com.saine.pixeltune.data.preferences.UserPreferencesRepository.DEFAULT_ONLINE_SEARCH_HISTORY_LIMIT,
+    val listeningHistoryLimit: Int = com.saine.pixeltune.data.preferences.UserPreferencesRepository.DEFAULT_LISTENING_HISTORY_LIMIT,
     val streamingQuality: com.saine.pixeltune.data.preferences.StreamingQuality = com.saine.pixeltune.data.preferences.StreamingQuality.NORMAL
 )
 
@@ -370,6 +377,22 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             userPreferencesRepository.radioQueueFetchCountFlow.collect { count ->
                 _uiState.update { it.copy(radioQueueFetchCount = count) }
+            }
+        }
+
+        // IMPROVE(history-limit-settings): collectors for the history caps
+        // (Settings -> Appearance sliders). The SearchStateHolder and the
+        // ListeningStatsTracker observe the same DataStore flows directly, so
+        // changing the sliders applies live without a player/app restart.
+        viewModelScope.launch {
+            userPreferencesRepository.onlineSearchHistoryLimitFlow.collect { limit ->
+                _uiState.update { it.copy(onlineSearchHistoryLimit = limit) }
+            }
+        }
+
+        viewModelScope.launch {
+            userPreferencesRepository.listeningHistoryLimitFlow.collect { limit ->
+                _uiState.update { it.copy(listeningHistoryLimit = limit) }
             }
         }
 
@@ -683,6 +706,32 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             if (count == _uiState.value.radioQueueFetchCount) return@launch
             userPreferencesRepository.setRadioQueueFetchCount(count)
+        }
+    }
+
+    /**
+     * IMPROVE(history-limit-settings): persists the max number of recent
+     * online searches the app collects (Settings -> Appearance). The
+     * SearchStateHolder observes the DataStore flow directly — the stored
+     * history is trimmed and the recent-searches landing reloads live.
+     */
+    fun setOnlineSearchHistoryLimit(limit: Int) {
+        viewModelScope.launch {
+            if (limit == _uiState.value.onlineSearchHistoryLimit) return@launch
+            userPreferencesRepository.setOnlineSearchHistoryLimit(limit)
+        }
+    }
+
+    /**
+     * IMPROVE(history-limit-settings): persists the max number of distinct
+     * songs the Listening History collects (Settings -> Appearance). The
+     * ListeningStatsTracker observes the DataStore flow directly — the
+     * history list grows / shrinks live, no restart needed.
+     */
+    fun setListeningHistoryLimit(limit: Int) {
+        viewModelScope.launch {
+            if (limit == _uiState.value.listeningHistoryLimit) return@launch
+            userPreferencesRepository.setListeningHistoryLimit(limit)
         }
     }
 
