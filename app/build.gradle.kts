@@ -1,9 +1,9 @@
 plugins {
     alias(libs.plugins.android.application)
-    id("com.google.devtools.ksp") version "2.1.0-1.0.29"
+    id("com.google.devtools.ksp") version "2.3.12"
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.dagger.hilt.android)
-    kotlin("plugin.serialization") version "2.1.0"
+    kotlin("plugin.serialization") version "2.4.21"
     alias(libs.plugins.jetbrains.kotlin.android)
     alias(libs.plugins.baselineprofile)
     // id("com.google.protobuf") version "0.9.5" // Eliminado plugin de Protobuf
@@ -81,7 +81,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
     composeOptions {
-        kotlinCompilerExtensionVersion = "2.1.0"
+        kotlinCompilerExtensionVersion = "2.4.21"
         // Para habilitar informes de composición (legibles):
     }
     buildFeatures {
@@ -95,25 +95,6 @@ android {
         includeInApk = false
         includeInBundle = false
     }
-    kotlinOptions {
-        jvmTarget = "11"
-        // Aquí es donde debes agregar freeCompilerArgs para los informes del compilador de Compose.
-        freeCompilerArgs += listOf(
-            "-P",
-            "plugin:androidx.compose.compiler.plugins.kotlin:reportsDestination=${project.buildDir.absolutePath}/compose_compiler_reports"
-        )
-        freeCompilerArgs += listOf(
-            "-P",
-            "plugin:androidx.compose.compiler.plugins.kotlin:metricsDestination=${project.buildDir.absolutePath}/compose_compiler_metrics"
-        )
-
-        //Stability
-        freeCompilerArgs += listOf(
-            "-P",
-            "plugin:androidx.compose.compiler.plugins.kotlin:stabilityConfigurationPath=${project.rootDir.absolutePath}/app/compose_stability.conf"
-        )
-    }
-
     testOptions {
         unitTests.isReturnDefaultValues = true
         unitTests.all {
@@ -146,6 +127,22 @@ android {
         language {
             enableSplit = true
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+        // Informes y métricas del compilador de Compose (legibles)
+        freeCompilerArgs.addAll(
+            "-P",
+            "plugin:androidx.compose.compiler.plugins.kotlin:reportsDestination=${layout.buildDirectory.get().asFile.absolutePath}/compose_compiler_reports",
+            "-P",
+            "plugin:androidx.compose.compiler.plugins.kotlin:metricsDestination=${layout.buildDirectory.get().asFile.absolutePath}/compose_compiler_metrics",
+            // Stability
+            "-P",
+            "plugin:androidx.compose.compiler.plugins.kotlin:stabilityConfigurationPath=${project.rootDir.absolutePath}/app/compose_stability.conf",
+        )
     }
 }
 
@@ -201,6 +198,10 @@ dependencies {
     // Hilt
     implementation(libs.hilt.android)
     ksp(libs.hilt.android.compiler) // For Dagger Hilt
+    // Kotlin 2.4 metadata reader on the KSP classpath: Hilt 2.58 bundles
+    // kotlin-metadata-jvm 2.2.20 (max metadata 2.3.0); align it with Kotlin 2.4.21
+    // so Hilt/androidx.hilt processors can read Kotlin 2.4 metadata.
+    ksp(libs.kotlin.metadata.jvm)
     implementation(libs.androidx.hilt.navigation.compose)
     implementation(libs.androidx.hilt.work)
     ksp(libs.androidx.hilt.compiler) // Esta línea es crucial y ahora funcionará
