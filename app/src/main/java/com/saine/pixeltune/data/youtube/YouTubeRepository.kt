@@ -174,7 +174,7 @@ class YouTubeRepository @Inject constructor(
                 Timber.d(
                     "YouTube selected stream for $youtubeId: itag=${bestStream.itag}, " +
                         "bitrate=${bestStream.bitrate}, delivery=${bestStream.deliveryMethod}, " +
-                        "url=${bestStream.content?.take(100)}..."
+                        "url=${bestStream.content.take(100)}..."
                 )
                 Result.success(bestStream.content)
             } else {
@@ -724,7 +724,7 @@ class YouTubeRepository @Inject constructor(
                 Timber.w("YT Music artists search HTTP %d for query '%s'", response.code, query)
                 return null
             }
-            val body = response.body?.string() ?: return null
+            val body = response.body.string()
             val parsed = JSONObject(body)
             // Sanity: a real search response always carries one of these spines.
             // Anything else (consent page, bot check, error payload) is a miss.
@@ -748,7 +748,7 @@ class YouTubeRepository @Inject constructor(
             .build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) return null
-            val body = response.body?.string() ?: return null
+            val body = response.body.string()
             return Regex("\"INNERTUBE_CONTEXT_CLIENT_VERSION\":\"([\\d.]+)\"")
                 .find(body)?.groupValues?.get(1)
         }

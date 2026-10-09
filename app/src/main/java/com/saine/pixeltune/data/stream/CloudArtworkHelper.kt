@@ -77,7 +77,7 @@ object CloudArtworkHelper {
         var bestUrl: String? = null
         var bestScore = -1L
         for (image in thumbnails) {
-            val url = image.url ?: continue
+            val url = image.url
             // Unknown width/height arrive as Image.WIDTH_UNKNOWN (-1) — treat
             // anything <= 0 as "unknown" and score it 0.
             val width = if (image.width > 0) image.width.toLong() else 0L

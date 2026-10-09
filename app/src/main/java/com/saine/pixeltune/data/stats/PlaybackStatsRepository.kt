@@ -369,7 +369,7 @@ class PlaybackStatsRepository @Inject constructor(
         var currentStreak = 0
         var lastDay: java.time.LocalDate? = null
         sortedDays.forEach { day ->
-            if (lastDay == null || day == lastDay?.plusDays(1)) {
+            if (lastDay == null || day == lastDay.plusDays(1)) {
                 currentStreak += 1
             } else {
                 currentStreak = 1

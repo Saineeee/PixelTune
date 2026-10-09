@@ -414,7 +414,7 @@ class PlaylistImportManager @Inject constructor(
 
         val extractor = ServiceList.YouTube.getPlaylistExtractor(normalizedUrl)
         extractor.fetchPage()
-        val playlistName = extractor.name ?: "YouTube Playlist"
+        val playlistName = extractor.name
         val tracks = extractor.initialPage.items.mapNotNull { item ->
             // Cast to StreamInfoItem to access the uploader/artist name
             if (item is org.schabi.newpipe.extractor.stream.StreamInfoItem) {
@@ -440,7 +440,7 @@ class PlaylistImportManager @Inject constructor(
             .build()
 
         val response = client.newCall(request).execute()
-        val html = response.body?.string() ?: throw Exception("Failed to fetch Spotify embed HTML")
+        val html = response.body.string()
 
         // Extract the JSON payload from the __NEXT_DATA__ script tag
         val jsonMatch = Regex("""<script id="__NEXT_DATA__" type="application/json">(.*?)</script>""")
@@ -509,7 +509,7 @@ class PlaylistImportManager @Inject constructor(
             .build()
 
         val response = client.newCall(request).execute()
-        val html = response.body?.string() ?: throw Exception("Failed to fetch Apple Music HTML")
+        val html = response.body.string()
 
         // Extract the JSON-LD block from <script type="application/ld+json">...</script>
         val ldJsonRegex = Regex("<script type=\"application/ld\\+json\">(.*?)</script>", RegexOption.DOT_MATCHES_ALL)

@@ -37,7 +37,6 @@ import com.saine.pixeltune.data.model.Lyrics
 import com.saine.pixeltune.data.model.SyncedLine
 import com.saine.pixeltune.data.model.SyncedWord
 import kotlinx.coroutines.flow.Flow
-import java.lang.Character
 import java.util.regex.Pattern
 import kotlin.math.PI
 import kotlin.math.max
@@ -221,8 +220,8 @@ private fun sanitizeLrcLine(rawLine: String): String {
     val withoutTerminators = rawLine
         .trimEnd('\r', '\n')
         .filterNot { char ->
-            Character.getType(char).toByte() == Character.FORMAT ||
-                (Character.isISOControl(char) && char != '\t')
+            char.category == CharCategory.FORMAT ||
+                (char.isISOControl() && char != '\t')
         }
         .trimEnd('\uFEFF')
 
@@ -237,8 +236,8 @@ private fun sanitizeLrcLine(rawLine: String): String {
 
 private fun stripFormatCharacters(value: String): String {
     val cleaned = value.filterNot { char ->
-        Character.getType(char).toByte() == Character.FORMAT ||
-            (Character.isISOControl(char) && char != '\t')
+        char.category == CharCategory.FORMAT ||
+            (char.isISOControl() && char != '\t')
     }
 
     return when (cleaned) {
@@ -347,7 +346,7 @@ fun BubblesLine(
                     progress in 0f..0.25f -> progress / 0.25f
                     progress in 0.25f..0.5f -> 1.0f - (progress - 0.25f) / 0.25f
                     else -> 0f
-                }.toFloat().coerceIn(0f, 1f)
+                }.coerceIn(0f, 1f)
 
                 // La animación de escalado ahora es más pronunciada.
                 val scale = lerpFloat(1.0f, 1.4f, morphProgress)

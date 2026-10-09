@@ -62,7 +62,7 @@ internal fun rememberSheetThemeState(
         if (
             activePlayerScheme != null &&
             !currentSong?.albumArtUriString.isNullOrBlank() &&
-            currentSong?.albumArtUriString == themedAlbumArtUri
+            currentSong.albumArtUriString == themedAlbumArtUri
         ) {
             activePlayerScheme
         } else {

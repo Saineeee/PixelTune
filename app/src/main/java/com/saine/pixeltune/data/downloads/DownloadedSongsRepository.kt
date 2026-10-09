@@ -629,7 +629,7 @@ class DownloadedSongsRepository @Inject constructor(
                     if (!response.isSuccessful) {
                         throw DownloadStartException("Download failed (HTTP ${response.code}).")
                     }
-                    val body = response.body ?: throw DownloadStartException("Empty download response.")
+                    val body = response.body
                     totalBytes = body.contentLength()
                     _downloadStates.value = _downloadStates.value +
                         (song.id to DownloadState.Downloading(

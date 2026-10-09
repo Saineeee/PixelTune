@@ -150,7 +150,7 @@ class NewPipeDownloader @Inject constructor(
         // String-only Response API means no consumer can depend on their raw
         // bytes, and invalid sequences are replaced with U+FFFD exactly as the
         // official downloader would.
-        val responseBytes = response.body?.bytes() ?: ByteArray(0)
+        val responseBytes = response.body.bytes()
         val responseBody = String(responseBytes, resolveCharset(response.header("Content-Type")))
 
         val responseHeaders = mutableMapOf<String, List<String>>()

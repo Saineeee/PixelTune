@@ -415,7 +415,7 @@ class PlayerViewModel @Inject constructor(
             
             // 1. Invalidate Coil cache for the BASE uri (without params)
             // This ensures next time we load it without params, it's fresh too.
-            val baseUri = currentUriClean ?: updatedUriClean
+            val baseUri = currentUriClean
             
             // Remove from Memory Cache
             context.imageLoader.memoryCache?.keys?.forEach { key ->
@@ -438,7 +438,7 @@ class PlayerViewModel @Inject constructor(
                 "$updatedArtUri?v=${System.currentTimeMillis()}"
             }
             
-            val updatedSong = currentSong!!.copy(albumArtUriString = newUri)
+            val updatedSong = currentSong.copy(albumArtUriString = newUri)
             
             // Update State
             playbackStateHolder.updateStablePlayerState { state ->
@@ -4396,7 +4396,7 @@ class PlayerViewModel @Inject constructor(
              
              val mediaItem = MediaItem.Builder()
                  .setMediaId(song.id)
-                 .setUri(Uri.parse(song.contentUriString ?: song.path))
+                 .setUri(Uri.parse(song.contentUriString))
                  .setMediaMetadata(
                      MediaMetadata.Builder()
                          .setTitle(song.title)

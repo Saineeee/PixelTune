@@ -1694,7 +1694,7 @@ class MusicService : MediaLibraryService() {
         }
 
         val mediaId = mediaItem.mediaId
-        val filePath = mediaItem.mediaMetadata?.extras
+        val filePath = mediaItem.mediaMetadata.extras
             ?.getString(com.saine.pixeltune.utils.MediaItemBuilder.EXTERNAL_EXTRA_FILE_PATH)
 
         if (filePath.isNullOrBlank()) {
@@ -1731,7 +1731,7 @@ class MusicService : MediaLibraryService() {
             if (!engine.isTransitionRunning()) {
                 setPlayerVolume(player, volume)
                 Timber.tag(TAG).d("ReplayGain: Applied volume=%.2f (user=%.2f) for %s",
-                    volume, userSelectedVolume, mediaItem.mediaMetadata?.title)
+                    volume, userSelectedVolume, mediaItem.mediaMetadata.title)
             }
         }
     }
@@ -1962,8 +1962,8 @@ class MusicService : MediaLibraryService() {
                 val songId = mediaItem.mediaId.toLongOrNull()
                 if (songId != null) {
                     val (artBytes, _) = getAlbumArtForWidget(
-                        embeddedArt = mediaItem.mediaMetadata?.artworkData,
-                        artUri = mediaItem.mediaMetadata?.artworkUri
+                        embeddedArt = mediaItem.mediaMetadata.artworkData,
+                        artUri = mediaItem.mediaMetadata.artworkUri
                     )
                     queueItems.add(
                         com.saine.pixeltune.data.model.QueueItem(

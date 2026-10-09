@@ -685,7 +685,6 @@ class MainActivity : ComponentActivity() {
                         }
                         DrawerDestination.Equalizer -> navController.navigateSafely(Screen.Equalizer.route)
                         DrawerDestination.Settings -> navController.navigateSafely(Screen.Settings.route)
-                        else -> {}
                     }
                 }
         ) {

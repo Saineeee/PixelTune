@@ -82,7 +82,7 @@ fun PaletteStyleSettingsScreen(
 
     val currentSong = stablePlayerState.currentSong
     val isMiniPlayerVisible = currentSong != null
-    val seedKey = currentSong?.albumArtUriString ?: currentSong?.id?.toString() ?: "system"
+    val seedKey = currentSong?.albumArtUriString ?: currentSong?.id ?: "system"
     var seedColor by remember(seedKey) { mutableStateOf<Color?>(null) }
 
     LaunchedEffect(seedKey, albumSchemePair, baseScheme.primary) {

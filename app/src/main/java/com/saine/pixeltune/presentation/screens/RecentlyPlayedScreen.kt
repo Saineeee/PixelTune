@@ -721,7 +721,7 @@ private fun groupRecentlyPlayedSongs(
             bucket += item
         } else {
             groups += TimestampGroup(
-                key = currentBucketKey ?: "",
+                key = currentBucketKey,
                 label = currentLabel ?: "",
                 isHourBucket = currentIsHourBucket,
                 songs = bucket
@@ -735,8 +735,8 @@ private fun groupRecentlyPlayedSongs(
 
     if (bucket.isNotEmpty() && currentLabel != null && currentBucketKey != null) {
         groups += TimestampGroup(
-            key = currentBucketKey ?: "",
-            label = currentLabel ?: "",
+            key = currentBucketKey,
+            label = currentLabel,
             isHourBucket = currentIsHourBucket,
             songs = bucket
         )

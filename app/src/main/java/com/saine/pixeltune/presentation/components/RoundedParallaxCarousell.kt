@@ -82,7 +82,7 @@ class CarouselState(
 
     suspend fun scrollToItem(item: Int) = pagerState.scrollToPage(item, 0f)
 
-    suspend fun animateScrollToItem(item: Int, animationSpec: AnimationSpec<Float> = spring()) =
+    suspend fun animateScrollToItem(item: Int, animationSpec: AnimationSpec<Float> = spring()) {
         with(pagerState) {
             if ((item == currentPage && currentPageOffsetFraction == 0f) || pageCount == 0) return
             val targetPage = if (pageCount > 0) item.coerceIn(0, pageCount - 1) else 0
@@ -96,6 +96,7 @@ class CarouselState(
                 )
             }
         }
+    }
 
     companion object {
         val Saver: Saver<CarouselState, *> =
@@ -584,7 +585,7 @@ private class CarouselItemModifierNode(
                 }
 
                 // --- limitar además al propio layer (seguro)
-                val layerBounds = Rect(0f, 0f, size.width.toFloat(), size.height.toFloat())
+                val layerBounds = Rect(0f, 0f, size.width, size.height)
                 val maskRect = Rect(left, top, right, bottom).intersect(layerBounds)
 
                 // --- actualizar info para la máscara (para MaskScope, etc.)

@@ -127,7 +127,6 @@ fun FetchLyricsDialog(
                             onDismiss = onDismiss
                         )
                     }
-                    else -> Unit
                 }
             }
         }

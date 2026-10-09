@@ -295,13 +295,6 @@ object CloudStreamForwarder {
      */
     internal fun streamBody(upstream: okhttp3.Response, output: OutputStream) {
         val body = upstream.body
-        if (body == null) {
-            // No body to stream — send an empty response. ExoPlayer will
-            // treat this as a zero-length stream and immediately complete.
-            output.flush()
-            return
-        }
-
         val input = body.byteStream()
         val buffer = ByteArray(BUFFER_SIZE)
 

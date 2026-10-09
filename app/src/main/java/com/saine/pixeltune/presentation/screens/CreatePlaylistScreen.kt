@@ -937,7 +937,7 @@ private fun PlaylistFormContent(
                                  contentAlignment = Alignment.Center
                              ) {
                                  if (selectedIconName != null) {
-                                     val icon = getIconByName(selectedIconName!!) ?: Icons.Rounded.MusicNote
+                                     val icon = getIconByName(selectedIconName) ?: Icons.Rounded.MusicNote
                                      Icon(
                                          imageVector = icon,
                                          contentDescription = null,

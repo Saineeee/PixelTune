@@ -583,9 +583,9 @@ private fun TrackMatchRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // Leading: album art (matched) or muted icon (no match)
-            if (hasMatch && !match.matchedSong!!.albumArtUriString.isNullOrBlank()) {
+            if (hasMatch && !match.matchedSong.albumArtUriString.isNullOrBlank()) {
                 SmartImage(
-                    model = match.matchedSong!!.albumArtUriString,
+                    model = match.matchedSong.albumArtUriString,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     shape = CircleShape,
@@ -609,7 +609,7 @@ private fun TrackMatchRow(
             }
 
             Column(modifier = Modifier.weight(1f)) {
-                val title = if (hasMatch) match.matchedSong!!.title else match.scrapedTitle
+                val title = if (hasMatch) match.matchedSong.title else match.scrapedTitle
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleSmall,
@@ -619,7 +619,7 @@ private fun TrackMatchRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 val subtitle = if (hasMatch) {
-                    match.matchedSong!!.displayArtist
+                    match.matchedSong.displayArtist
                 } else {
                     match.scrapedArtist.ifBlank { "Unknown artist" }
                 }
