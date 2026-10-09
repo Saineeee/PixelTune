@@ -219,7 +219,7 @@ PixelTune/
 PixelTune is under active development and currently in **beta**. The streaming
 and cloud layers are new and evolving quickly; APIs may change between beta
 releases. Breaking changes will be called out in the
-[changelog](https://github.com/Saineeee/PixelTune/CHANGELOG.md).
+[changelog](PixelTune/CHANGELOG.md).
 Stability reports — especially from devices the maintainer doesn't own — are
 the most valuable contributions right now.
 
