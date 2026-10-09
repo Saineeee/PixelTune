@@ -227,15 +227,15 @@ the most valuable contributions right now.
 
 Contributions are welcome, in every form:
 
-- 👾 **Bug reports** — open an [issue](https://github.com/Saineeee/PixelTune/issues)
+- **Bug reports** — open an [issue](https://github.com/Saineeee/PixelTune/issues)
   with your device, Android version, and steps to reproduce. Crash logs are gold.
-- 💡 **Feature ideas** — start a discussion or issue describing the problem
+- **Feature ideas** — start a discussion or issue describing the problem
   you're solving before the implementation.
-- 🔧 **Pull requests** — fork, create a feature branch, and keep changes
+- **Pull requests** — fork, create a feature branch, and keep changes
   focused. Kotlin + Compose conventions apply; match the surrounding code
   style. Make sure `./gradlew :app:testDebugUnitTest` passes before opening
   the PR.
-- 🌍 **Translations** — string resources live in
+- **Translations** — string resources live in
   `app/src/main/res/values/strings.xml` (and per-locale `values-*/` folders);
   new locales are very welcome.
 
