@@ -205,7 +205,7 @@ PixelTune/
 
 | Layer | Technology |
 |---|---|
-| Language | Kotlin 2.1, Coroutines, kotlinx.serialization, kotlinx.collections.immutable |
+| Language | Kotlin 2.4.21, Coroutines, kotlinx.serialization, kotlinx.collections.immutable |
 | UI | Jetpack Compose (Material 3 Expressive), Glance widgets |
 | Media | Media3 / ExoPlayer, on-device Ktor streaming proxy |
 | Data | Room, DataStore, WorkManager |
