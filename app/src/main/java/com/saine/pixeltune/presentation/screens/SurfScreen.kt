@@ -18,8 +18,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -47,11 +47,16 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults.topAppBarColors
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,6 +88,8 @@ import com.saine.pixeltune.data.model.Song
 import com.saine.pixeltune.data.surf.SurfJumpBackInEntry
 import com.saine.pixeltune.data.surf.SurfSectionsBuilder
 import com.saine.pixeltune.data.surf.SurfTopArtist
+import com.saine.pixeltune.data.surf.YoutubeTrendingFeedParser
+import com.saine.pixeltune.presentation.components.ExpressiveScrollBar
 import com.saine.pixeltune.presentation.components.MiniPlayerHeight
 import com.saine.pixeltune.presentation.components.NavBarContentHeight
 import com.saine.pixeltune.presentation.components.PlaylistBottomSheet
@@ -101,7 +108,9 @@ import com.saine.pixeltune.presentation.viewmodel.SurfUiState
 import com.saine.pixeltune.presentation.viewmodel.SurfViewModel
 import com.saine.pixeltune.ui.theme.GoogleSansRounded
 import com.saine.pixeltune.ui.theme.GenreThemeUtils
+import com.saine.pixeltune.ui.theme.LocalPixelTuneDarkTheme
 import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
@@ -110,22 +119,28 @@ import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
  * SURF: the discovery tab — helps the listener find new songs, artists and
  * genres, and re-find things they'd enjoy from their own listening.
  *
- * Layout follows HomeScreen's grammar exactly: a transparent gradient
- * TopAppBar over a sectioned LazyColumn (24dp rhythm), a bottom scrim that
- * fades content under the navigation bar, and per-section loading / error /
- * empty states. Personalised sections come first and work offline (derived
- * on-device from playback history + engagement stats, like Home's Recently
- * Played); the online sections (trending charts, related picks) follow the
- * current streaming provider and degrade to compact retry rows when offline.
+ * The chrome is the Library screen's grammar, applied to a discovery feed
+ * instead of a local collection: the tinted gradient + big GoogleSansRounded
+ * "Surf" title over a primaryContainer TopAppBar, and the sectioned feed
+ * scrolling inside the Library's rounded content sheet (34dp smooth top
+ * corners over the surface colour) with its own ExpressiveScrollBar and
+ * pull-to-refresh (which re-fetches every online section at once, the
+ * Library tabs' single onRefresh applied to the feed). The sections
+ * themselves keep the app's shelf grammar: personalised sections first and
+ * working offline (derived on-device from playback history + engagement
+ * stats, like Home's Recently Played), then the online sections following
+ * the current streaming provider — the trending chart, the "Fresh finds"
+ * trending playlist cards (YouTube) — degrading to compact retry rows when
+ * offline, and the genres & moods grid closing the tab like the search
+ * screen's category browse, in the two-column card grid the Library's tabs
+ * use.
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SurfScreen(
     navController: NavController,
-    paddingValuesParent: PaddingValues,
     playerViewModel: PlayerViewModel,
-    onOpenSidebar: () -> Unit,
     surfViewModel: SurfViewModel = hiltViewModel(),
     playlistViewModel: PlaylistViewModel = hiltViewModel()
 ) {
@@ -164,9 +179,9 @@ fun SurfScreen(
             allSongs = allSongs
         )
     }
-    // Browse = the library's real genres (open the local GenreDetail page)
-    // plus the mood entries that have nothing local to show (open the online
-    // genre page instead). Ids derive exactly like LibraryStateHolder's.
+    // Browse = the curated genre & mood seeds first (the discovery grid), then
+    // the library's own genres that the curated set doesn't cover — a local
+    // genre keeps its themed colours when it collides with a curated card.
     val browseGenres = remember(localGenres) { buildBrowseGenres(localGenres) }
     val localGenreIds = remember(localGenres) {
         localGenres.mapTo(HashSet(localGenres.size)) { it.id.lowercase() }
@@ -177,13 +192,60 @@ fun SurfScreen(
     var selectedSongForInfo by remember { mutableStateOf<Song?>(null) }
     val currentSong = selectedSongForInfo
 
-    val bottomPadding = if (currentSongId != null) MiniPlayerHeight else 0.dp
+    // Pull-to-refresh — the Library tabs' own affordance, refreshing every
+    // online section at once. The indicator runs until all three loaders
+    // have settled (with the same short floor the tab transitions use so a
+    // cache hit doesn't flash the spinner away in a single frame).
+    var isRefreshing by remember { mutableStateOf(false) }
+    val pullToRefreshState = rememberPullToRefreshState()
+    val refreshStartedAt = remember { mutableStateOf(0L) }
+    LaunchedEffect(isRefreshing, surfUiState) {
+        if (!isRefreshing) return@LaunchedEffect
+        val settled = !surfUiState.trendingIsLoading &&
+                !surfUiState.exploreIsLoading &&
+                !surfUiState.relatedIsLoading
+        val elapsed = System.currentTimeMillis() - refreshStartedAt.value
+        if (settled && elapsed >= PULL_REFRESH_MIN_DURATION_MS) {
+            isRefreshing = false
+        } else if (settled) {
+            kotlinx.coroutines.delay(PULL_REFRESH_MIN_DURATION_MS - elapsed)
+            isRefreshing = false
+        }
+    }
+
+    // The Library's bottom model — the sheet scrolls under the (hiding)
+    // navigation bar with the mini-player gap, self-managed like every
+    // Library tab instead of the main scaffold's static inner padding.
+    val systemNavBarInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val bottomBarHeight = NavBarContentHeight + systemNavBarInset
+    val miniPlayerGap = if (currentSongId != null) MiniPlayerHeight else 0.dp
+    val lazyListState = rememberLazyListState()
+
+    // The Library's tinted backdrop: the theme's container colour washing
+    // down through the title zone into the content sheet.
+    val isDarkTheme = LocalPixelTuneDarkTheme.current
+    val gradientColors = if (isDarkTheme) {
+        listOf(
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+            Color.Transparent
+        )
+    } else {
+        listOf(
+            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f),
+            Color.Transparent
+        )
+    }.toImmutableList()
+    val gradientBrush = remember(gradientColors) {
+        Brush.verticalGradient(colors = gradientColors)
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .background(brush = gradientBrush),
             topBar = {
-                SurfGradientTopBar(
+                SurfTopBar(
                     onCloudStreamClick = { showStreamingProviderSheet = true },
                     onSettingsClick = {
                         navController.navigateSafely(Screen.Settings.route)
@@ -191,156 +253,230 @@ fun SurfScreen(
                 )
             }
         ) { innerPadding ->
-            LazyColumn(
-                state = rememberLazyListState(),
+            // The Library's content sheet — the feed sits on the surface
+            // colour inside 34dp smooth top corners, over the tinted zone.
+            Surface(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.background),
-                contentPadding = PaddingValues(
-                    top = innerPadding.calculateTopPadding(),
-                    bottom = paddingValuesParent.calculateBottomPadding()
-                            + 38.dp + bottomPadding
+                    .padding(top = innerPadding.calculateTopPadding()),
+                shape = AbsoluteSmoothCornerShape(
+                    cornerRadiusTL = 34.dp,
+                    smoothnessAsPercentTL = 60,
+                    cornerRadiusTR = 34.dp,
+                    smoothnessAsPercentTR = 60,
+                    cornerRadiusBL = 0.dp,
+                    smoothnessAsPercentBL = 60,
+                    cornerRadiusBR = 0.dp,
+                    smoothnessAsPercentBR = 60
                 ),
-                verticalArrangement = Arrangement.spacedBy(24.dp)
+                color = MaterialTheme.colorScheme.surface
             ) {
-                if (jumpBackIn.isNotEmpty()) {
-                    item(key = "surf_jump_back_in", contentType = "surf_section_jump_back_in") {
-                        SurfSectionHeader(title = stringResource(R.string.surf_jump_back_in_title))
+                PullToRefreshBox(
+                    isRefreshing = isRefreshing,
+                    onRefresh = {
+                        refreshStartedAt.value = System.currentTimeMillis()
+                        isRefreshing = true
+                        surfViewModel.refreshAll()
+                    },
+                    state = pullToRefreshState,
+                    modifier = Modifier.fillMaxSize(),
+                    indicator = {
+                        PullToRefreshDefaults.LoadingIndicator(
+                            state = pullToRefreshState,
+                            isRefreshing = isRefreshing,
+                            modifier = Modifier.align(Alignment.TopCenter)
+                        )
                     }
-                    item(key = "surf_jump_back_in_row", contentType = "surf_section_jump_back_in_row") {
-                        SurfJumpBackInRow(
-                            entries = jumpBackIn,
-                            onEntryClick = { entry ->
-                                when (entry) {
-                                    is SurfJumpBackInEntry.Album ->
-                                        navController.navigateSafely(
-                                            Screen.AlbumDetail.createRoute(entry.albumId)
-                                        )
-                                    is SurfJumpBackInEntry.Artist ->
-                                        navController.navigateSafely(
-                                            Screen.ArtistDetail.createRoute(entry.artistId)
-                                        )
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            state = lazyListState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(
+                                top = 10.dp,
+                                bottom = bottomBarHeight + miniPlayerGap + ListExtraBottomGap
+                            ),
+                            verticalArrangement = Arrangement.spacedBy(24.dp)
+                        ) {
+                            if (jumpBackIn.isNotEmpty()) {
+                                item(key = "surf_jump_back_in", contentType = "surf_section_jump_back_in") {
+                                    SurfSectionHeader(title = stringResource(R.string.surf_jump_back_in_title))
                                 }
-                            }
-                        )
-                    }
-                }
-
-                if (topArtists.isNotEmpty()) {
-                    item(key = "surf_top_artists", contentType = "surf_section_top_artists") {
-                        SurfSectionHeader(title = stringResource(R.string.surf_top_artists_title))
-                    }
-                    item(key = "surf_top_artists_row", contentType = "surf_section_top_artists_row") {
-                        SurfTopArtistsRow(
-                            artists = topArtists,
-                            onArtistClick = { artist ->
-                                navController.navigateSafely(
-                                    Screen.ArtistDetail.createRoute(artist.artistId)
-                                )
-                            }
-                        )
-                    }
-                }
-
-                item(key = "surf_trending", contentType = "surf_section_trending") {
-                    SurfTrendingSection(
-                        uiState = surfUiState,
-                        isOnline = isOnline,
-                        currentSongId = currentSongId,
-                        onSongClick = { song ->
-                            playerViewModel.playSongs(
-                                songsToPlay = surfUiState.trendingSongs,
-                                startSong = song,
-                                queueName = trendingQueueName
-                            )
-                        },
-                        onSongMoreOptionsClick = { song ->
-                            selectedSongForInfo = song
-                            showSongInfoBottomSheet = true
-                        },
-                        onRetry = { surfViewModel.refreshTrending() },
-                        onOpenAllClick = {
-                            navController.navigateSafely(
-                                Screen.SurfList.createRoute(SurfListSource.TRENDING)
-                            )
-                        }
-                    )
-                }
-
-                if (surfUiState.relatedSeed != null) {
-                    item(
-                        key = "surf_because_you_played",
-                        contentType = "surf_section_related"
-                    ) {
-                        SurfRelatedSection(
-                            uiState = surfUiState,
-                            currentSongId = currentSongId,
-                            isPlaying = isPlaying,
-                            onShuffle = {
-                                if (surfUiState.relatedSongs.isNotEmpty()) {
-                                    playerViewModel.playSongsShuffled(
-                                        songsToPlay = surfUiState.relatedSongs,
-                                        queueName = relatedQueueName
+                                item(key = "surf_jump_back_in_row", contentType = "surf_section_jump_back_in_row") {
+                                    SurfJumpBackInRow(
+                                        entries = jumpBackIn,
+                                        onEntryClick = { entry ->
+                                            when (entry) {
+                                                is SurfJumpBackInEntry.Album ->
+                                                    navController.navigateSafely(
+                                                        Screen.AlbumDetail.createRoute(entry.albumId)
+                                                    )
+                                                is SurfJumpBackInEntry.Artist ->
+                                                    navController.navigateSafely(
+                                                        Screen.ArtistDetail.createRoute(entry.artistId)
+                                                    )
+                                            }
+                                        }
                                     )
                                 }
-                            },
-                            onSongClick = { song ->
-                                playerViewModel.playSongs(
-                                    songsToPlay = surfUiState.relatedSongs,
-                                    startSong = song,
-                                    queueName = relatedQueueName
-                                )
-                            },
-                            onSongMoreOptionsClick = { song ->
-                                selectedSongForInfo = song
-                                showSongInfoBottomSheet = true
-                            },
-                            onRetry = { surfViewModel.refreshRelated() }
-                        )
-                    }
-                }
+                            }
 
-                item(key = "surf_browse_genres", contentType = "surf_section_browse_genres") {
-                    SurfBrowseGenresSection(
-                        genres = browseGenres,
-                        localGenreIds = localGenreIds,
-                        onGenreClick = { genre ->
-                            val encodedGenreId =
-                                java.net.URLEncoder.encode(genre.id, "UTF-8")
-                            if (genre.id.lowercase() in localGenreIds) {
-                                navController.navigateSafely(
-                                    Screen.GenreDetail.createRoute(encodedGenreId)
-                                )
-                            } else {
-                                navController.navigateSafely(
-                                    Screen.SurfList.createRoute(SurfListSource.genre(genre.id))
+                            if (topArtists.isNotEmpty()) {
+                                item(key = "surf_top_artists", contentType = "surf_section_top_artists") {
+                                    SurfSectionHeader(title = stringResource(R.string.surf_top_artists_title))
+                                }
+                                item(key = "surf_top_artists_row", contentType = "surf_section_top_artists_row") {
+                                    SurfTopArtistsRow(
+                                        artists = topArtists,
+                                        onArtistClick = { artist ->
+                                            navController.navigateSafely(
+                                                Screen.ArtistDetail.createRoute(artist.artistId)
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+
+                            item(key = "surf_trending", contentType = "surf_section_trending") {
+                                SurfTrendingSection(
+                                    uiState = surfUiState,
+                                    isOnline = isOnline,
+                                    currentSongId = currentSongId,
+                                    onSongClick = { song ->
+                                        playerViewModel.playSongs(
+                                            songsToPlay = surfUiState.trendingSongs,
+                                            startSong = song,
+                                            queueName = trendingQueueName
+                                        )
+                                    },
+                                    onSongMoreOptionsClick = { song ->
+                                        selectedSongForInfo = song
+                                        showSongInfoBottomSheet = true
+                                    },
+                                    onRetry = { surfViewModel.refreshTrending() },
+                                    onOpenAllClick = {
+                                        navController.navigateSafely(
+                                            Screen.SurfList.createRoute(SurfListSource.TRENDING)
+                                        )
+                                    }
                                 )
                             }
+
+                            // "Fresh finds" — YouTube's trending playlist cards.
+                            // SoundCloud exposes no second chart, so the section
+                            // simply doesn't compose for it (loaded-and-empty,
+                            // never an error row).
+                            if (surfUiState.exploreIsLoading || surfUiState.exploreFailed ||
+                                surfUiState.explorePlaylists.isNotEmpty()
+                            ) {
+                                item(key = "surf_explore", contentType = "surf_section_explore") {
+                                    SurfExploreSection(
+                                        playlists = surfUiState.explorePlaylists,
+                                        isLoading = surfUiState.exploreIsLoading,
+                                        failed = surfUiState.exploreFailed,
+                                        isOnline = isOnline,
+                                        onRetry = { surfViewModel.refreshExplore() },
+                                        onPlaylistClick = { playlist ->
+                                            navController.navigateSafely(
+                                                Screen.SurfList.createRoute(
+                                                    SurfListSource.playlist(
+                                                        browseId = playlist.browseId,
+                                                        title = playlist.title
+                                                    )
+                                                )
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+
+                            if (surfUiState.relatedSeed != null) {
+                                item(
+                                    key = "surf_because_you_played",
+                                    contentType = "surf_section_related"
+                                ) {
+                                    SurfRelatedSection(
+                                        uiState = surfUiState,
+                                        currentSongId = currentSongId,
+                                        isPlaying = isPlaying,
+                                        onShuffle = {
+                                            if (surfUiState.relatedSongs.isNotEmpty()) {
+                                                playerViewModel.playSongsShuffled(
+                                                    songsToPlay = surfUiState.relatedSongs,
+                                                    queueName = relatedQueueName
+                                                )
+                                            }
+                                        },
+                                        onSongClick = { song ->
+                                            playerViewModel.playSongs(
+                                                songsToPlay = surfUiState.relatedSongs,
+                                                startSong = song,
+                                                queueName = relatedQueueName
+                                            )
+                                        },
+                                        onSongMoreOptionsClick = { song ->
+                                            selectedSongForInfo = song
+                                            showSongInfoBottomSheet = true
+                                        },
+                                        onRetry = { surfViewModel.refreshRelated() }
+                                    )
+                                }
+                            }
+
+                            // "Browse genres & moods" — the search screen's
+                            // genre-card visual in the Library tabs' two-column
+                            // card grid, closing the feed.
+                            item(key = "surf_browse_genres", contentType = "surf_section_browse_genres") {
+                                SurfSectionHeader(title = stringResource(R.string.surf_browse_genres_title))
+                            }
+                            browseGenres.chunked(BROWSE_GENRE_GRID_COLUMNS).forEachIndexed { rowIndex, rowGenres ->
+                                item(
+                                    key = "surf_browse_genre_row_$rowIndex",
+                                    contentType = "surf_browse_genre_row"
+                                ) {
+                                    SurfBrowseGenreRow(
+                                        genres = rowGenres,
+                                        onGenreClick = { genre ->
+                                            // Discovery opens the ONLINE genre page
+                                            // for the current provider — a genre the
+                                            // library also carries only falls back to
+                                            // the local GenreDetail page while offline
+                                            // (where the online page has nothing to
+                                            // show but a retry row).
+                                            val encodedGenreId =
+                                                java.net.URLEncoder.encode(genre.id, "UTF-8")
+                                            if (!isOnline && genre.id.lowercase() in localGenreIds) {
+                                                navController.navigateSafely(
+                                                    Screen.GenreDetail.createRoute(encodedGenreId)
+                                                )
+                                            } else {
+                                                navController.navigateSafely(
+                                                    Screen.SurfList.createRoute(SurfListSource.genre(genre.id))
+                                                )
+                                            }
+                                        }
+                                    )
+                                }
+                            }
                         }
-                    )
+
+                        // The Library's scroll affordance — content scrolls
+                        // under the navigation bar, the expressive thumb
+                        // follows the sheet's list.
+                        ExpressiveScrollBar(
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(
+                                    end = 4.dp,
+                                    top = 16.dp,
+                                    bottom = bottomBarHeight + miniPlayerGap + 16.dp
+                                ),
+                            listState = lazyListState
+                        )
+                    }
                 }
             }
         }
-
-        // Nav-bar fade-out scrim — the same treatment HomeScreen gives
-        // the bottom of its section list (a sibling overlay in the screen
-        // Box, not part of the Scaffold's scrolling content).
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(170.dp)
-                .align(Alignment.BottomCenter)
-                .background(
-                    brush = Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0.0f to Color.Transparent,
-                            0.2f to Color.Transparent,
-                            0.8f to MaterialTheme.colorScheme.surfaceContainerLowest,
-                            1.0f to MaterialTheme.colorScheme.surfaceContainerLowest
-                        )
-                    )
-                )
-        )
     }
 
     if (showStreamingProviderSheet) {
@@ -369,54 +505,64 @@ fun SurfScreen(
 private object SurfListSource {
     const val TRENDING = "trending"
     fun genre(genreId: String): String = "genre:$genreId"
+
+    /** A trending playlist card's see-all page — "playlist:<browseId>|<title>". */
+    fun playlist(browseId: String, title: String): String = "playlist:$browseId|$title"
 }
 
 /**
- * Builds the browse list: the library's own genres first (they open the
- * local GenreDetail page), then the mood/genre seeds that have no local
- * counterpart (they open the online genre page). Ids derive exactly like
- * [com.saine.pixeltune.presentation.viewmodel.LibraryStateHolder]'s so a
- * mood card never collides with a same-named local genre card.
+ * Builds the browse grid: the curated genre & mood seeds first (the
+ * discovery experience — Rock, Pop, Jazz…), then the library's own genres
+ * the curated set doesn't already cover, so a library full of idiosyncratic
+ * tags (YouTube-ripper categories like "Film & Animation") trails the grid
+ * instead of leading it. A local genre whose id collides with a curated card
+ * replaces it so the card keeps the library's themed colours.
  */
 private fun buildBrowseGenres(localGenres: ImmutableList<Genre>): List<Genre> {
-    if (localGenres.isEmpty()) {
-        return GenreIconProvider.DEFAULT_GENRES.map { name ->
-            Genre(id = deriveGenreId(name), name = name)
-        }
+    val curated = ArrayList<Genre>(GenreIconProvider.DEFAULT_GENRES.size)
+    val curatedIds = HashSet<String>(GenreIconProvider.DEFAULT_GENRES.size)
+    GenreIconProvider.DEFAULT_GENRES.forEach { name ->
+        val curatedId = deriveGenreId(name)
+        curatedIds += curatedId.lowercase()
+        // The local object wins on collision — it carries the same id but
+        // with the library's resolved theme colours.
+        val local = localGenres.firstOrNull { it.id.equals(curatedId, ignoreCase = true) }
+        curated += (local ?: Genre(id = curatedId, name = name))
     }
-    val localIds = localGenres.mapTo(HashSet(localGenres.size)) { it.id.lowercase() }
-    val extras = GenreIconProvider.DEFAULT_GENRES
-        .filter { deriveGenreId(it).lowercase() !in localIds }
-        .map { name -> Genre(id = deriveGenreId(name), name = name) }
-    return localGenres + extras
+    val extras = localGenres.filter { it.id.lowercase() !in curatedIds }
+    return curated + extras
 }
 
 private fun deriveGenreId(name: String): String =
     name.lowercase().replace(" ", "_").replace("/", "_")
 
+private const val BROWSE_GENRE_GRID_COLUMNS = 2
+
+/** 600ms — the pull-to-refresh indicator's minimum run so cache hits don't flash. */
+private const val PULL_REFRESH_MIN_DURATION_MS = 600L
+
 /**
- * The tab's top bar — HomeScreen's HomeGradientTopBar pattern (surface ->
- * transparent vertical gradient, transparent container, FilledIconButton
- * actions) with the tab title in the title slot instead of Home's Beta pill.
+ * The tab's top bar — the Library screen's own chrome: the big
+ * GoogleSansRounded title in the theme's primary colour over the
+ * primaryContainer-tinted bar, with the same FilledIconButton actions
+ * (the streaming provider sheet and Settings).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SurfGradientTopBar(
+private fun SurfTopBar(
     onCloudStreamClick: () -> Unit,
     onSettingsClick: () -> Unit
 ) {
-    val surfaceColor = MaterialTheme.colorScheme.surface
-    val gradientBrush = remember(surfaceColor) {
-        Brush.verticalGradient(colors = listOf(surfaceColor, Color.Transparent))
-    }
-
     TopAppBar(
-        modifier = Modifier.background(brush = gradientBrush),
         title = {
             Text(
+                modifier = Modifier.padding(start = 8.dp),
                 text = stringResource(R.string.surf_tab_label),
-                style = MaterialTheme.typography.titleLarge,
-                fontFamily = GoogleSansRounded
+                fontFamily = GoogleSansRounded,
+                fontWeight = FontWeight.ExtraBold,
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 40.sp,
+                letterSpacing = 1.sp
             )
         },
         actions = {
@@ -426,8 +572,8 @@ private fun SurfGradientTopBar(
             ) {
                 FilledIconButton(
                     colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        contentColor = MaterialTheme.colorScheme.onSurface
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                     ),
                     onClick = onCloudStreamClick
                 ) {
@@ -436,10 +582,11 @@ private fun SurfGradientTopBar(
                         contentDescription = stringResource(R.string.surf_provider_sheet)
                     )
                 }
+                Spacer(modifier = Modifier.width(8.dp))
                 FilledIconButton(
                     colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        contentColor = MaterialTheme.colorScheme.onSurface
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                     ),
                     onClick = onSettingsClick
                 ) {
@@ -451,7 +598,7 @@ private fun SurfGradientTopBar(
             }
         },
         colors = topAppBarColors(
-            containerColor = Color.Transparent
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
         )
     )
 }
@@ -683,6 +830,75 @@ private fun SurfTrendingSection(
 }
 
 /**
+ * "Fresh finds": the YouTube Music trending playlist cards ("Today's fresh &
+ * popular") as the feed's second online shelf — the cover-card carousel the
+ * app's other shelves use, each card opening the playlist's own track page.
+ * Only loading/failed/ready-with-content ever compose; a provider without a
+ * second chart (SoundCloud) renders nothing here.
+ */
+@Composable
+private fun SurfExploreSection(
+    playlists: ImmutableList<YoutubeTrendingFeedParser.TrendingPlaylist>,
+    isLoading: Boolean,
+    failed: Boolean,
+    isOnline: Boolean,
+    onRetry: () -> Unit,
+    onPlaylistClick: (YoutubeTrendingFeedParser.TrendingPlaylist) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SurfSectionHeader(title = stringResource(R.string.surf_explore_title))
+        when {
+            isLoading -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(190.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    LoadingIndicator(
+                        modifier = Modifier.size(36.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            failed -> {
+                SurfFeedErrorRow(
+                    message = if (isOnline) {
+                        stringResource(R.string.surf_explore_error)
+                    } else {
+                        stringResource(R.string.surf_offline_message)
+                    },
+                    onRetry = onRetry
+                )
+            }
+            else -> {
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(start = 14.dp, end = 24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(
+                        items = playlists,
+                        key = { playlist -> "explore_${playlist.browseId}" },
+                        contentType = { "explore_playlist" }
+                    ) { playlist ->
+                        SurfMediaCard(
+                            artworkUriString = playlist.artworkUrl,
+                            title = playlist.title,
+                            subtitle = playlist.artists,
+                            contentDescription = stringResource(
+                                R.string.surf_open_playlist, playlist.title
+                            ),
+                            onClick = { onPlaylistClick(playlist) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
  * "Because you played X": related tracks for the listener's most played
  * song, seeded on-device and fetched through the same provider path the
  * endless radio uses. Rows are the app's standard EnhancedSongListItem; the
@@ -764,44 +980,43 @@ private fun SurfRelatedSection(
 }
 
 /**
- * "Browse genres & moods": the search screen's genre-card visual in a
- * horizontal carousel — genre-themed container colour, tinted illustration
- * and GenreTypography. Local genres open the existing GenreDetail page;
- * mood entries open the online genre list.
+ * One row of the "Browse genres & moods" grid — the Library tabs'
+ * two-column card rhythm. The row is a plain Row (not a nested lazy grid)
+ * so it composes as a single LazyColumn item with stable keys.
  */
 @Composable
-private fun SurfBrowseGenresSection(
+private fun SurfBrowseGenreRow(
     genres: List<Genre>,
-    localGenreIds: Set<String>,
     onGenreClick: (Genre) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        SurfSectionHeader(title = stringResource(R.string.surf_browse_genres_title))
-        LazyRow(
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(start = 14.dp, end = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(
-                items = genres,
-                key = { genre -> "browse_genre_${genre.id}" },
-                contentType = { "browse_genre" }
-            ) { genre ->
-                SurfGenreCard(
-                    genre = genre,
-                    isLocal = genre.id.lowercase() in localGenreIds,
-                    onClick = { onGenreClick(genre) }
-                )
-            }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        genres.forEach { genre ->
+            SurfGenreCard(
+                genre = genre,
+                modifier = Modifier.weight(1f),
+                onClick = { onGenreClick(genre) }
+            )
+        }
+        if (genres.size == 1) {
+            Spacer(modifier = Modifier.weight(1f))
         }
     }
 }
 
-/** One browse card — GenreCard's visual in a compact 140dp carousel size. */
+/**
+ * One browse card — GenreCard's visual in the Library's grid proportions:
+ * genre-themed container colour, tinted illustration and GenreTypography,
+ * filling the column it sits in.
+ */
 @Composable
 private fun SurfGenreCard(
     genre: Genre,
-    isLocal: Boolean,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     val isDark = isSystemInDarkTheme()
@@ -826,9 +1041,8 @@ private fun SurfGenreCard(
     }
 
     Card(
-        modifier = Modifier
-            .width(140.dp)
-            .height(112.dp)
+        modifier = modifier
+            .height(118.dp)
             .clip(cardShape)
             .clickable(onClick = onClick),
         shape = cardShape,
@@ -845,7 +1059,7 @@ private fun SurfGenreCard(
                 model = GenreIconProvider.getGenreImageResource(genre.name),
                 contentDescription = genre.name,
                 modifier = Modifier
-                    .size(72.dp)
+                    .size(76.dp)
                     .align(Alignment.BottomEnd)
                     .offset(x = 10.dp, y = 10.dp)
                     .alpha(0.55f),
@@ -866,24 +1080,15 @@ private fun SurfGenreCard(
                     .fillMaxWidth(0.7f)
                     .padding(start = 12.dp, top = 12.dp)
             )
-            if (isLocal) {
-                Text(
-                    text = stringResource(R.string.surf_genre_from_library),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = themeColor.onContainer.copy(alpha = 0.75f),
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = 12.dp, bottom = 10.dp)
-                )
-            }
         }
     }
 }
 
 /**
- * A square cover card — the shared shape of the "Jump back in" and
- * "Trending now" carousels. Artwork corner and title colour morph while the
- * song plays, mirroring the pill/list-item morphs across the app.
+ * A square cover card — the shared shape of the "Jump back in",
+ * "Trending now" and "Fresh finds" carousels. Artwork corner and title
+ * colour morph while the song plays, mirroring the pill/list-item morphs
+ * across the app.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable

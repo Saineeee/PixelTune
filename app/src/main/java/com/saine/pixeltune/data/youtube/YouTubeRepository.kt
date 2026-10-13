@@ -33,6 +33,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import com.saine.pixeltune.data.preferences.StreamingQuality
 import com.saine.pixeltune.data.stream.CloudArtworkHelper
+import com.saine.pixeltune.data.surf.YoutubeTrendingFeedParser
 import kotlin.math.abs
 
 @Singleton
@@ -367,19 +368,26 @@ class YouTubeRepository @Inject constructor(
     }
 
     /**
-     * SURF: YouTube's own music charts — the `trending_music` kiosk (the
-     * "Trending Music Videos" list behind charts.youtube.com) — as
-     * immediately-playable [Song]s.
+     * SURF: YouTube Music's own trending content — the tracks of the first
+     * "Today's fresh & popular" charts playlist on the YT Music home feed —
+     * as immediately-playable [Song]s.
      *
-     * The chart is music-only by construction, so the generic-trending
-     * non-music noise problem does not apply; [isMusicCandidate] is still
-     * applied so live premieres and over-long uploads can't slip in. Every
-     * song is built by [playlistStreamItemsToSongs] exactly like playlist and
-     * search results, so the queue, favorites and downloads treat them
-     * uniformly.
+     * FIX(surf-trending): the original implementation read NewPipe's
+     * `trending_music` charts kiosk, but charts.youtube.com now answers
+     * third-party innertube requests with HTTP 429 ("Resource has been
+     * exhausted") — the kiosk family is unusable from the app, so the
+     * section never loaded for YouTube (SoundCloud's charts kept working).
+     * The replacement POSTs the FEmusic_home browse the app's own raw YT
+     * Music requests already use (WEB_REMIX client, same hardcoded client
+     * version with the sw.js re-discovery fallback), walks the home feed
+     * with [YoutubeTrendingFeedParser] and resolves the first VL charts
+     * playlist's tracks through the same browse endpoint — full metadata
+     * (durations, artists, artwork) and IP-localized trending content, the
+     * equivalent of what the dead charts kiosk returned. Every song is
+     * built exactly like an online search result (same id scheme, same
+     * proxy URL, same high-res artwork upgrade).
      *
-     * May come back empty when the device's content country is not covered
-     * by YouTube Charts ([UnsupportedContentInCountryException]) — callers
+     * May come back empty when the feed lists no charts playlist — callers
      * treat that like any other fetch failure and keep their stale data.
      */
     suspend fun getTrendingMusic(
@@ -387,17 +395,167 @@ class YouTubeRepository @Inject constructor(
         proxyUrlProvider: (String) -> String
     ): List<Song> = withContext(Dispatchers.IO) {
         try {
-            val extractor = ServiceList.YouTube.kioskList
-                .getExtractorById(TRENDING_MUSIC_KIOSK_ID, null)
-            extractor.fetchPage()
-            val items = extractor.initialPage.items
-                .filterIsInstance<StreamInfoItem>()
-                .filter { isMusicCandidate(it) }
-            playlistStreamItemsToSongs(items, proxyUrlProvider, TRENDING_CONTEXT_TITLE)
+            val home = postYouTubeMusicBrowse(YOUTUBE_MUSIC_HOME_BROWSE_ID) ?: return@withContext emptyList()
+            val (playlists, quickPicks) = YoutubeTrendingFeedParser.parseHomeFeed(home)
+            val chart = playlists.firstOrNull()
+                ?.let { postYouTubeMusicBrowse(it.browseId) }
+                ?.let(YoutubeTrendingFeedParser::parsePlaylistTracks)
+                .orEmpty()
+            val tracks = chart.ifEmpty { quickPicks }
+            tracks.asSequence()
+                .filter { it.videoId.isNotEmpty() }
+                .map { track -> track.toSong(proxyUrlProvider, TRENDING_CONTEXT_TITLE) }
                 .take(limit.coerceAtLeast(1))
+                .toList()
         } catch (e: Exception) {
             Timber.e(e, "Error fetching YouTube trending music")
             emptyList()
+        }
+    }
+
+    /**
+     * SURF: the trending playlist cards behind the "Fresh finds" section —
+     * every "Today's fresh & popular" playlist on the same YT Music home
+     * feed [getTrendingMusic] reads, so the tab's carousels and the charts
+     * carousel come from one request. Only the cards' own metadata is
+     * returned; their tracks resolve on demand through
+     * [getTrendingPlaylistTracks].
+     */
+    suspend fun getTrendingPlaylists(): List<YoutubeTrendingFeedParser.TrendingPlaylist> =
+        withContext(Dispatchers.IO) {
+            try {
+                val home = postYouTubeMusicBrowse(YOUTUBE_MUSIC_HOME_BROWSE_ID)
+                    ?: return@withContext emptyList()
+                YoutubeTrendingFeedParser.parseHomeFeed(home).first
+            } catch (e: Exception) {
+                Timber.e(e, "Error fetching YouTube trending playlists")
+                emptyList()
+            }
+        }
+
+    /**
+     * SURF: the tracks of one trending playlist card — the VL browse id
+     * [YoutubeTrendingFeedParser.TrendingPlaylist.browseId] resolved through
+     * the raw WEB_REMIX browse (NewPipe's playlist extractor rejects VL
+     * ids with "This playlist type is unviewable", so this is the only
+     * working resolution path for the charts playlists). Songs are built
+     * exactly like [getTrendingMusic]'s, with the playlist's name as the
+     * album field, so the queue and the song info sheet read like any
+     * other online list.
+     */
+    suspend fun getTrendingPlaylistTracks(
+        playlist: YoutubeTrendingFeedParser.TrendingPlaylist,
+        limit: Int = DEFAULT_TRENDING_PLAYLIST_LIMIT,
+        proxyUrlProvider: (String) -> String
+    ): List<Song> = withContext(Dispatchers.IO) {
+        try {
+            val response = postYouTubeMusicBrowse(playlist.browseId)
+                ?: return@withContext emptyList()
+            YoutubeTrendingFeedParser.parsePlaylistTracks(response)
+                .asSequence()
+                .filter { it.videoId.isNotEmpty() }
+                .map { track -> track.toSong(proxyUrlProvider, playlist.title) }
+                .take(limit.coerceAtLeast(1))
+                .toList()
+        } catch (e: Exception) {
+            Timber.e(e, "Error fetching trending playlist tracks")
+            emptyList()
+        }
+    }
+
+    /** Maps one parsed trending track to the app's online [Song] shape. */
+    private fun YoutubeTrendingFeedParser.PlaylistTrack.toSong(
+        proxyUrlProvider: (String) -> String,
+        contextTitle: String
+    ): Song = Song.emptySong().copy(
+        id = videoId,
+        title = title,
+        artist = artist.ifBlank { "Unknown" },
+        artistId = -1L,
+        album = contextTitle,
+        albumId = -1L,
+        path = "https://www.youtube.com/watch?v=$videoId",
+        contentUriString = proxyUrlProvider(videoId),
+        albumArtUriString = artworkUrl?.let { CloudArtworkHelper.upgradeToHighRes(it) }
+            ?: CloudArtworkHelper.upgradeToHighRes("https://i.ytimg.com/vi/$videoId/hqdefault.jpg"),
+        duration = durationSeconds * 1000L,
+        mimeType = "audio/mp4",
+        youtubeId = videoId
+    )
+
+    /**
+     * SURF: one raw WEB_REMIX browse POST — the same request shape
+     * [postYouTubeMusicSearchWithVersion] sends, pointed at youtubei/v1/browse
+     * with a browse id instead of a query. Retries once with a freshly
+     * discovered client version when the hardcoded one is rejected, so an
+     * aged-out version cannot break the feed. Returns null on any HTTP or
+     * sanity-check miss (consent page, bot check, error payload).
+     */
+    private fun postYouTubeMusicBrowse(browseId: String): JSONObject? {
+        val first = runCatching {
+            postYouTubeMusicBrowseWithVersion(browseId, HARDCODED_WEB_REMIX_CLIENT_VERSION)
+        }.getOrNull()
+        if (first != null) return first
+
+        val discovered = runCatching { discoverYoutubeMusicClientVersion() }.getOrNull()
+        if (discovered != null && discovered != HARDCODED_WEB_REMIX_CLIENT_VERSION) {
+            return runCatching {
+                postYouTubeMusicBrowseWithVersion(browseId, discovered)
+            }.getOrNull()
+        }
+        return null
+    }
+
+    private fun postYouTubeMusicBrowseWithVersion(
+        browseId: String,
+        clientVersion: String
+    ): JSONObject? {
+        val jsonBody = JSONObject()
+            .put(
+                "context",
+                JSONObject()
+                    .put(
+                        "client",
+                        JSONObject()
+                            .put("clientName", "WEB_REMIX")
+                            .put("clientVersion", clientVersion)
+                            .put("hl", "en-GB")
+                            .put("gl", "US")
+                            .put("platform", "DESKTOP")
+                            .put("utcOffsetMinutes", 0)
+                    )
+                    .put(
+                        "request",
+                        JSONObject()
+                            .put("internalExperimentFlags", JSONArray())
+                            .put("useSsl", true)
+                    )
+                    .put("user", JSONObject().put("lockedSafetyMode", false))
+            )
+            .put("browseId", browseId)
+
+        val request = Request.Builder()
+            .url("https://music.youtube.com/youtubei/v1/browse?prettyPrint=false")
+            .header("Content-Type", "application/json")
+            .header("Origin", "https://music.youtube.com")
+            .header("Referer", "https://music.youtube.com/")
+            .header("X-YouTube-Client-Name", "67")
+            .header("X-YouTube-Client-Version", clientVersion)
+            .header("User-Agent", MUSIC_SEARCH_USER_AGENT)
+            .header("Accept-Language", "en-GB, en;q=0.9")
+            .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                Timber.w("YT Music browse HTTP %d for id %s", response.code, browseId)
+                return null
+            }
+            val parsed = JSONObject(response.body.string())
+            // Sanity: a real browse response always carries contents —
+            // anything else (consent page, bot check, error payload) is a miss.
+            if (parsed.optJSONObject("contents") == null) return null
+            return parsed
         }
     }
 
@@ -1678,14 +1836,20 @@ class YouTubeRepository @Inject constructor(
         /** 20 minutes — upper bound for what still counts as a single song. */
         private const val MAX_RADIO_CANDIDATE_DURATION_SECONDS = 20 * 60
 
-        /** SURF: NewPipe's id for the YouTube "Trending Music Videos" charts kiosk. */
-        private const val TRENDING_MUSIC_KIOSK_ID = "trending_music"
+        /**
+         * SURF: the YouTube Music home feed's browse id — the replacement
+         * trending source (NewPipe's charts kiosks are 429-blocked).
+         */
+        private const val YOUTUBE_MUSIC_HOME_BROWSE_ID = "FEmusic_home"
 
         /** SURF: the album field songs from the trending chart list as their origin. */
         private const val TRENDING_CONTEXT_TITLE = "Trending"
 
         /** SURF: how many trending songs one chart page contributes. */
         private const val DEFAULT_TRENDING_LIMIT = 30
+
+        /** SURF: how many tracks a trending playlist's own page contributes. */
+        private const val DEFAULT_TRENDING_PLAYLIST_LIMIT = 50
 
         /**
          * FIX(youtube-subscriber-count): the WEB_REMIX client version used by

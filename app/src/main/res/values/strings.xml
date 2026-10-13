@@ -124,6 +124,8 @@
     <string name="surf_trending_see_all">See all trending</string>
     <string name="surf_because_you_played_title">Because you played "%1$s"</string>
     <string name="surf_browse_genres_title">Browse genres &amp; moods</string>
+    <string name="surf_explore_title">Fresh finds</string>
+    <string name="surf_open_playlist">Open playlist %1$s</string>
     <string name="surf_open_album">Open album</string>
     <string name="surf_open_artist">Open artist page</string>
     <string name="surf_play_trending">Play trending</string>
@@ -145,7 +147,7 @@
     </plurals>
     <string name="surf_trending_error">Trending couldn\'t load right now.</string>
     <string name="surf_related_error">These picks couldn\'t load right now.</string>
-    <string name="surf_genre_from_library">In your library</string>
+    <string name="surf_explore_error">Fresh finds couldn\'t load right now.</string>
     <string name="surf_list_empty_title">Nothing here yet</string>
     <string name="surf_list_empty_message">The provider may not have matches right now. Try another genre or check back later.</string>
 </resources>

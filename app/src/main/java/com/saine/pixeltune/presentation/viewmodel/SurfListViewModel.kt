@@ -18,6 +18,7 @@ import com.saine.pixeltune.data.youtube.YouTubeRepository
 import com.saine.pixeltune.data.youtube.YouTubeStreamProxy
 import com.saine.pixeltune.presentation.viewmodel.SearchStateHolder.OnlineProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
+import com.saine.pixeltune.data.surf.YoutubeTrendingFeedParser
 import javax.inject.Inject
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
@@ -38,16 +39,18 @@ private val ENCODED_TOKEN_REGEX = Regex("%[0-9A-Fa-f]{2}")
 
 /**
  * SURF: the paged "see all" list behind the discovery feed — the trending
- * chart's full page and the online genre / mood pages. State shape and
- * loading/error handling follow [CloudCatalogViewModel]; pagination follows
- * the online search (opaque [SearchPage] continuation handed back to the
- * repository's `getMore*` overload).
+ * chart's full page, the trending playlist pages and the online genre /
+ * mood pages. State shape and loading/error handling follow
+ * [CloudCatalogViewModel]; pagination follows the online search (opaque
+ * [SearchPage] continuation handed back to the repository's `getMore*`
+ * overload).
  *
  * The trending page shares the Surf tab's TTL cache entry (identical
  * [SurfFeedKeys.trending] key), so "see all" opens instantly with what the
- * section already shows. Genre pages run the same live provider search the
- * online search screen runs for the same query — deliberately uncached,
- * exactly like the search results themselves.
+ * section already shows; a trending playlist's page is cached the same way
+ * ([SurfFeedKeys.playlist]). Genre pages run the same live provider search
+ * the online search screen runs for the same query — deliberately
+ * uncached, exactly like the search results themselves.
  */
 @Immutable
 data class SurfListUiState(
@@ -75,6 +78,9 @@ class SurfListViewModel @Inject constructor(
     private sealed interface Source {
         data object Trending : Source
         data class Genre(val genreId: String) : Source
+
+        /** A "Fresh finds" trending playlist card (YouTube, VL browse id). */
+        data class Playlist(val browseId: String, val title: String) : Source
     }
 
     private val _uiState = MutableStateFlow(SurfListUiState())
@@ -95,6 +101,17 @@ class SurfListViewModel @Inject constructor(
         source = when {
             decoded.startsWith(GENRE_SOURCE_PREFIX) ->
                 Source.Genre(decoded.removePrefix(GENRE_SOURCE_PREFIX))
+            decoded.startsWith(PLAYLIST_SOURCE_PREFIX) -> {
+                // "playlist:<browseId>|<title>" — the browse id never contains
+                // the separator, so the title keeps any '|' of its own.
+                val body = decoded.removePrefix(PLAYLIST_SOURCE_PREFIX)
+                val separatorIndex = body.indexOf('|')
+                if (separatorIndex >= 0) {
+                    Source.Playlist(body.take(separatorIndex), body.substring(separatorIndex + 1))
+                } else {
+                    Source.Playlist(body, "")
+                }
+            }
             else -> Source.Trending
         }
         load()
@@ -117,10 +134,17 @@ class SurfListViewModel @Inject constructor(
 
     /** Retry from the list's error state. */
     fun retry() {
-        if (source is Source.Trending) {
-            feedCache.invalidate(
+        when (source) {
+            is Source.Trending -> feedCache.invalidate(
                 SurfFeedKeys.trending(searchStateHolder.currentProvider.value.name)
             )
+            is Source.Playlist -> feedCache.invalidate(
+                SurfFeedKeys.playlist(
+                    searchStateHolder.currentProvider.value.name,
+                    source.browseId
+                )
+            )
+            else -> Unit
         }
         load()
     }
@@ -204,6 +228,30 @@ class SurfListViewModel @Inject constructor(
                             )
                         }
                     }
+                    is Source.Playlist -> {
+                        // The card's own metadata already names the page — no
+                        // I/O needed before the tracks arrive.
+                        _uiState.update {
+                            it.copy(
+                                title = source.title,
+                                subtitle = providerSubtitle(provider)
+                            )
+                        }
+                        // Same cache key the card's own page would use, so
+                        // re-opening the playlist is instant within the TTL.
+                        val songs = feedCache.getOrFetch(
+                            SurfFeedKeys.playlist(provider.name, source.browseId)
+                        ) { fetchPlaylistTracks(source, provider) }
+                        lastSearchPage = null
+                        _uiState.update {
+                            it.copy(
+                                songs = songs.toImmutableList(),
+                                isLoading = false,
+                                hasMore = false,
+                                failed = songs.isEmpty()
+                            )
+                        }
+                    }
                     is Source.Genre -> {
                         // Resolve the genre locally first (fast Room read) so
                         // the header and loading copy stabilise before the
@@ -253,6 +301,28 @@ class SurfListViewModel @Inject constructor(
         return songs.distinctBy { it.id }
     }
 
+    /**
+     * A trending playlist's tracks — resolved through the raw WEB_REMIX
+     * browse ([YouTubeRepository.getTrendingPlaylistTracks]); only YouTube
+     * routes here, so any other provider simply yields an empty page.
+     */
+    private suspend fun fetchPlaylistTracks(
+        source: Source.Playlist,
+        provider: OnlineProvider
+    ): List<Song> {
+        if (provider != OnlineProvider.YOUTUBE) return emptyList()
+        val playlist = YoutubeTrendingFeedParser.TrendingPlaylist(
+            browseId = source.browseId,
+            title = source.title,
+            artists = "",
+            artworkUrl = null
+        )
+        return youTubeRepository.getTrendingPlaylistTracks(
+            playlist = playlist,
+            proxyUrlProvider = { youtubeId -> youTubeStreamProxy.getProxyUrl(youtubeId) }
+        ).distinctBy { it.id }
+    }
+
     private suspend fun fetchGenrePage(genre: Genre, provider: OnlineProvider): SearchPage {
         val query = genreQueryFor(genre.name)
         return if (provider == OnlineProvider.YOUTUBE) {
@@ -288,6 +358,7 @@ class SurfListViewModel @Inject constructor(
 
     private companion object {
         const val GENRE_SOURCE_PREFIX = "genre:"
+        const val PLAYLIST_SOURCE_PREFIX = "playlist:"
         const val TRENDING_TITLE = "Trending"
     }
 }

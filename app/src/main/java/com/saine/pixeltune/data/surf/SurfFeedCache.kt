@@ -86,4 +86,10 @@ class SurfFeedCache<T : Any>(
 object SurfFeedKeys {
     fun trending(providerName: String): String = "trending_$providerName"
     fun related(providerName: String, seedId: String): String = "related_${providerName}_$seedId"
+
+    /** The "Fresh finds" trending-playlist cards (YouTube only). */
+    fun explore(providerName: String): String = "explore_$providerName"
+
+    /** One trending playlist's tracks — the see-all page behind a card. */
+    fun playlist(providerName: String, browseId: String): String = "playlist_${providerName}_$browseId"
 }

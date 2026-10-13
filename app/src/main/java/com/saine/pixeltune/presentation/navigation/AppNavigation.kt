@@ -198,9 +198,7 @@ fun AppNavigation(
                 ScreenWrapper(navController = navController, playerViewModel = playerViewModel) {
                     SurfScreen(
                         navController = navController,
-                        paddingValuesParent = paddingValues,
-                        playerViewModel = playerViewModel,
-                        onOpenSidebar = onOpenSidebar
+                        playerViewModel = playerViewModel
                     )
                 }
             }
