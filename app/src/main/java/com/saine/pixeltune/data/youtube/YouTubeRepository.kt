@@ -367,6 +367,41 @@ class YouTubeRepository @Inject constructor(
     }
 
     /**
+     * SURF: YouTube's own music charts — the `trending_music` kiosk (the
+     * "Trending Music Videos" list behind charts.youtube.com) — as
+     * immediately-playable [Song]s.
+     *
+     * The chart is music-only by construction, so the generic-trending
+     * non-music noise problem does not apply; [isMusicCandidate] is still
+     * applied so live premieres and over-long uploads can't slip in. Every
+     * song is built by [playlistStreamItemsToSongs] exactly like playlist and
+     * search results, so the queue, favorites and downloads treat them
+     * uniformly.
+     *
+     * May come back empty when the device's content country is not covered
+     * by YouTube Charts ([UnsupportedContentInCountryException]) — callers
+     * treat that like any other fetch failure and keep their stale data.
+     */
+    suspend fun getTrendingMusic(
+        limit: Int = DEFAULT_TRENDING_LIMIT,
+        proxyUrlProvider: (String) -> String
+    ): List<Song> = withContext(Dispatchers.IO) {
+        try {
+            val extractor = ServiceList.YouTube.kioskList
+                .getExtractorById(TRENDING_MUSIC_KIOSK_ID, null)
+            extractor.fetchPage()
+            val items = extractor.initialPage.items
+                .filterIsInstance<StreamInfoItem>()
+                .filter { isMusicCandidate(it) }
+            playlistStreamItemsToSongs(items, proxyUrlProvider, TRENDING_CONTEXT_TITLE)
+                .take(limit.coerceAtLeast(1))
+        } catch (e: Exception) {
+            Timber.e(e, "Error fetching YouTube trending music")
+            emptyList()
+        }
+    }
+
+    /**
      * Runs one NewPipe YouTube search with [searchFilter] and maps the raw
      * items to [SearchResultItem]s (song/playlist/artist) for the requested
      * UI [filter]. IMPROVE(search-load-more): now returns a [SearchPage] —
@@ -1642,6 +1677,15 @@ class YouTubeRepository @Inject constructor(
     companion object {
         /** 20 minutes — upper bound for what still counts as a single song. */
         private const val MAX_RADIO_CANDIDATE_DURATION_SECONDS = 20 * 60
+
+        /** SURF: NewPipe's id for the YouTube "Trending Music Videos" charts kiosk. */
+        private const val TRENDING_MUSIC_KIOSK_ID = "trending_music"
+
+        /** SURF: the album field songs from the trending chart list as their origin. */
+        private const val TRENDING_CONTEXT_TITLE = "Trending"
+
+        /** SURF: how many trending songs one chart page contributes. */
+        private const val DEFAULT_TRENDING_LIMIT = 30
 
         /**
          * FIX(youtube-subscriber-count): the WEB_REMIX client version used by

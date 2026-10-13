@@ -162,6 +162,18 @@ object AppModule {
         return database.engagementDao()
     }
 
+    /**
+     * SURF: the discovery feed's shared online-result cache (trending charts,
+     * genre pages, related picks) — one instance so the tab and the "see all"
+     * list screens share TTL/stale-while-revalidate entries instead of
+     * re-fetching the same provider page.
+     */
+    @Singleton
+    @Provides
+    fun provideSurfFeedCache(): com.saine.pixeltune.data.surf.SurfFeedCache<List<com.saine.pixeltune.data.model.Song>> {
+        return com.saine.pixeltune.data.surf.SurfFeedCache()
+    }
+
     @Singleton
     @Provides
     fun provideFavoritesDao(database: PixelTuneDatabase): FavoritesDao {

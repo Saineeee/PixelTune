@@ -29,6 +29,14 @@ import javax.inject.Singleton
 @Singleton
 class SoundCloudRepository @Inject constructor() {
 
+    private companion object {
+        /** SURF: the album field songs from the trending chart list as their origin. */
+        private const val TRENDING_CONTEXT_TITLE = "Trending"
+
+        /** SURF: how many trending tracks one charts page contributes. */
+        private const val DEFAULT_TRENDING_LIMIT = 30
+    }
+
     /**
      * Extracts the best available audio stream URL for a given SoundCloud track URL.
      */
@@ -209,6 +217,35 @@ class SoundCloudRepository @Inject constructor() {
         // existing callers — the search UI uses the paginated
         // [searchSoundCloudPaged] variant.
         return searchSoundCloudPaged(query, filter, proxyUrlProvider).results
+    }
+
+    /**
+     * SURF: SoundCloud's own charts — the default "New & hot" kiosk
+     * (kind=trending over soundcloud:genres:all-music, region-aware) — as
+     * immediately-playable [Song]s. Music-only by construction.
+     *
+     * Every song is built by [streamItemsToSongs] exactly like playlist and
+     * search results (same id scheme, same proxy URL, t500x500 artwork), so
+     * the queue, favorites and downloads treat them uniformly. Returns an
+     * empty list when the charts request fails or the region is
+     * geo-restricted — callers keep their stale data in that case.
+     */
+    suspend fun getTrendingTracks(
+        limit: Int = DEFAULT_TRENDING_LIMIT,
+        proxyUrlProvider: (String) -> String
+    ): List<Song> = withContext(Dispatchers.IO) {
+        try {
+            val extractor = ServiceList.SoundCloud.kioskList.defaultKioskExtractor
+            extractor.fetchPage()
+            streamItemsToSongs(
+                items = extractor.initialPage.items.filterIsInstance<StreamInfoItem>(),
+                proxyUrlProvider = proxyUrlProvider,
+                contextTitle = TRENDING_CONTEXT_TITLE
+            ).take(limit.coerceAtLeast(1))
+        } catch (e: Exception) {
+            Timber.e(e, "Error fetching SoundCloud trending charts")
+            emptyList()
+        }
     }
 
     /**
