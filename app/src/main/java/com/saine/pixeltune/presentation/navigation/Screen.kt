@@ -11,6 +11,7 @@ import java.net.URLEncoder
 sealed class Screen(val route: String) {
     object Home : Screen("home")
     object Search : Screen("search")
+    object Surf : Screen("surf")
     object Library : Screen("library")
     object Settings : Screen("settings")
     object SettingsCategory : Screen("settings_category/{categoryId}") {
@@ -57,6 +58,20 @@ sealed class Screen(val route: String) {
 
     object  DailyMixScreen : Screen("daily_mix")
     object RecentlyPlayed : Screen("recently_played")
+
+    /**
+     * SURF: the discovery feed's paged "see all" list — the trending chart's
+     * full page and the online genre / mood pages. `sourceId` is either
+     * "trending" or "genre:<genreId>" (URL-encoded like the genre detail
+     * route); SurfListViewModel decodes it via SavedStateHandle.
+     */
+    object SurfList : Screen("surf_list/{sourceId}") {
+        fun createRoute(sourceId: String): String = "surf_list/${encode(sourceId)}"
+
+        /** Percent-encodes the source id for safe travel through the route. */
+        private fun encode(value: String): String =
+            URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+    }
     object ListeningHistory : Screen("listening_history")
     object Stats : Screen("stats")
     object GenreDetail : Screen("genre_detail/{genreId}") { // New screen

@@ -53,6 +53,8 @@ import com.saine.pixeltune.presentation.screens.StatsScreen
 import com.saine.pixeltune.presentation.screens.SettingsScreen
 import com.saine.pixeltune.presentation.screens.SettingsCategoryScreen
 import com.saine.pixeltune.presentation.screens.EqualizerScreen
+import com.saine.pixeltune.presentation.screens.SurfScreen
+import com.saine.pixeltune.presentation.screens.SurfListScreen
 import com.saine.pixeltune.presentation.viewmodel.PlayerViewModel
 import com.saine.pixeltune.presentation.viewmodel.PlaylistViewModel
 import kotlinx.coroutines.flow.first
@@ -159,6 +161,46 @@ fun AppNavigation(
                         playerViewModel = playerViewModel,
                         navController = navController,
                         onSearchBarActiveChange = onSearchBarActiveChange
+                    )
+                }
+            }
+            composable(
+                Screen.Surf.route,
+                enterTransition = {
+                    mainRootEnterTransition(
+                        fromRoute = initialState.destination.route,
+                        toRoute = targetState.destination.route,
+                        fallback = enterTransition()
+                    )
+                },
+                exitTransition = {
+                    mainRootExitTransition(
+                        fromRoute = initialState.destination.route,
+                        toRoute = targetState.destination.route,
+                        fallback = exitTransition()
+                    )
+                },
+                popEnterTransition = {
+                    mainRootEnterTransition(
+                        fromRoute = initialState.destination.route,
+                        toRoute = targetState.destination.route,
+                        fallback = popEnterTransition()
+                    )
+                },
+                popExitTransition = {
+                    mainRootExitTransition(
+                        fromRoute = initialState.destination.route,
+                        toRoute = targetState.destination.route,
+                        fallback = popExitTransition()
+                    )
+                },
+            ) {
+                ScreenWrapper(navController = navController, playerViewModel = playerViewModel) {
+                    SurfScreen(
+                        navController = navController,
+                        paddingValuesParent = paddingValues,
+                        playerViewModel = playerViewModel,
+                        onOpenSidebar = onOpenSidebar
                     )
                 }
             }
@@ -371,6 +413,24 @@ fun AppNavigation(
                 }
             }
 
+            // SURF: the discovery feed's paged "see all" list (trending chart /
+            // online genre page) — a detail screen like CloudCatalog above.
+            composable(
+                route = Screen.SurfList.route,
+                arguments = listOf(navArgument("sourceId") { type = NavType.StringType }),
+                enterTransition = { enterTransition() },
+                exitTransition = { exitTransition() },
+                popEnterTransition = { popEnterTransition() },
+                popExitTransition = { popExitTransition() },
+            ) {
+                ScreenWrapper(navController = navController, playerViewModel = playerViewModel) {
+                    SurfListScreen(
+                        navController = navController,
+                        playerViewModel = playerViewModel
+                    )
+                }
+            }
+
             composable(
                 Screen.DJSpace.route,
                 enterTransition = { enterTransition() },
@@ -569,7 +629,8 @@ private fun mainRootDirection(
 private fun mainRootRouteIndex(route: String?): Int? = when (route) {
     Screen.Home.route -> 0
     Screen.Search.route -> 1
-    Screen.Library.route -> 2
+    Screen.Surf.route -> 2
+    Screen.Library.route -> 3
     else -> null
 }
 

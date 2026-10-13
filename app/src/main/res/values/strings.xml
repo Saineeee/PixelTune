@@ -115,4 +115,37 @@
     <string name="download_notification_completed">Downloaded · available offline</string>
     <string name="download_notification_failed">Download failed · %1$s</string>
     <string name="downloads_active_section_title">Downloading now</string>
+
+    <!-- Surf discovery tab -->
+    <string name="surf_tab_label">Surf</string>
+    <string name="surf_jump_back_in_title">Jump back in</string>
+    <string name="surf_top_artists_title">Top artists</string>
+    <string name="surf_trending_title">Trending now</string>
+    <string name="surf_trending_see_all">See all trending</string>
+    <string name="surf_because_you_played_title">Because you played "%1$s"</string>
+    <string name="surf_browse_genres_title">Browse genres &amp; moods</string>
+    <string name="surf_open_album">Open album</string>
+    <string name="surf_open_artist">Open artist page</string>
+    <string name="surf_play_trending">Play trending</string>
+    <string name="surf_shuffle_related">Shuffle related tracks</string>
+    <string name="surf_offline_message">Trending needs a connection. Your library picks still work.</string>
+    <string name="surf_retry">Try Again</string>
+    <string name="surf_list_loading">Loading tracks…</string>
+    <string name="surf_list_fetching">Fetching "%1$s" from the streaming service</string>
+    <string name="surf_list_error">Could not load these tracks. Check your connection and try again.</string>
+    <string name="surf_list_load_more">Load more</string>
+    <string name="surf_list_play_all">Play all</string>
+    <string name="surf_list_shuffle">Shuffle</string>
+    <string name="surf_back">Back</string>
+    <string name="surf_provider_sheet">Streaming provider</string>
+    <string name="surf_settings">Settings</string>
+    <plurals name="surf_artist_song_count">
+        <item quantity="one">%1$d song</item>
+        <item quantity="other">%1$d songs</item>
+    </plurals>
+    <string name="surf_trending_error">Trending couldn\'t load right now.</string>
+    <string name="surf_related_error">These picks couldn\'t load right now.</string>
+    <string name="surf_genre_from_library">In your library</string>
+    <string name="surf_list_empty_title">Nothing here yet</string>
+    <string name="surf_list_empty_message">The provider may not have matches right now. Try another genre or check back later.</string>
 </resources>

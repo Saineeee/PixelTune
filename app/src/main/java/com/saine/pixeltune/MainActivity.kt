@@ -582,6 +582,7 @@ class MainActivity : ComponentActivity() {
             persistentListOf(
                 BottomNavItem("Home", R.drawable.rounded_home_24, R.drawable.home_24_rounded_filled, Screen.Home),
                 BottomNavItem("Search", R.drawable.rounded_search_24, R.drawable.rounded_search_24, Screen.Search),
+                BottomNavItem("Surf", R.drawable.rounded_explore_24, R.drawable.explore_24_rounded_filled, Screen.Surf),
                 BottomNavItem("Library", R.drawable.rounded_library_music_24, R.drawable.round_library_music_24, Screen.Library)
             )
         }
@@ -611,6 +612,10 @@ class MainActivity : ComponentActivity() {
                 Screen.PaletteStyle.route,
                 Screen.RecentlyPlayed.route,
                 Screen.DeviceCapabilities.route,
+                // SURF: the discovery feed's paged "see all" list is a DETAIL
+                // screen (like CloudCatalog / AlbumDetail) — hide the bottom
+                // bar so the track list owns the full bottom area.
+                Screen.SurfList.route,
                 // FIX(cloud-load-more-visibility): the cloud catalog detail
                 // screen (online playlists / albums / artists opened from the
                 // online search's filter chips) is a DETAIL screen exactly
