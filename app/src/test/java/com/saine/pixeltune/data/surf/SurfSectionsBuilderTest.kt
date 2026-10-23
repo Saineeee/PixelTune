@@ -27,8 +27,45 @@ class SurfSectionsBuilderTest {
         genre = genre
     )
 
-    private fun historyEntry(songId: String, timestamp: Long) =
-        PlaybackStatsRepository.PlaybackHistoryEntry(songId = songId, timestamp = timestamp)
+    private fun historyEntry(
+        songId: String,
+        timestamp: Long,
+        title: String? = null,
+        artist: String? = null,
+        album: String? = null,
+        albumArtUri: String? = null,
+        contentUri: String? = null,
+        songDurationMs: Long? = null
+    ) = PlaybackStatsRepository.PlaybackHistoryEntry(
+        songId = songId,
+        timestamp = timestamp,
+        title = title,
+        artist = artist,
+        album = album,
+        albumArtUri = albumArtUri,
+        contentUri = contentUri,
+        songDurationMs = songDurationMs
+    )
+
+    /** A cloud-streamed play as the tracker records it (metadata snapshot). */
+    private fun cloudPlay(
+        songId: String,
+        title: String,
+        artist: String,
+        timestamp: Long,
+        contentUri: String = "youtube://$songId",
+        art: String? = "https://art/$songId.jpg",
+        durationMs: Long = 200_000L
+    ) = historyEntry(
+        songId = songId,
+        timestamp = timestamp,
+        title = title,
+        artist = artist,
+        album = null,
+        albumArtUri = art,
+        contentUri = contentUri,
+        songDurationMs = durationMs
+    )
 
     // ------------------------------------------------------------------
     // Jump back in
@@ -53,17 +90,79 @@ class SurfSectionsBuilderTest {
     }
 
     @Test
-    fun `jump back in skips cloud plays that are not in the library`() {
+    fun `jump back in turns cloud plays into playable song entries`() {
         val local = song("local", artist = "A", artistId = 1L, album = "Local Album", albumId = 10L)
         val history = listOf(
-            historyEntry("cloud-song", 3_000L),
+            cloudPlay("cloud-song", "Cloud Song", "Cloud Artist", 3_000L),
             historyEntry("local", 2_000L)
         )
 
         val entries = SurfSectionsBuilder.buildJumpBackIn(history, listOf(local))
 
         assertThat(entries.map { it.title }).containsNoDuplicates()
-        assertThat(entries.map { it.title }).containsExactly("Local Album", "A")
+        assertThat(entries.map { it.title }).containsExactly("Local Album", "A", "Cloud Song").inOrder()
+        val cloudEntry = entries.filterIsInstance<SurfJumpBackInEntry.Song>().single()
+        assertThat(cloudEntry.song.id).isEqualTo("cloud-song")
+        assertThat(cloudEntry.song.artist).isEqualTo("Cloud Artist")
+        assertThat(cloudEntry.song.contentUriString).isEqualTo("youtube://cloud-song")
+        assertThat(cloudEntry.song.youtubeId).isEqualTo("cloud-song")
+        assertThat(cloudEntry.song.albumArtUriString).isEqualTo("https://art/cloud-song.jpg")
+        assertThat(cloudEntry.song.duration).isEqualTo(200_000L)
+    }
+
+    @Test
+    fun `jump back in cloud entry keeps a null youtubeId for soundcloud uris`() {
+        val history = listOf(
+            cloudPlay(
+                "sc-1",
+                "SC Song",
+                "SC Artist",
+                1_000L,
+                contentUri = "soundcloud://encoded-payload"
+            )
+        )
+
+        val entries = SurfSectionsBuilder.buildJumpBackIn(history, emptyList())
+
+        val cloudEntry = entries.filterIsInstance<SurfJumpBackInEntry.Song>().single()
+        assertThat(cloudEntry.song.youtubeId).isNull()
+    }
+
+    @Test
+    fun `jump back in is filled from cloud plays alone when the library is empty`() {
+        val history = (1..4).map { index ->
+            cloudPlay("cloud$index", "Cloud Title $index", "Artist $index", 1_000L * (4 - index))
+        }
+
+        val entries = SurfSectionsBuilder.buildJumpBackIn(history, emptyList())
+
+        assertThat(entries.map { it.title }).containsExactly(
+            "Cloud Title 1", "Cloud Title 2", "Cloud Title 3", "Cloud Title 4"
+        ).inOrder()
+    }
+
+    @Test
+    fun `jump back in skips cloud plays without a metadata snapshot`() {
+        val history = listOf(historyEntry("legacy-cloud", 3_000L))
+
+        val entries = SurfSectionsBuilder.buildJumpBackIn(history, emptyList())
+
+        assertThat(entries).isEmpty()
+    }
+
+    @Test
+    fun `jump back in interleaves albums artists and cloud songs`() {
+        val local = song("local", artist = "Local Artist", artistId = 1L, album = "Local Album", albumId = 10L)
+        val history = listOf(
+            cloudPlay("c1", "Cloud One", "Cloud Artist", 30_000L),
+            historyEntry("local", 20_000L)
+        )
+
+        val entries = SurfSectionsBuilder.buildJumpBackIn(history, listOf(local))
+
+        assertThat(entries.map { it.title }).containsExactly(
+            "Local Album", "Local Artist", "Cloud One"
+        ).inOrder()
     }
 
     @Test
@@ -206,6 +305,69 @@ class SurfSectionsBuilderTest {
         assertThat(artists.size).isEqualTo(3)
     }
 
+    @Test
+    fun `top artists roll up streamed artists from the playback history`() {
+        val history = listOf(
+            cloudPlay("c1", "Song One", "Streamed Artist", 3_000L),
+            cloudPlay("c2", "Song Two", "Streamed Artist", 2_000L),
+            cloudPlay("c3", "Song Three", "Other Artist", 1_000L)
+        )
+        val stats = mapOf(
+            "c1" to SurfSectionsBuilder.SongEngagementStats(playCount = 4, totalPlayDurationMs = 40_000L),
+            "c2" to SurfSectionsBuilder.SongEngagementStats(playCount = 2, totalPlayDurationMs = 20_000L),
+            "c3" to SurfSectionsBuilder.SongEngagementStats(playCount = 3, totalPlayDurationMs = 30_000L)
+        )
+
+        val artists = SurfSectionsBuilder.buildTopArtists(stats, emptyList(), history)
+
+        // Streamed Artist: 4 + 2 = 6 plays beats Other Artist's 3.
+        assertThat(artists.map { it.name }).containsExactly("Streamed Artist", "Other Artist").inOrder()
+        val streamed = artists.first()
+        assertThat(streamed.isCloud).isTrue()
+        assertThat(streamed.artistId).isEqualTo(-1L)
+        assertThat(streamed.playCount).isEqualTo(6)
+        assertThat(streamed.representativeArtUriString).isEqualTo("https://art/c1.jpg")
+    }
+
+    @Test
+    fun `top artists cloud rollups count a bare history presence as one play`() {
+        val history = listOf(cloudPlay("c1", "Song One", "Streamed Artist", 3_000L))
+
+        val artists = SurfSectionsBuilder.buildTopArtists(emptyMap(), emptyList(), history)
+
+        val streamed = artists.single()
+        assertThat(streamed.playCount).isEqualTo(1)
+    }
+
+    @Test
+    fun `top artists merge streamed plays into the same-name local artist`() {
+        val local = song("l1", artist = "Shared Artist", artistId = 9L)
+        val history = listOf(cloudPlay("c1", "Cloud Song", "Shared Artist", 1_000L))
+        val stats = mapOf(
+            local.id to SurfSectionsBuilder.SongEngagementStats(playCount = 2),
+            "c1" to SurfSectionsBuilder.SongEngagementStats(playCount = 5)
+        )
+
+        val artists = SurfSectionsBuilder.buildTopArtists(stats, listOf(local), history)
+
+        val merged = artists.single()
+        assertThat(merged.isCloud).isFalse()
+        assertThat(merged.artistId).isEqualTo(9L)
+        assertThat(merged.playCount).isEqualTo(7)
+    }
+
+    @Test
+    fun `top artists count a cloud artist with the local library empty`() {
+        val history = listOf(cloudPlay("c1", "Song One", "Solo Cloud Artist", 1_000L))
+        val stats = mapOf(
+            "c1" to SurfSectionsBuilder.SongEngagementStats(playCount = 2)
+        )
+
+        val artists = SurfSectionsBuilder.buildTopArtists(stats, emptyList(), history)
+
+        assertThat(artists.single().isCloud).isTrue()
+    }
+
     // ------------------------------------------------------------------
     // Related seed
     // ------------------------------------------------------------------
@@ -256,5 +418,43 @@ class SurfSectionsBuilderTest {
         val stats = mapOf(blank.id to SurfSectionsBuilder.SongEngagementStats(playCount = 10))
 
         assertThat(SurfSectionsBuilder.pickRelatedSeed(stats, listOf(blank))).isNull()
+    }
+
+    @Test
+    fun `related seed prefers the most streamed cloud song over local plays`() {
+        val local = song("local")
+        val history = listOf(
+            cloudPlay("yt-1", "Streamed Hit", "Cloud Artist", 5_000L)
+        )
+        val stats = mapOf(
+            local.id to SurfSectionsBuilder.SongEngagementStats(playCount = 2),
+            "yt-1" to SurfSectionsBuilder.SongEngagementStats(playCount = 7)
+        )
+
+        val seed = SurfSectionsBuilder.pickRelatedSeed(stats, listOf(local), history)
+
+        assertThat(seed?.id).isEqualTo("yt-1")
+        assertThat(seed?.youtubeId).isEqualTo("yt-1")
+        assertThat(seed?.artist).isEqualTo("Cloud Artist")
+    }
+
+    @Test
+    fun `related seed skips cloud plays without engagement`() {
+        val history = listOf(cloudPlay("c1", "Unfinalized", "Cloud Artist", 1_000L))
+
+        val seed = SurfSectionsBuilder.pickRelatedSeed(emptyMap(), emptyList(), history)
+
+        assertThat(seed).isNull()
+    }
+
+    @Test
+    fun `related seed cloud candidate falls back to the local best`() {
+        val local = song("local")
+        val history = listOf(cloudPlay("c1", "Bare Cloud Song", "Cloud Artist", 1_000L))
+        val stats = mapOf(local.id to SurfSectionsBuilder.SongEngagementStats(playCount = 1))
+
+        val seed = SurfSectionsBuilder.pickRelatedSeed(stats, listOf(local), history)
+
+        assertThat(seed?.id).isEqualTo("local")
     }
 }

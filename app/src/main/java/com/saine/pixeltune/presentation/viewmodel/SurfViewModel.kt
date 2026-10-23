@@ -7,10 +7,11 @@ import com.saine.pixeltune.data.database.EngagementDao
 import com.saine.pixeltune.data.model.SearchResultItem
 import com.saine.pixeltune.data.model.Song
 import com.saine.pixeltune.data.repository.MusicRepository
+import com.saine.pixeltune.data.surf.SurfExploreCard
 import com.saine.pixeltune.data.surf.SurfFeedCache
 import com.saine.pixeltune.data.surf.SurfFeedKeys
 import com.saine.pixeltune.data.surf.SurfSectionsBuilder
-import com.saine.pixeltune.data.surf.YoutubeTrendingFeedParser
+import com.saine.pixeltune.data.surf.toExploreCard
 import com.saine.pixeltune.data.soundcloud.SoundCloudRepository
 import com.saine.pixeltune.data.soundcloud.SoundCloudStreamProxy
 import com.saine.pixeltune.data.youtube.YouTubeRepository
@@ -37,9 +38,10 @@ import timber.log.Timber
 
 /**
  * SURF: the discovery feed's online sections — trending charts from the
- * CURRENT streaming provider, the "Fresh finds" trending playlist cards
- * (YouTube) and "Because you played X" related tracks seeded from the
- * listener's most played library song.
+ * CURRENT streaming provider, the "Fresh finds" cards (YouTube's trending
+ * playlists / SoundCloud's fresh-upload stations) and "Because you played
+ * X" related tracks seeded from the listener's most played song across the
+ * library AND their streamed listening.
  *
  * Conventions follow [CloudCatalogViewModel]: plain-field [SurfUiState] over
  * a [MutableStateFlow], repository + stream-proxy calls identical to the
@@ -62,10 +64,10 @@ data class SurfUiState(
     val trendingIsLoading: Boolean = true,
     val trendingFailed: Boolean = false,
     val trendingProvider: OnlineProvider = OnlineProvider.YOUTUBE,
-    val explorePlaylists: ImmutableList<YoutubeTrendingFeedParser.TrendingPlaylist> = persistentListOf(),
-    // Fresh finds is YouTube-only (SoundCloud's public charts API only
-    // serves the one "New & hot" list), so the section resolves to loaded
-    // and empty — NOT failed — when the provider has nothing more to show.
+    // Fresh finds is provider-neutral: YouTube fills it with trending
+    // playlist cards, SoundCloud with the stations of freshly-uploaded
+    // "New & hot" chart tracks.
+    val exploreCards: ImmutableList<SurfExploreCard> = persistentListOf(),
     val exploreIsLoading: Boolean = true,
     val exploreFailed: Boolean = false,
     val relatedSeed: Song? = null,
@@ -82,6 +84,11 @@ class SurfViewModel @Inject constructor(
     private val soundCloudStreamProxy: SoundCloudStreamProxy,
     private val musicRepository: MusicRepository,
     private val engagementDao: EngagementDao,
+    // SURF: the SAME live tracker instance PlayerViewModel feeds playback
+    // callbacks into (singleton-scoped in AppModule) — the related-tracks
+    // seed ranks the listener's cloud plays too, which only the history's
+    // metadata snapshots can resolve.
+    private val listeningStatsTracker: ListeningStatsTracker,
     private val feedCache: SurfFeedCache<List<Song>>,
     searchStateHolder: SearchStateHolder,
     connectivityStateHolder: ConnectivityStateHolder
@@ -97,11 +104,11 @@ class SurfViewModel @Inject constructor(
      * The Fresh finds cards are tab-private state (only this ViewModel reads
      * them), so they keep a private cache instance — the injected
      * [SurfFeedCache] singleton is reserved for the feeds the "see all"
-     * lists re-read (trending chart, playlist track pages, related picks),
-     * whose value type is Song lists.
+     * lists re-read (trending chart, playlist / station track pages,
+     * related picks), whose value type is Song lists.
      */
     private val exploreFeedCache =
-        SurfFeedCache<List<YoutubeTrendingFeedParser.TrendingPlaylist>>()
+        SurfFeedCache<List<SurfExploreCard>>()
 
     /**
      * Live per-song engagement stats from Room — the on-device ranking signal
@@ -142,10 +149,16 @@ class SurfViewModel @Inject constructor(
             }
         }
         // The related seed is derived on-device from the library + engagement
-        // stats; it only changes when the listener's most played song does.
+        // stats + the live playback history — cloud plays count too, so a
+        // listener who only streams still gets their "Because you played"
+        // section (the tracker's snapshots carry the cloud metadata).
         viewModelScope.launch {
-            combine(musicRepository.getAudioFiles(), engagementStats) { songs, stats ->
-                SurfSectionsBuilder.pickRelatedSeed(stats, songs)
+            combine(
+                musicRepository.getAudioFiles(),
+                engagementStats,
+                listeningStatsTracker.playbackHistory
+            ) { songs, stats, history ->
+                SurfSectionsBuilder.pickRelatedSeed(stats, songs, history)
             }
                 .distinctUntilChanged()
                 .collect { seed ->
@@ -284,39 +297,30 @@ class SurfViewModel @Inject constructor(
     }
 
     /**
-     * Loads the "Fresh finds" section — the YouTube trending playlist cards.
-     * SoundCloud has no equivalent chart (its public API only serves the one
-     * "New & hot" list), so the section settles empty-and-loaded there and
-     * the screen simply hides it.
+     * Loads the "Fresh finds" section — the provider's own discovery cards:
+     * YouTube's trending playlist cards, or SoundCloud's stations seeded from
+     * the freshly-uploaded tracks of its one remaining chart ("New & hot").
+     * Both fill the same card carousel; a provider whose fetch fails keeps
+     * serving any stale cards while the section shows its retry row.
      */
     private fun loadExplore(provider: OnlineProvider) {
         exploreJob?.cancel()
         exploreJob = viewModelScope.launch {
-            if (provider != OnlineProvider.YOUTUBE) {
-                _uiState.update {
-                    it.copy(
-                        explorePlaylists = persistentListOf(),
-                        exploreIsLoading = false,
-                        exploreFailed = false
-                    )
-                }
-                return@launch
-            }
             val cacheKey = SurfFeedKeys.explore(provider.name)
             exploreFeedCache.peek(cacheKey)?.let { cached ->
                 _uiState.update {
                     it.copy(
-                        explorePlaylists = cached.toImmutableList(),
+                        exploreCards = cached.toImmutableList(),
                         exploreIsLoading = false,
                         exploreFailed = false
                     )
                 }
             } ?: _uiState.update { it.copy(exploreIsLoading = true, exploreFailed = false) }
             try {
-                val fresh = exploreFeedCache.getOrFetch(cacheKey) { fetchExplore() }
+                val fresh = exploreFeedCache.getOrFetch(cacheKey) { fetchExplore(provider) }
                 _uiState.update {
                     it.copy(
-                        explorePlaylists = fresh.toImmutableList(),
+                        exploreCards = fresh.toImmutableList(),
                         exploreIsLoading = false,
                         exploreFailed = false
                     )
@@ -328,16 +332,24 @@ class SurfViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         exploreIsLoading = false,
-                        exploreFailed = it.explorePlaylists.isEmpty()
+                        exploreFailed = it.exploreCards.isEmpty()
                     )
                 }
             }
         }
     }
 
-    private suspend fun fetchExplore(): List<YoutubeTrendingFeedParser.TrendingPlaylist> =
-        youTubeRepository.getTrendingPlaylists()
-            .distinctBy { it.browseId }
+    private suspend fun fetchExplore(provider: OnlineProvider): List<SurfExploreCard> =
+        when (provider) {
+            OnlineProvider.YOUTUBE ->
+                youTubeRepository.getTrendingPlaylists()
+                    .map { it.toExploreCard() }
+                    .distinctBy { it.browseId }
+            OnlineProvider.SOUNDCLOUD ->
+                soundCloudRepository.getFreshFindsStations()
+                    .map { it.toExploreCard() }
+                    .distinctBy { it.browseId }
+        }
 
     private fun loadRelated(provider: OnlineProvider) {
         val seed = _uiState.value.relatedSeed ?: return

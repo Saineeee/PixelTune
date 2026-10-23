@@ -121,6 +121,7 @@
     <string name="surf_jump_back_in_title">Jump back in</string>
     <string name="surf_top_artists_title">Top artists</string>
     <string name="surf_trending_title">Trending now</string>
+    <string name="surf_trending_title_soundcloud">New &amp; hot</string>
     <string name="surf_trending_see_all">See all trending</string>
     <string name="surf_because_you_played_title">Because you played "%1$s"</string>
     <string name="surf_browse_genres_title">Browse genres &amp; moods</string>
@@ -129,6 +130,7 @@
     <string name="surf_open_album">Open album</string>
     <string name="surf_open_artist">Open artist page</string>
     <string name="surf_play_trending">Play trending</string>
+    <string name="surf_play_song">Play %1$s</string>
     <string name="surf_shuffle_related">Shuffle related tracks</string>
     <string name="surf_offline_message">Trending needs a connection. Your library picks still work.</string>
     <string name="surf_retry">Try Again</string>

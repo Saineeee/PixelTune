@@ -70,6 +70,28 @@ object AppModule {
         return com.google.gson.Gson()
     }
 
+    /**
+     * SURF: the listening-history tracker is shared state — PlayerViewModel
+     * feeds it playback callbacks while every other consumer (Surf's
+     * personalised sections, the history screens) reads the SAME live
+     * StateFlow. Without the singleton scope each @Inject site would get its
+     * own never-initialized tracker with an empty history.
+     */
+    @Singleton
+    @Provides
+    fun provideListeningStatsTracker(
+        dailyMixManager: com.saine.pixeltune.data.DailyMixManager,
+        playbackStatsRepository: com.saine.pixeltune.data.stats.PlaybackStatsRepository,
+        engagementDao: EngagementDao,
+        userPreferencesRepository: UserPreferencesRepository
+    ): com.saine.pixeltune.presentation.viewmodel.ListeningStatsTracker =
+        com.saine.pixeltune.presentation.viewmodel.ListeningStatsTracker(
+            dailyMixManager = dailyMixManager,
+            playbackStatsRepository = playbackStatsRepository,
+            engagementDao = engagementDao,
+            userPreferencesRepository = userPreferencesRepository
+        )
+
     @OptIn(UnstableApi::class)
     @Singleton
     @Provides
@@ -651,8 +673,10 @@ object AppModule {
 
     @Singleton
     @Provides
-    fun provideSoundCloudRepository(): com.saine.pixeltune.data.soundcloud.SoundCloudRepository {
-        return com.saine.pixeltune.data.soundcloud.SoundCloudRepository()
+    fun provideSoundCloudRepository(
+        okHttpClient: OkHttpClient
+    ): com.saine.pixeltune.data.soundcloud.SoundCloudRepository {
+        return com.saine.pixeltune.data.soundcloud.SoundCloudRepository(okHttpClient)
     }
 
     @Singleton

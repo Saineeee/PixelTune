@@ -79,8 +79,16 @@ class SurfListViewModel @Inject constructor(
         data object Trending : Source
         data class Genre(val genreId: String) : Source
 
-        /** A "Fresh finds" trending playlist card (YouTube, VL browse id). */
+        /** A "Fresh finds" card's see-all page — "playlist:<browseId>|<title>". */
         data class Playlist(val browseId: String, val title: String) : Source
+
+        /**
+         * A cloud "Top artists" avatar's page — "artist:<name>". The
+         * provider's own search for the artist's tracks, the online analogue
+         * of the local ArtistDetail screen for artists the listener only
+         * knows from streaming.
+         */
+        data class Artist(val artistName: String) : Source
     }
 
     private val _uiState = MutableStateFlow(SurfListUiState())
@@ -101,6 +109,8 @@ class SurfListViewModel @Inject constructor(
         source = when {
             decoded.startsWith(GENRE_SOURCE_PREFIX) ->
                 Source.Genre(decoded.removePrefix(GENRE_SOURCE_PREFIX))
+            decoded.startsWith(ARTIST_SOURCE_PREFIX) ->
+                Source.Artist(decoded.removePrefix(ARTIST_SOURCE_PREFIX))
             decoded.startsWith(PLAYLIST_SOURCE_PREFIX) -> {
                 // "playlist:<browseId>|<title>" — the browse id never contains
                 // the separator, so the title keeps any '|' of its own.
@@ -149,11 +159,17 @@ class SurfListViewModel @Inject constructor(
         load()
     }
 
-    /** Loads the next page (the "Load more" action — genre sources only). */
+    /** Loads the next page (the "Load more" action — search-backed sources). */
     fun loadMore() {
         val continuation = lastSearchPage ?: return
         if (_uiState.value.isLoadingMore || !_uiState.value.hasMore) return
-        val genreSource = source as? Source.Genre ?: return
+        // Genre and artist pages are live provider searches — only they
+        // carry a continuation to page deeper with.
+        val searchQuery = when (val pageableSource = source) {
+            is Source.Genre -> genreQueryFor(_uiState.value.title)
+            is Source.Artist -> pageableSource.artistName
+            else -> return
+        }
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingMore = true) }
@@ -161,14 +177,14 @@ class SurfListViewModel @Inject constructor(
             val result = runCatching {
                 if (provider == OnlineProvider.YOUTUBE) {
                     youTubeRepository.getMoreYouTubeSearchResults(
-                        query = genreQueryFor(_uiState.value.title),
+                        query = searchQuery,
                         filter = SearchFilterType.SONGS,
                         previousPage = continuation,
                         proxyUrlProvider = { youtubeId -> youTubeStreamProxy.getProxyUrl(youtubeId) }
                     )
                 } else {
                     soundCloudRepository.getMoreSoundCloudSearchResults(
-                        query = genreQueryFor(_uiState.value.title),
+                        query = searchQuery,
                         filter = SearchFilterType.SONGS,
                         previousPage = continuation,
                         proxyUrlProvider = { encodedUrl -> soundCloudStreamProxy.getProxyUrl(encodedUrl) }
@@ -209,7 +225,7 @@ class SurfListViewModel @Inject constructor(
                         // the loading state can name the feed immediately.
                         _uiState.update {
                             it.copy(
-                                title = TRENDING_TITLE,
+                                title = provider.trendingListTitle(),
                                 subtitle = providerSubtitle(provider)
                             )
                         }
@@ -249,6 +265,28 @@ class SurfListViewModel @Inject constructor(
                                 isLoading = false,
                                 hasMore = false,
                                 failed = songs.isEmpty()
+                            )
+                        }
+                    }
+                    is Source.Artist -> {
+                        // The artist's name is the whole query — publish it so
+                        // the loading state can name the page immediately.
+                        _uiState.update {
+                            it.copy(
+                                title = source.artistName,
+                                subtitle = providerSubtitle(provider)
+                            )
+                        }
+                        val page = fetchArtistPage(source.artistName, provider)
+                        lastSearchPage = page
+                        _uiState.update {
+                            it.copy(
+                                songs = page.results
+                                    .mapNotNull { (it as? SearchResultItem.SongItem)?.song }
+                                    .toImmutableList(),
+                                isLoading = false,
+                                hasMore = page.hasMore,
+                                failed = page.results.isEmpty()
                             )
                         }
                     }
@@ -302,25 +340,52 @@ class SurfListViewModel @Inject constructor(
     }
 
     /**
-     * A trending playlist's tracks — resolved through the raw WEB_REMIX
-     * browse ([YouTubeRepository.getTrendingPlaylistTracks]); only YouTube
-     * routes here, so any other provider simply yields an empty page.
+     * A Fresh-finds card's tracks — YouTube's trending playlists resolve
+     * through the raw WEB_REMIX browse
+     * ([YouTubeRepository.getTrendingPlaylistTracks]), SoundCloud's station
+     * cards through the chart-station system playlist
+     * ([SoundCloudRepository.getStationTracks]). Both cache under the same
+     * [SurfFeedKeys.playlist] key the card page read, so re-opens are instant.
      */
     private suspend fun fetchPlaylistTracks(
         source: Source.Playlist,
         provider: OnlineProvider
     ): List<Song> {
-        if (provider != OnlineProvider.YOUTUBE) return emptyList()
-        val playlist = YoutubeTrendingFeedParser.TrendingPlaylist(
-            browseId = source.browseId,
-            title = source.title,
-            artists = "",
-            artworkUrl = null
-        )
-        return youTubeRepository.getTrendingPlaylistTracks(
-            playlist = playlist,
-            proxyUrlProvider = { youtubeId -> youTubeStreamProxy.getProxyUrl(youtubeId) }
-        ).distinctBy { it.id }
+        return if (provider == OnlineProvider.SOUNDCLOUD) {
+            soundCloudRepository.getStationTracks(
+                browseId = source.browseId,
+                stationTitle = source.title,
+                proxyUrlProvider = { encodedUrl -> soundCloudStreamProxy.getProxyUrl(encodedUrl) }
+            ).distinctBy { it.id }
+        } else {
+            val playlist = YoutubeTrendingFeedParser.TrendingPlaylist(
+                browseId = source.browseId,
+                title = source.title,
+                artists = "",
+                artworkUrl = null
+            )
+            youTubeRepository.getTrendingPlaylistTracks(
+                playlist = playlist,
+                proxyUrlProvider = { youtubeId -> youTubeStreamProxy.getProxyUrl(youtubeId) }
+            ).distinctBy { it.id }
+        }
+    }
+
+    /**
+     * The artist page's first page — the provider's own songs search for
+     * the artist's name, the same live query the online search screen runs
+     * for the same text (deliberately uncached, exactly like genre pages).
+     */
+    private suspend fun fetchArtistPage(artistName: String, provider: OnlineProvider): SearchPage {
+        return if (provider == OnlineProvider.YOUTUBE) {
+            youTubeRepository.searchYouTubePaged(artistName, SearchFilterType.SONGS) { youtubeId ->
+                youTubeStreamProxy.getProxyUrl(youtubeId)
+            }
+        } else {
+            soundCloudRepository.searchSoundCloudPaged(artistName, SearchFilterType.SONGS) { encodedUrl ->
+                soundCloudStreamProxy.getProxyUrl(encodedUrl)
+            }
+        }
     }
 
     private suspend fun fetchGenrePage(genre: Genre, provider: OnlineProvider): SearchPage {
@@ -354,11 +419,20 @@ class SurfListViewModel @Inject constructor(
     private fun providerSubtitle(provider: OnlineProvider): String =
         if (provider == OnlineProvider.YOUTUBE) "YouTube" else "SoundCloud"
 
+    /**
+     * The see-all page's title — SoundCloud's chart is named "New & hot", so
+     * the list header says what the provider itself calls the chart.
+     */
+    private fun OnlineProvider.trendingListTitle(): String =
+        if (this == OnlineProvider.YOUTUBE) TRENDING_TITLE else NEW_HOT_TITLE
+
     private fun genreQueryFor(name: String): String = "$name music"
 
     private companion object {
         const val GENRE_SOURCE_PREFIX = "genre:"
+        const val ARTIST_SOURCE_PREFIX = "artist:"
         const val PLAYLIST_SOURCE_PREFIX = "playlist:"
         const val TRENDING_TITLE = "Trending"
+        const val NEW_HOT_TITLE = "New & hot"
     }
 }

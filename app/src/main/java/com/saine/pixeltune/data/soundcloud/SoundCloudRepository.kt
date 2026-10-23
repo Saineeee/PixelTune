@@ -10,12 +10,18 @@ import com.saine.pixeltune.data.model.SearchPage
 import com.saine.pixeltune.data.model.Song
 import com.saine.pixeltune.data.preferences.StreamingQuality
 import com.saine.pixeltune.data.stream.CloudArtworkHelper
+import com.saine.pixeltune.data.surf.SoundCloudChartsParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabs
 import org.schabi.newpipe.extractor.search.SearchExtractor
+import org.schabi.newpipe.extractor.services.soundcloud.SoundcloudParsingHelper
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
@@ -27,7 +33,14 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class SoundCloudRepository @Inject constructor() {
+class SoundCloudRepository @Inject constructor(
+    /**
+     * SURF: HTTP client for the raw charts / station JSON reads (the same
+     * app-wide default client [YouTubeRepository] uses for its own raw
+     * WEB_REMIX browse calls) — a couple of small GETs per feed refresh.
+     */
+    private val client: OkHttpClient
+) {
 
     private companion object {
         /** SURF: the album field songs from the trending chart list as their origin. */
@@ -35,6 +48,36 @@ class SoundCloudRepository @Inject constructor() {
 
         /** SURF: how many trending tracks one charts page contributes. */
         private const val DEFAULT_TRENDING_LIMIT = 30
+
+        /** SURF: the charts endpoint the "New & hot" chart is read from. */
+        private const val CHARTS_ENDPOINT =
+            "https://api-v2.soundcloud.com/charts?genre=soundcloud:genres:all-music&kind=trending"
+
+        /** SURF: how many chart entries one Fresh-finds fetch reads. */
+        private const val FRESH_FINDS_CHART_LIMIT = 50
+
+        /** SURF: how many Fresh-finds station cards the section shows. */
+        private const val DEFAULT_FRESH_FINDS_LIMIT = 8
+
+        /** SURF: a track counts as "fresh" within this many days of upload. */
+        private const val FRESH_FINDS_MAX_AGE_DAYS = 90
+
+        /** SURF: system-playlist endpoint a station's track ids are read from. */
+        private const val SYSTEM_PLAYLISTS_ENDPOINT =
+            "https://api-v2.soundcloud.com/system-playlists/"
+
+        /** SURF: bulk track resolution endpoint (comma-separated ids). */
+        private const val TRACKS_ENDPOINT =
+            "https://api-v2.soundcloud.com/tracks?client_id="
+
+        /** SURF: how many track ids one bulk resolution request carries. */
+        private const val TRACK_IDS_CHUNK = 25
+
+        /** SURF: the urn every track station is addressed by. */
+        private const val TRACK_STATION_URN_PREFIX = "soundcloud:system-playlists:track-stations:"
+
+        /** SURF: the album field station tracks carry as their origin. */
+        private const val STATION_CONTEXT_TITLE_SUFFIX = " radio"
     }
 
     /**
@@ -247,6 +290,164 @@ class SoundCloudRepository @Inject constructor() {
             emptyList()
         }
     }
+
+    /**
+     * SURF: the "Fresh finds" station cards for the discovery feed — the
+     * freshly-uploaded tracks of the same "New & hot" chart
+     * [getTrendingTracks] reads, each card opening the track's own STATION
+     * (the "<song> radio" system playlist the SoundCloud app itself plays)
+     * through [getStationTracks]. SoundCloud's public API now serves exactly
+     * one chart (the per-genre / Top-50 / regional variants were removed),
+     * so the freshness signal comes from each entry's upload date.
+     *
+     * Unlike [getTrendingTracks] this propagates failures — the feed's
+     * Fresh-finds section shows its retry row instead of silently hiding
+     * when the chart can't be read.
+     */
+    suspend fun getFreshFindsStations(
+        limit: Int = DEFAULT_FRESH_FINDS_LIMIT
+    ): List<SoundCloudChartsParser.StationCard> = withContext(Dispatchers.IO) {
+        val clientId = SoundcloudParsingHelper.clientId()
+        val chart = getJson("$CHARTS_ENDPOINT&client_id=$clientId&limit=$FRESH_FINDS_CHART_LIMIT")
+        val tracks = SoundCloudChartsParser.parseChartTracks(chart)
+        SoundCloudChartsParser.pickFreshStationCards(
+            tracks = tracks,
+            maxCards = limit.coerceAtLeast(1),
+            nowEpochMs = System.currentTimeMillis(),
+            maxAgeDays = FRESH_FINDS_MAX_AGE_DAYS
+        )
+    }
+
+    /**
+     * SURF: the tracks of one Fresh-finds station card — the station's
+     * system playlist (id stubs) resolved in bulk through the /tracks
+     * endpoint, mapped to [Song]s exactly like [getTrendingTracks]'s entries
+     * (same id scheme, same proxy URL, best available artwork) so the queue,
+     * favorites and downloads treat them uniformly. The [stationTitle] seeds
+     * the album field ("<song> radio") the song info sheet shows as the
+     * track's origin. Propagates failures so the list's error state retries.
+     */
+    suspend fun getStationTracks(
+        browseId: String,
+        stationTitle: String,
+        proxyUrlProvider: (String) -> String
+    ): List<Song> = withContext(Dispatchers.IO) {
+        val trackId = browseId
+            .removePrefix(SoundCloudChartsParser.STATION_BROWSE_ID_PREFIX)
+            .toLongOrNull()
+            ?: throw IllegalArgumentException("Not a SoundCloud station id: $browseId")
+        val clientId = SoundcloudParsingHelper.clientId()
+        val urn = URLEncoder.encode("$TRACK_STATION_URN_PREFIX$trackId", "UTF-8")
+        val station = getJson("$SYSTEM_PLAYLISTS_ENDPOINT$urn?client_id=$clientId")
+        val trackIds = SoundCloudChartsParser.parseStationTrackIds(station)
+
+        val contextTitle = stationTitle.takeIf { it.isNotBlank() }
+            ?: station.optString("title").takeIf { it.isNotBlank() }
+            ?: TRENDING_CONTEXT_TITLE
+
+        // Bulk-resolve the stubs in request order (the endpoint's response
+        // order is not guaranteed), keeping the station's own sequence.
+        val songs = ArrayList<Song>(trackIds.size)
+        for (chunk in trackIds.chunked(TRACK_IDS_CHUNK)) {
+            val idsParam = chunk.joinToString(separator = ",")
+            val resolved = getJsonArray("${TRACKS_ENDPOINT}$clientId&ids=$idsParam")
+            val byId = HashMap<Long, JSONObject>(chunk.size)
+            for (index in 0 until resolved.length()) {
+                val track = resolved.optJSONObject(index) ?: continue
+                val id = track.optLong("id")
+                if (id > 0L) byId[id] = track
+            }
+            for (id in chunk) {
+                byId[id]?.let { track ->
+                    track.toStationSong(
+                        proxyUrlProvider = proxyUrlProvider,
+                        contextTitle = "$contextTitle$STATION_CONTEXT_TITLE_SUFFIX"
+                    )?.let { song -> songs += song }
+                }
+            }
+        }
+        songs.distinctBy { it.id }
+    }
+
+    /**
+     * Maps one raw api-v2 track object to the app's online [Song] shape —
+     * the same field mapping [streamItemsToSongs] applies to NewPipe items
+     * (id scheme, proxy URL, origin album field), so stations, charts and
+     * search results are interchangeable everywhere in the app.
+     */
+    private fun JSONObject.toStationSong(
+        proxyUrlProvider: (String) -> String,
+        contextTitle: String
+    ): Song? {
+        val trackUrl = optString("permalink_url").trim()
+        val title = optString("title").trim()
+        if (trackUrl.isEmpty() || title.isEmpty()) return null
+        val encodedUrl = URLEncoder.encode(trackUrl, "UTF-8")
+        val durationMs = optLong("full_duration", 0L).takeIf { it > 0L }
+            ?: optLong("duration", 0L).takeIf { it > 0L }
+            ?: 0L
+        return Song.emptySong().copy(
+            id = encodedUrl.hashCode().toString(),
+            title = title,
+            artist = optJSONObject("user")
+                ?.optString("username")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: "Unknown",
+            artistId = -1L,
+            album = contextTitle,
+            albumId = -1L,
+            path = trackUrl,
+            contentUriString = proxyUrlProvider(encodedUrl),
+            albumArtUriString = bestRawArtworkUrl(optString("artwork_url")),
+            duration = durationMs,
+            mimeType = "audio/mpeg"
+        )
+    }
+
+    /**
+     * The highest-resolution artwork for a raw api-v2 artwork URL —
+     * NewPipe's SoundCloud variant generator (the same list the extractor
+     * items carry) ranked by [CloudArtworkHelper]; a null/blank URL yields
+     * null.
+     */
+    private fun bestRawArtworkUrl(artworkUrl: String): String? {
+        if (artworkUrl.isEmpty()) return null
+        val images = runCatching {
+            SoundcloudParsingHelper.getAllImagesFromArtworkOrAvatarUrl(artworkUrl)
+        }.getOrNull().orEmpty()
+        return CloudArtworkHelper.bestArtworkUrl(images) ?: artworkUrl
+    }
+
+    /** One authenticated api-v2 GET parsed as JSON; failures propagate. */
+    private fun getJson(url: String): JSONObject {
+        val request = buildApiGetRequest(url)
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw java.io.IOException("SoundCloud API HTTP ${response.code}")
+            }
+            return JSONObject(response.body.string())
+        }
+    }
+
+    /** The array-bodied variant of [getJson] (the bulk /tracks endpoint). */
+    private fun getJsonArray(url: String): JSONArray {
+        val request = buildApiGetRequest(url)
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw java.io.IOException("SoundCloud API HTTP ${response.code}")
+            }
+            return JSONArray(response.body.string())
+        }
+    }
+
+    private fun buildApiGetRequest(url: String): Request =
+        Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+            .header("Accept", "application/json")
+            .get()
+            .build()
 
     /**
      * IMPROVE(search-load-more): the PAGED SoundCloud search — one page of

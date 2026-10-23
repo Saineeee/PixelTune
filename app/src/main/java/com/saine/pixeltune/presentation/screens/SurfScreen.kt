@@ -51,12 +51,15 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarDefaults.topAppBarColors
+import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,6 +71,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -77,6 +81,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -85,10 +90,10 @@ import androidx.navigation.NavController
 import com.saine.pixeltune.R
 import com.saine.pixeltune.data.model.Genre
 import com.saine.pixeltune.data.model.Song
+import com.saine.pixeltune.data.surf.SurfExploreCard
 import com.saine.pixeltune.data.surf.SurfJumpBackInEntry
 import com.saine.pixeltune.data.surf.SurfSectionsBuilder
 import com.saine.pixeltune.data.surf.SurfTopArtist
-import com.saine.pixeltune.data.surf.YoutubeTrendingFeedParser
 import com.saine.pixeltune.presentation.components.ExpressiveScrollBar
 import com.saine.pixeltune.presentation.components.MiniPlayerHeight
 import com.saine.pixeltune.presentation.components.NavBarContentHeight
@@ -158,8 +163,16 @@ fun SurfScreen(
     val isOnline by surfViewModel.isOnline.collectAsStateWithLifecycle()
 
     // Queue names are resolved once per composition — stringResource() can't
-    // be called from the non-composable click lambdas below.
-    val trendingQueueName = stringResource(R.string.surf_trending_title)
+    // be called from the non-composable click lambdas below. SoundCloud's own
+    // chart is named "New & hot", so the section (and the queue it starts)
+    // carries the provider's own name for the chart.
+    val isSoundCloudProvider = surfUiState.trendingProvider == OnlineProvider.SOUNDCLOUD
+    val trendingSectionTitle = stringResource(
+        if (isSoundCloudProvider) R.string.surf_trending_title_soundcloud
+        else R.string.surf_trending_title
+    )
+    val trendingQueueName = trendingSectionTitle
+    val jumpBackQueueName = stringResource(R.string.surf_jump_back_in_title)
     val relatedQueueName = stringResource(
         R.string.surf_because_you_played_title,
         surfUiState.relatedSeed?.title.orEmpty()
@@ -167,16 +180,19 @@ fun SurfScreen(
 
     // On-device personalisation, derived exactly like HomeScreen derives its
     // sections: remember over the live flows + the pure SurfSectionsBuilder.
+    // Cloud plays participate — a listener who only streams still gets their
+    // Jump back in songs, cloud Top artists and the related-tracks seed.
     val jumpBackIn = remember(playbackHistory, allSongs) {
         SurfSectionsBuilder.buildJumpBackIn(
             playbackHistory = playbackHistory,
             allSongs = allSongs
         )
     }
-    val topArtists = remember(engagementStats, allSongs) {
+    val topArtists = remember(engagementStats, allSongs, playbackHistory) {
         SurfSectionsBuilder.buildTopArtists(
             engagementStats = engagementStats,
-            allSongs = allSongs
+            allSongs = allSongs,
+            playbackHistory = playbackHistory
         )
     }
     // Browse = the curated genre & mood seeds first (the discovery grid), then
@@ -239,13 +255,31 @@ fun SurfScreen(
         Brush.verticalGradient(colors = gradientColors)
     }
 
+    // The header band glides away with the feed (enter-always) — the big
+    // title never pins over scrolled content. The content sheet's rounded
+    // top edge follows the collapse: its 48dp corners relax to 0dp as the
+    // sheet rises under the status bar, so the edge never shows a clipped
+    // curve against the system bar.
+    val topBarScrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
+    val sheetTopCornerRadius by remember(topBarScrollBehavior) {
+        derivedStateOf {
+            lerp(
+                SurfSheetTopCornerRadius,
+                0.dp,
+                topBarScrollBehavior.state.collapsedFraction.coerceIn(0f, 1f)
+            )
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             modifier = Modifier
                 .fillMaxSize()
-                .background(brush = gradientBrush),
+                .background(brush = gradientBrush)
+                .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
             topBar = {
                 SurfTopBar(
+                    scrollBehavior = topBarScrollBehavior,
                     onCloudStreamClick = { showStreamingProviderSheet = true },
                     onSettingsClick = {
                         navController.navigateSafely(Screen.Settings.route)
@@ -254,15 +288,15 @@ fun SurfScreen(
             }
         ) { innerPadding ->
             // The Library's content sheet — the feed sits on the surface
-            // colour inside 34dp smooth top corners, over the tinted zone.
+            // colour inside the 48dp smooth top corners, over the tinted zone.
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(top = innerPadding.calculateTopPadding()),
                 shape = AbsoluteSmoothCornerShape(
-                    cornerRadiusTL = 34.dp,
+                    cornerRadiusTL = sheetTopCornerRadius,
                     smoothnessAsPercentTL = 60,
-                    cornerRadiusTR = 34.dp,
+                    cornerRadiusTR = sheetTopCornerRadius,
                     smoothnessAsPercentTR = 60,
                     cornerRadiusBL = 0.dp,
                     smoothnessAsPercentBL = 60,
@@ -293,7 +327,7 @@ fun SurfScreen(
                             state = lazyListState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(
-                                top = 10.dp,
+                                top = 16.dp,
                                 bottom = bottomBarHeight + miniPlayerGap + ListExtraBottomGap
                             ),
                             verticalArrangement = Arrangement.spacedBy(24.dp)
@@ -303,8 +337,16 @@ fun SurfScreen(
                                     SurfSectionHeader(title = stringResource(R.string.surf_jump_back_in_title))
                                 }
                                 item(key = "surf_jump_back_in_row", contentType = "surf_section_jump_back_in_row") {
+                                    // The cloud songs in the row play as one
+                                    // context queue — tapping one resumes it
+                                    // with the other recent finds following it.
+                                    val jumpBackCloudSongs = remember(jumpBackIn) {
+                                        jumpBackIn.filterIsInstance<SurfJumpBackInEntry.Song>()
+                                            .map { it.song }
+                                    }
                                     SurfJumpBackInRow(
                                         entries = jumpBackIn,
+                                        currentSongId = currentSongId,
                                         onEntryClick = { entry ->
                                             when (entry) {
                                                 is SurfJumpBackInEntry.Album ->
@@ -315,6 +357,18 @@ fun SurfScreen(
                                                     navController.navigateSafely(
                                                         Screen.ArtistDetail.createRoute(entry.artistId)
                                                     )
+                                                is SurfJumpBackInEntry.Song ->
+                                                    playerViewModel.showAndPlaySong(
+                                                        song = entry.song,
+                                                        contextSongs = jumpBackCloudSongs,
+                                                        queueName = jumpBackQueueName
+                                                    )
+                                            }
+                                        },
+                                        onEntryLongClick = { entry ->
+                                            (entry as? SurfJumpBackInEntry.Song)?.let { songEntry ->
+                                                selectedSongForInfo = songEntry.song
+                                                showSongInfoBottomSheet = true
                                             }
                                         }
                                     )
@@ -329,9 +383,21 @@ fun SurfScreen(
                                     SurfTopArtistsRow(
                                         artists = topArtists,
                                         onArtistClick = { artist ->
-                                            navController.navigateSafely(
-                                                Screen.ArtistDetail.createRoute(artist.artistId)
-                                            )
+                                            if (artist.isCloud) {
+                                                // A streamed artist the library
+                                                // doesn't know — its page is the
+                                                // provider's own search for the
+                                                // artist's tracks.
+                                                navController.navigateSafely(
+                                                    Screen.SurfList.createRoute(
+                                                        SurfListSource.artist(artist.name)
+                                                    )
+                                                )
+                                            } else {
+                                                navController.navigateSafely(
+                                                    Screen.ArtistDetail.createRoute(artist.artistId)
+                                                )
+                                            }
                                         }
                                     )
                                 }
@@ -339,6 +405,7 @@ fun SurfScreen(
 
                             item(key = "surf_trending", contentType = "surf_section_trending") {
                                 SurfTrendingSection(
+                                    title = trendingSectionTitle,
                                     uiState = surfUiState,
                                     isOnline = isOnline,
                                     currentSongId = currentSongId,
@@ -362,26 +429,27 @@ fun SurfScreen(
                                 )
                             }
 
-                            // "Fresh finds" — YouTube's trending playlist cards.
-                            // SoundCloud exposes no second chart, so the section
-                            // simply doesn't compose for it (loaded-and-empty,
-                            // never an error row).
+                            // "Fresh finds" — the provider's own discovery cards:
+                            // YouTube's trending playlists, SoundCloud's fresh
+                            // station cards. Loading / failed / ready-with-content
+                            // are the only states that compose; a provider whose
+                            // fetch resolved empty simply renders nothing here.
                             if (surfUiState.exploreIsLoading || surfUiState.exploreFailed ||
-                                surfUiState.explorePlaylists.isNotEmpty()
+                                surfUiState.exploreCards.isNotEmpty()
                             ) {
                                 item(key = "surf_explore", contentType = "surf_section_explore") {
                                     SurfExploreSection(
-                                        playlists = surfUiState.explorePlaylists,
+                                        cards = surfUiState.exploreCards,
                                         isLoading = surfUiState.exploreIsLoading,
                                         failed = surfUiState.exploreFailed,
                                         isOnline = isOnline,
                                         onRetry = { surfViewModel.refreshExplore() },
-                                        onPlaylistClick = { playlist ->
+                                        onCardClick = { card ->
                                             navController.navigateSafely(
                                                 Screen.SurfList.createRoute(
                                                     SurfListSource.playlist(
-                                                        browseId = playlist.browseId,
-                                                        title = playlist.title
+                                                        browseId = card.browseId,
+                                                        title = card.title
                                                     )
                                                 )
                                             )
@@ -506,8 +574,11 @@ private object SurfListSource {
     const val TRENDING = "trending"
     fun genre(genreId: String): String = "genre:$genreId"
 
-    /** A trending playlist card's see-all page — "playlist:<browseId>|<title>". */
+    /** A trending playlist card's see-all page — "playlist:<id>|<title>". */
     fun playlist(browseId: String, title: String): String = "playlist:$browseId|$title"
+
+    /** A cloud Top artists avatar's page — "artist:<name>". */
+    fun artist(artistName: String): String = "artist:$artistName"
 }
 
 /**
@@ -542,18 +613,28 @@ private const val BROWSE_GENRE_GRID_COLUMNS = 2
 private const val PULL_REFRESH_MIN_DURATION_MS = 600L
 
 /**
+ * The content sheet's rounded top edge — the Library chrome's corner, at the
+ * discovery feed's bolder 48dp radius. The corner relaxes to 0dp while the
+ * header band collapses so the edge stays clean under the status bar.
+ */
+private val SurfSheetTopCornerRadius = 48.dp
+
+/**
  * The tab's top bar — the Library screen's own chrome: the big
  * GoogleSansRounded title in the theme's primary colour over the
  * primaryContainer-tinted bar, with the same FilledIconButton actions
- * (the streaming provider sheet and Settings).
+ * (the streaming provider sheet and Settings). Enter-always: the band
+ * glides away with the feed's scroll and returns on the first scroll up.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SurfTopBar(
+    scrollBehavior: TopAppBarScrollBehavior,
     onCloudStreamClick: () -> Unit,
     onSettingsClick: () -> Unit
 ) {
     TopAppBar(
+        scrollBehavior = scrollBehavior,
         title = {
             Text(
                 modifier = Modifier.padding(start = 8.dp),
@@ -655,13 +736,17 @@ private fun SurfSeeAllButton(
 
 /**
  * "Jump back in": a horizontal row of square cover cards for the albums and
- * artists behind the listener's recent plays. Tapping re-opens the existing
- * AlbumDetail / ArtistDetail page — re-finding, not a new detail screen.
+ * artists behind the listener's recent LOCAL plays and the cloud songs
+ * themselves. Local entries re-open the existing AlbumDetail / ArtistDetail
+ * pages; cloud entries replay straight from the history snapshot, with the
+ * row's other cloud finds as the queue that follows them.
  */
 @Composable
 private fun SurfJumpBackInRow(
     entries: List<SurfJumpBackInEntry>,
-    onEntryClick: (SurfJumpBackInEntry) -> Unit
+    currentSongId: String?,
+    onEntryClick: (SurfJumpBackInEntry) -> Unit,
+    onEntryLongClick: (SurfJumpBackInEntry) -> Unit
 ) {
     LazyRow(
         modifier = Modifier.fillMaxWidth(),
@@ -674,6 +759,7 @@ private fun SurfJumpBackInRow(
                 when (entry) {
                     is SurfJumpBackInEntry.Album -> "jump_album_${entry.albumId}"
                     is SurfJumpBackInEntry.Artist -> "jump_artist_${entry.artistId}"
+                    is SurfJumpBackInEntry.Song -> "jump_song_${entry.song.id}"
                 }
             },
             contentType = { entry -> entry::class }
@@ -686,6 +772,7 @@ private fun SurfJumpBackInRow(
                         entry.songCount,
                         entry.songCount
                     )
+                is SurfJumpBackInEntry.Song -> entry.song.displayArtist
             }
             SurfMediaCard(
                 artworkUriString = entry.artworkUriString,
@@ -696,14 +783,23 @@ private fun SurfJumpBackInRow(
                         stringResource(R.string.surf_open_album, entry.title)
                     is SurfJumpBackInEntry.Artist ->
                         stringResource(R.string.surf_open_artist, entry.title)
+                    is SurfJumpBackInEntry.Song ->
+                        stringResource(R.string.surf_play_song, entry.title)
                 },
-                onClick = { onEntryClick(entry) }
+                onClick = { onEntryClick(entry) },
+                onLongClick = { onEntryLongClick(entry) },
+                isCurrent = entry is SurfJumpBackInEntry.Song &&
+                    currentSongId == entry.song.id
             )
         }
     }
 }
 
-/** "Top artists": circular avatars from the on-device engagement rollup. */
+/**
+ * "Top artists": circular avatars from the on-device engagement rollup —
+ * local artists open their ArtistDetail page, cloud artists the provider's
+ * own search page for their tracks.
+ */
 @Composable
 private fun SurfTopArtistsRow(
     artists: List<SurfTopArtist>,
@@ -716,7 +812,13 @@ private fun SurfTopArtistsRow(
     ) {
         items(
             items = artists,
-            key = { artist -> "top_artist_${artist.artistId}" },
+            key = { artist ->
+                if (artist.isCloud) {
+                    "top_artist_cloud_${artist.name.lowercase()}"
+                } else {
+                    "top_artist_${artist.artistId}"
+                }
+            },
             contentType = { "top_artist" }
         ) { artist ->
             Column(
@@ -750,13 +852,15 @@ private fun SurfTopArtistsRow(
 }
 
 /**
- * "Trending now": the provider's own chart as a card carousel. The header's
- * see-all pill opens the full paged list; loading shows the app's expressive
- * LoadingIndicator; a failure with nothing stale to show degrades to the
- * compact retry row (offline copy when the connection is down).
+ * The provider's chart — "Trending now" on YouTube, "New & hot" on
+ * SoundCloud — as a card carousel. The header's see-all pill opens the full
+ * paged list; loading shows the app's expressive LoadingIndicator; a
+ * failure with nothing stale to show degrades to the compact retry row
+ * (offline copy when the connection is down).
  */
 @Composable
 private fun SurfTrendingSection(
+    title: String,
     uiState: SurfUiState,
     isOnline: Boolean,
     currentSongId: String?,
@@ -767,7 +871,7 @@ private fun SurfTrendingSection(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SurfSectionHeader(
-            title = stringResource(R.string.surf_trending_title),
+            title = title,
             action = {
                 SurfSeeAllButton(
                     contentDescription = stringResource(R.string.surf_trending_see_all),
@@ -830,20 +934,21 @@ private fun SurfTrendingSection(
 }
 
 /**
- * "Fresh finds": the YouTube Music trending playlist cards ("Today's fresh &
- * popular") as the feed's second online shelf — the cover-card carousel the
- * app's other shelves use, each card opening the playlist's own track page.
- * Only loading/failed/ready-with-content ever compose; a provider without a
- * second chart (SoundCloud) renders nothing here.
+ * "Fresh finds": the provider's own discovery cards — YouTube's "Today's
+ * fresh & popular" trending playlists, SoundCloud's fresh-upload stations —
+ * as the feed's second online shelf, in the cover-card carousel the app's
+ * other shelves use, each card opening the playlist's own track page.
+ * Only loading/failed/ready-with-content ever compose; a provider whose
+ * fetch resolved empty renders nothing here.
  */
 @Composable
 private fun SurfExploreSection(
-    playlists: ImmutableList<YoutubeTrendingFeedParser.TrendingPlaylist>,
+    cards: ImmutableList<SurfExploreCard>,
     isLoading: Boolean,
     failed: Boolean,
     isOnline: Boolean,
     onRetry: () -> Unit,
-    onPlaylistClick: (YoutubeTrendingFeedParser.TrendingPlaylist) -> Unit
+    onCardClick: (SurfExploreCard) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SurfSectionHeader(title = stringResource(R.string.surf_explore_title))
@@ -878,18 +983,18 @@ private fun SurfExploreSection(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     items(
-                        items = playlists,
-                        key = { playlist -> "explore_${playlist.browseId}" },
+                        items = cards,
+                        key = { card -> "explore_${card.browseId}" },
                         contentType = { "explore_playlist" }
-                    ) { playlist ->
+                    ) { card ->
                         SurfMediaCard(
-                            artworkUriString = playlist.artworkUrl,
-                            title = playlist.title,
-                            subtitle = playlist.artists,
+                            artworkUriString = card.artworkUrl,
+                            title = card.title,
+                            subtitle = card.subtitle,
                             contentDescription = stringResource(
-                                R.string.surf_open_playlist, playlist.title
+                                R.string.surf_open_playlist, card.title
                             ),
-                            onClick = { onPlaylistClick(playlist) }
+                            onClick = { onCardClick(card) }
                         )
                     }
                 }
