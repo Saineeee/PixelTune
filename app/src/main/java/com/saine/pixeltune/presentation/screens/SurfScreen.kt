@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -54,6 +55,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarDefaults.topAppBarColors
 import androidx.compose.material3.TopAppBarScrollBehavior
+import androidx.compose.material3.carousel.CarouselItemScope
+import androidx.compose.material3.carousel.HorizontalMultiBrowseCarousel
+import androidx.compose.material3.carousel.rememberCarouselState
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -61,6 +65,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -101,6 +106,7 @@ import com.saine.pixeltune.presentation.components.PlaylistBottomSheet
 import com.saine.pixeltune.presentation.components.SmartImage
 import com.saine.pixeltune.presentation.components.SongInfoBottomSheet
 import com.saine.pixeltune.presentation.components.StreamingProviderSheet
+import com.saine.pixeltune.presentation.components.rememberCanScrollMore
 import com.saine.pixeltune.presentation.components.subcomps.EnhancedSongListItem
 import com.saine.pixeltune.presentation.navigation.Screen
 import com.saine.pixeltune.presentation.navigation.navigateSafely
@@ -130,7 +136,13 @@ import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
  * scrolling inside the Library's rounded content sheet (34dp smooth top
  * corners over the surface colour) with its own ExpressiveScrollBar and
  * pull-to-refresh (which re-fetches every online section at once, the
- * Library tabs' single onRefresh applied to the feed). The sections
+ * Library tabs' single onRefresh applied to the feed). The feed's list
+ * reserves the Library tabs' scroll-bar clearance — the sheet insets its
+ * end padding only while the feed can scroll, so the expressive thumb
+ * never sits on top of the section content. The carousels ("Jump back in",
+ * the provider chart and "Fresh finds") are Material 3 Expressive
+ * multi-browse carousels: swiping back and forth morphs the cards through
+ * the carousel's size tiers and snaps them to its keylines. The sections
  * themselves keep the app's shelf grammar: personalised sections first and
  * working offline (derived on-device from playback history + engagement
  * stats, like Home's Recently Played), then the online sections following
@@ -325,7 +337,22 @@ fun SurfScreen(
                     Box(modifier = Modifier.fillMaxSize()) {
                         LazyColumn(
                             state = lazyListState,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                // The Library tabs' scroll-bar clearance: the
+                                // feed insets its end edge only while there is
+                                // somewhere to scroll to, keeping the
+                                // ExpressiveScrollBar's thumb beside the content
+                                // instead of over it (the sections carry their
+                                // own 14dp base padding, so the sheet insets by
+                                // the track's outer bound alone).
+                                .padding(
+                                    end = if (rememberCanScrollMore(lazyListState)) {
+                                        SurfScrollBarEndInset
+                                    } else {
+                                        0.dp
+                                    }
+                                ),
                             contentPadding = PaddingValues(
                                 top = 16.dp,
                                 bottom = bottomBarHeight + miniPlayerGap + ListExtraBottomGap
@@ -613,6 +640,33 @@ private const val BROWSE_GENRE_GRID_COLUMNS = 2
 private const val PULL_REFRESH_MIN_DURATION_MS = 600L
 
 /**
+ * The feed's scroll-bar clearance — the ExpressiveScrollBar's track sits
+ * 4dp..12dp in from the sheet's edge; the feed insets its end edge by the
+ * track's outer bound while the list can scroll, so scrolling content
+ * abuts the thumb instead of sliding under it (the Library tabs' lists
+ * reserve the same clearance through their 12dp -> 22dp end padding; the
+ * feed's sections carry their own 14dp base padding, so the sheet's inset
+ * is the track's outer bound alone).
+ */
+private val SurfScrollBarEndInset = 12.dp
+
+/**
+ * The carousels' shared geometry — the Material 3 multi-browse carousel's
+ * tiers for the feed's cover cards. The carousel measures every card at the
+ * large tier's width and masks the non-focal cards down to the small tiers'
+ * widths (centred slices) as they round through the carousel, so the caption
+ * zone keeps its text inside the smallest tier's slice — centred and capped
+ * at [SurfCarouselCaptionMaxWidth] — while the artwork fills the card and
+ * crops with the mask.
+ */
+private val SurfCarouselHeight = 204.dp
+private val SurfCarouselArtHeight = 158.dp
+private val SurfCarouselPreferredItemWidth = 188.dp
+private val SurfCarouselMinSmallItemWidth = 120.dp
+private val SurfCarouselMaxSmallItemWidth = 152.dp
+private val SurfCarouselCaptionMaxWidth = 108.dp
+
+/**
  * The content sheet's rounded top edge — the Library chrome's corner, at the
  * discovery feed's bolder 48dp radius. The corner relaxes to 0dp while the
  * header band collapses so the edge stays clean under the status bar.
@@ -735,11 +789,13 @@ private fun SurfSeeAllButton(
 }
 
 /**
- * "Jump back in": a horizontal row of square cover cards for the albums and
- * artists behind the listener's recent LOCAL plays and the cloud songs
- * themselves. Local entries re-open the existing AlbumDetail / ArtistDetail
- * pages; cloud entries replay straight from the history snapshot, with the
- * row's other cloud finds as the queue that follows them.
+ * "Jump back in": a Material 3 Expressive multi-browse carousel of cover
+ * cards for the albums and artists behind the listener's recent LOCAL plays
+ * and the cloud songs themselves. Swiping back and forth morphs the cards
+ * through the carousel's size tiers and snaps them to its keylines. Local
+ * entries re-open the existing AlbumDetail / ArtistDetail pages; cloud
+ * entries replay straight from the history snapshot, with the row's other
+ * cloud finds as the queue that follows them.
  */
 @Composable
 private fun SurfJumpBackInRow(
@@ -748,22 +804,18 @@ private fun SurfJumpBackInRow(
     onEntryClick: (SurfJumpBackInEntry) -> Unit,
     onEntryLongClick: (SurfJumpBackInEntry) -> Unit
 ) {
-    LazyRow(
+    val carouselState = rememberCarouselState(itemCount = { entries.size })
+    HorizontalMultiBrowseCarousel(
+        state = carouselState,
+        preferredItemWidth = SurfCarouselPreferredItemWidth,
         modifier = Modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(start = 14.dp, end = 24.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        items(
-            items = entries,
-            key = { entry ->
-                when (entry) {
-                    is SurfJumpBackInEntry.Album -> "jump_album_${entry.albumId}"
-                    is SurfJumpBackInEntry.Artist -> "jump_artist_${entry.artistId}"
-                    is SurfJumpBackInEntry.Song -> "jump_song_${entry.song.id}"
-                }
-            },
-            contentType = { entry -> entry::class }
-        ) { entry ->
+        itemSpacing = 12.dp,
+        minSmallItemWidth = SurfCarouselMinSmallItemWidth,
+        maxSmallItemWidth = SurfCarouselMaxSmallItemWidth,
+        contentPadding = PaddingValues(start = 14.dp, end = 24.dp)
+    ) { itemIndex ->
+        val entry = entries[itemIndex]
+        key(surfJumpBackInEntryKey(entry)) {
             val subtitle = when (entry) {
                 is SurfJumpBackInEntry.Album -> entry.artistName
                 is SurfJumpBackInEntry.Artist ->
@@ -793,6 +845,13 @@ private fun SurfJumpBackInRow(
             )
         }
     }
+}
+
+/** Stable identity of a carousel entry — the key the section's items use. */
+private fun surfJumpBackInEntryKey(entry: SurfJumpBackInEntry): String = when (entry) {
+    is SurfJumpBackInEntry.Album -> "jump_album_${entry.albumId}"
+    is SurfJumpBackInEntry.Artist -> "jump_artist_${entry.artistId}"
+    is SurfJumpBackInEntry.Song -> "jump_song_${entry.song.id}"
 }
 
 /**
@@ -853,7 +912,9 @@ private fun SurfTopArtistsRow(
 
 /**
  * The provider's chart — "Trending now" on YouTube, "New & hot" on
- * SoundCloud — as a card carousel. The header's see-all pill opens the full
+ * SoundCloud — as a Material 3 Expressive multi-browse carousel: swiping
+ * back and forth morphs the cover cards through the carousel's size tiers
+ * and snaps them to its keylines. The header's see-all pill opens the full
  * paged list; loading shows the app's expressive LoadingIndicator; a
  * failure with nothing stale to show degrades to the compact retry row
  * (offline copy when the connection is down).
@@ -885,7 +946,7 @@ private fun SurfTrendingSection(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(190.dp),
+                        .height(SurfCarouselHeight),
                     contentAlignment = Alignment.Center
                 ) {
                     LoadingIndicator(
@@ -905,27 +966,33 @@ private fun SurfTrendingSection(
                 )
             }
             else -> {
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(start = 14.dp, end = 24.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(
-                        items = uiState.trendingSongs,
-                        key = { song -> "trending_${song.id}" },
-                        contentType = { "trending_song" }
-                    ) { song ->
-                        SurfMediaCard(
-                            artworkUriString = song.albumArtUriString,
-                            title = song.title,
-                            subtitle = song.displayArtist,
-                            contentDescription = stringResource(
-                                R.string.surf_play_trending, song.title
-                            ),
-                            onClick = { onSongClick(song) },
-                            onLongClick = { onSongMoreOptionsClick(song) },
-                            isCurrent = currentSongId == song.id
-                        )
+                if (uiState.trendingSongs.isNotEmpty()) {
+                    val carouselState = rememberCarouselState(itemCount = {
+                        uiState.trendingSongs.size
+                    })
+                    HorizontalMultiBrowseCarousel(
+                        state = carouselState,
+                        preferredItemWidth = SurfCarouselPreferredItemWidth,
+                        modifier = Modifier.fillMaxWidth(),
+                        itemSpacing = 12.dp,
+                        minSmallItemWidth = SurfCarouselMinSmallItemWidth,
+                        maxSmallItemWidth = SurfCarouselMaxSmallItemWidth,
+                        contentPadding = PaddingValues(start = 14.dp, end = 24.dp)
+                    ) { itemIndex ->
+                        val song = uiState.trendingSongs[itemIndex]
+                        key("trending_${song.id}") {
+                            SurfMediaCard(
+                                artworkUriString = song.albumArtUriString,
+                                title = song.title,
+                                subtitle = song.displayArtist,
+                                contentDescription = stringResource(
+                                    R.string.surf_play_trending, song.title
+                                ),
+                                onClick = { onSongClick(song) },
+                                onLongClick = { onSongMoreOptionsClick(song) },
+                                isCurrent = currentSongId == song.id
+                            )
+                        }
                     }
                 }
             }
@@ -936,10 +1003,11 @@ private fun SurfTrendingSection(
 /**
  * "Fresh finds": the provider's own discovery cards — YouTube's "Today's
  * fresh & popular" trending playlists, SoundCloud's fresh-upload stations —
- * as the feed's second online shelf, in the cover-card carousel the app's
- * other shelves use, each card opening the playlist's own track page.
- * Only loading/failed/ready-with-content ever compose; a provider whose
- * fetch resolved empty renders nothing here.
+ * as the feed's second online shelf, in a Material 3 Expressive multi-browse
+ * carousel whose cards morph through the size tiers and snap to the
+ * keylines while swiping back and forth, each card opening the playlist's
+ * own track page. Only loading/failed/ready-with-content ever compose; a
+ * provider whose fetch resolved empty renders nothing here.
  */
 @Composable
 private fun SurfExploreSection(
@@ -957,7 +1025,7 @@ private fun SurfExploreSection(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(190.dp),
+                        .height(SurfCarouselHeight),
                     contentAlignment = Alignment.Center
                 ) {
                     LoadingIndicator(
@@ -977,25 +1045,29 @@ private fun SurfExploreSection(
                 )
             }
             else -> {
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(start = 14.dp, end = 24.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(
-                        items = cards,
-                        key = { card -> "explore_${card.browseId}" },
-                        contentType = { "explore_playlist" }
-                    ) { card ->
-                        SurfMediaCard(
-                            artworkUriString = card.artworkUrl,
-                            title = card.title,
-                            subtitle = card.subtitle,
-                            contentDescription = stringResource(
-                                R.string.surf_open_playlist, card.title
-                            ),
-                            onClick = { onCardClick(card) }
-                        )
+                if (cards.isNotEmpty()) {
+                    val carouselState = rememberCarouselState(itemCount = { cards.size })
+                    HorizontalMultiBrowseCarousel(
+                        state = carouselState,
+                        preferredItemWidth = SurfCarouselPreferredItemWidth,
+                        modifier = Modifier.fillMaxWidth(),
+                        itemSpacing = 12.dp,
+                        minSmallItemWidth = SurfCarouselMinSmallItemWidth,
+                        maxSmallItemWidth = SurfCarouselMaxSmallItemWidth,
+                        contentPadding = PaddingValues(start = 14.dp, end = 24.dp)
+                    ) { itemIndex ->
+                        val card = cards[itemIndex]
+                        key("explore_${card.browseId}") {
+                            SurfMediaCard(
+                                artworkUriString = card.artworkUrl,
+                                title = card.title,
+                                subtitle = card.subtitle,
+                                contentDescription = stringResource(
+                                    R.string.surf_open_playlist, card.title
+                                ),
+                                onClick = { onCardClick(card) }
+                            )
+                        }
                     }
                 }
             }
@@ -1190,14 +1262,18 @@ private fun SurfGenreCard(
 }
 
 /**
- * A square cover card — the shared shape of the "Jump back in",
- * "Trending now" and "Fresh finds" carousels. Artwork corner and title
- * colour morph while the song plays, mirroring the pill/list-item morphs
- * across the app.
+ * A carousel card — the shared shape of the "Jump back in", "Trending now"
+ * and "Fresh finds" carousels. The card is measured at the carousel's large
+ * tier and [CarouselItemScope.maskClip] rounds it along the carousel's mask,
+ * so the masked small-tier slices keep rounded edges; the artwork fills the
+ * card's width at a fixed height with the title and subtitle centred beneath
+ * it, capped to the smallest tier's slice so the caption never gets masked
+ * off. Artwork corner and title colour morph while the song plays, mirroring
+ * the pill/list-item morphs across the app.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SurfMediaCard(
+private fun CarouselItemScope.SurfMediaCard(
     artworkUriString: String?,
     title: String,
     subtitle: String,
@@ -1217,9 +1293,14 @@ private fun SurfMediaCard(
         animationSpec = tween(durationMillis = 280),
         label = "surfCardTitleColor"
     )
+    val artworkShape = remember(artworkCorner) {
+        AbsoluteSmoothCornerShape(cornerRadius = artworkCorner, smoothnessAsPercent = 60)
+    }
     Column(
         modifier = Modifier
-            .width(150.dp)
+            .fillMaxWidth()
+            .height(SurfCarouselHeight)
+            .maskClip(artworkShape)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick
@@ -1227,32 +1308,42 @@ private fun SurfMediaCard(
     ) {
         Box(
             modifier = Modifier
-                .size(150.dp)
-                .clip(AbsoluteSmoothCornerShape(cornerRadius = artworkCorner, smoothnessAsPercent = 60))
+                .fillMaxWidth()
+                .height(SurfCarouselArtHeight)
+                .clip(artworkShape)
         ) {
             SmartImage(
                 model = artworkUriString,
                 contentDescription = contentDescription,
                 modifier = Modifier.fillMaxSize(),
-                shape = AbsoluteSmoothCornerShape(cornerRadius = artworkCorner, smoothnessAsPercent = 60)
+                shape = artworkShape
             )
         }
         Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-            color = titleColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            text = subtitle,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Medium,
+                color = titleColor,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = SurfCarouselCaptionMaxWidth)
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = SurfCarouselCaptionMaxWidth)
+            )
+        }
     }
 }
 
