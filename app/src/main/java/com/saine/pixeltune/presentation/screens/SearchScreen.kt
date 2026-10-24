@@ -142,9 +142,13 @@ import com.saine.pixeltune.presentation.components.subcomps.EnhancedSongListItem
  *  - ONLINE_HISTORY — blank query while in Online mode: shows the recent
  *    online search history (per-entry remove, autocomplete arrow, clear all).
  *  - GENRE_BROWSE   — blank query while in Local mode: the genre grid.
- *  - RESULTS        — a query is typed: filter chips + loading / results.
+ *  - SUGGESTIONS     — IMPROVE(online-search-autocomplete): a query is being
+ *    TYPED in Online mode and has not been committed yet: live autocomplete
+ *    suggestions from the active provider.
+ *  - RESULTS        — a query is committed (submitted / suggestion tapped /
+ *    history entry) or Local mode is active: filter chips + results.
  */
-private enum class SearchBodyMode { GENRE_BROWSE, ONLINE_HISTORY, RESULTS }
+private enum class SearchBodyMode { GENRE_BROWSE, ONLINE_HISTORY, SUGGESTIONS, RESULTS }
 
 /** IMPROVE(search-loading): what the results area shows. */
 private enum class SearchResultsViewState { LOADING, EMPTY, RESULTS }
@@ -185,6 +189,15 @@ fun SearchScreen(
     onSearchBarActiveChange: (Boolean) -> Unit = {}
 ) {
     var searchQuery by rememberSaveable { mutableStateOf(playerViewModel.searchQuery) }
+    // IMPROVE(online-search-autocomplete): the query the CURRENT results
+    // belong to. In Online mode typing no longer fires a full provider search
+    // on every keystroke — while typing, the body shows autocomplete
+    // suggestions, and the full search runs only when a query is COMMITTED
+    // (keyboard Search action, suggestion tap, or history entry — all of
+    // which set `submittedQuery == searchQuery`). `null` means the user is
+    // still typing (or cleared the field). Local mode keeps its as-you-type
+    // search regardless of this value.
+    var submittedQuery by rememberSaveable { mutableStateOf<String?>(null) }
     val systemNavBarInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val bottomBarHeightDp = NavBarContentHeight + systemNavBarInset
     var showPlaylistBottomSheet by remember { mutableStateOf(false) }
@@ -228,8 +241,31 @@ fun SearchScreen(
     }
 
     // Search debouncing is centralized in SearchStateHolder.
-    LaunchedEffect(searchQuery, currentFilter) {
-        playerViewModel.performSearch(searchQuery)
+    //
+    // IMPROVE(online-search-autocomplete): in ONLINE mode typing no longer
+    // fires the full (debounced) provider search on every keystroke — it only
+    // fetches autocomplete suggestions, so a full music search and an
+    // autocomplete request never race for every keystroke. The full search
+    // pipeline runs when the query is COMMITTED: keyboard Search action,
+    // suggestion tap, or history entry (all of which set
+    // `submittedQuery == searchQuery`), and when the filter chip changes on
+    // committed results. LOCAL mode keeps the existing as-you-type MediaStore
+    // search. Mode switches re-run this effect so the appropriate pipeline
+    // (local search / online suggestions / online re-search) always owns the
+    // body, and stale suggestions from an earlier state never survive a
+    // mode or provider change (SearchStateHolder invalidates those itself).
+    LaunchedEffect(searchQuery, currentFilter, isOnlineSearch, submittedQuery) {
+        when {
+            !isOnlineSearch -> playerViewModel.performSearch(searchQuery)
+            searchQuery.isBlank() -> {
+                // Back on the recent-searches landing: no results, no
+                // suggestions, nothing in flight.
+                playerViewModel.performSearch(searchQuery)
+                playerViewModel.clearSearchSuggestions()
+            }
+            submittedQuery == searchQuery -> playerViewModel.performSearch(searchQuery)
+            else -> playerViewModel.requestSearchSuggestions(searchQuery)
+        }
     }
     val searchResults = uiState.searchResults
 
@@ -241,21 +277,45 @@ fun SearchScreen(
     // landing. Refreshed whenever the online landing becomes visible so the
     // list always reflects the latest submits / deletions.
     val searchHistory = uiState.searchHistory
+    // IMPROVE(online-search-autocomplete): live suggestions + loading state
+    // for the Online typing panel.
+    val searchSuggestions = uiState.searchSuggestions
+    val isLoadingSearchSuggestions = uiState.isLoadingSearchSuggestions
+
     LaunchedEffect(isOnlineSearch, searchQuery.isNotBlank()) {
         if (isOnlineSearch && searchQuery.isBlank()) {
             playerViewModel.loadSearchHistory()
         }
+    }
+    val onSuggestionSelected: (String) -> Unit = { suggestion ->
+        // IMPROVE(online-search-autocomplete): tapping a suggestion COMMITS
+        // it — the field text, the search-query state, the history entry and
+        // the FULL online search are driven by the single ViewModel call,
+        // then the keyboard and the suggestion panel hide and the existing
+        // results interface (filters + pagination) takes over.
+        searchQuery = suggestion
+        playerViewModel.selectSearchSuggestion(suggestion)
+        submittedQuery = suggestion
+        keyboardController?.hide()
     }
     val onHistoryQuerySelected: (String) -> Unit = { query ->
         searchQuery = query
         playerViewModel.updateSearchQuery(query)
         // Re-record so the tapped entry bubbles back to the top of recents.
         playerViewModel.onSearchQuerySubmitted(query)
+        // IMPROVE(online-search-autocomplete): selecting a history entry is a
+        // COMMITTED search — show the results, never the suggestion panel.
+        submittedQuery = query
+        playerViewModel.clearSearchSuggestions()
         keyboardController?.hide()
     }
     val onHistoryQueryFill: (String) -> Unit = { query ->
         searchQuery = query
         playerViewModel.updateSearchQuery(query)
+        // IMPROVE(online-search-autocomplete): filling an entry is EDITING,
+        // not submitting — the field gets focus, the keyboard opens, and (in
+        // Online mode) fresh autocomplete suggestions arrive for the query.
+        submittedQuery = null
         searchInputFocusRequester.requestFocus()
         keyboardController?.show()
     }
@@ -338,10 +398,22 @@ fun SearchScreen(
                             onQueryChange = {
                                 searchQuery = it
                                 playerViewModel.updateSearchQuery(it)
+                                // IMPROVE(online-search-autocomplete): every
+                                // edit returns the field to the TYPING state
+                                // — suggestions (not results) own the body
+                                // until the query is committed again.
+                                submittedQuery = null
                             },
                             onSearch = { query ->
                                 if (query.isNotBlank()) {
                                     playerViewModel.onSearchQuerySubmitted(query)
+                                    // IMPROVE(online-search-autocomplete): the
+                                    // keyboard's Search action COMMITS the
+                                    // typed query — even when suggestions never
+                                    // loaded or failed — and the normal full
+                                    // online search runs for it via the
+                                    // query-commit LaunchedEffect above.
+                                    submittedQuery = query
                                 }
                                 keyboardController?.hide()
                             },
@@ -368,6 +440,11 @@ fun SearchScreen(
                                         onClick = {
                                             searchQuery = ""
                                             playerViewModel.updateSearchQuery("")
+                                            // IMPROVE(online-search-autocomplete):
+                                            // clearing the field un-commits any
+                                            // previous search — the
+                                            // recent-searches landing takes over.
+                                            submittedQuery = null
                                         },
                                         modifier = Modifier
                                             .size(48.dp)
@@ -450,12 +527,19 @@ fun SearchScreen(
                 }
             }
 
-            // IMPROVE(search-history): three-way landing mode — history when
-            // the query is blank and Online is selected, genre grid when blank
-            // and Local is selected, otherwise the search results UI.
-            val searchBodyMode by remember(searchQuery, isOnlineSearch) {
+            // IMPROVE(search-history) + IMPROVE(online-search-autocomplete):
+            // four-way landing mode — autocomplete suggestions while a query
+            // is being TYPED in Online mode, history when the query is blank
+            // and Online is selected, genre grid when blank and Local is
+            // selected, and the search results UI for committed online
+            // queries and for Local searches.
+            val searchBodyMode by remember(searchQuery, isOnlineSearch, submittedQuery) {
                 derivedStateOf {
                     when {
+                        searchQuery.isNotBlank() && submittedQuery == searchQuery ->
+                            SearchBodyMode.RESULTS
+                        searchQuery.isNotBlank() && isOnlineSearch ->
+                            SearchBodyMode.SUGGESTIONS
                         searchQuery.isNotBlank() -> SearchBodyMode.RESULTS
                         isOnlineSearch -> SearchBodyMode.ONLINE_HISTORY
                         else -> SearchBodyMode.GENRE_BROWSE
@@ -519,6 +603,18 @@ fun SearchScreen(
                             onQueryFill = onHistoryQueryFill,
                             onDeleteEntry = onDeleteHistoryEntry,
                             onClearAll = onClearHistory,
+                            currentPlayingSongId = stablePlayerState.currentSong?.id
+                        )
+                    }
+
+                    // IMPROVE(online-search-autocomplete): the Online TYPING
+                    // body — live autocomplete suggestions from the active
+                    // provider, directly below the search field + mode toggle.
+                    SearchBodyMode.SUGGESTIONS -> {
+                        OnlineSearchSuggestionsSection(
+                            suggestions = searchSuggestions,
+                            isLoading = isLoadingSearchSuggestions,
+                            onSuggestionSelected = onSuggestionSelected,
                             currentPlayingSongId = stablePlayerState.currentSong?.id
                         )
                     }
@@ -643,7 +739,15 @@ fun SearchScreen(
         }.value ?: false
         val removeFromListTrigger = remember(currentSong) {
             {
-                searchQuery = "$searchQuery "
+                // IMPROVE(online-search-autocomplete): the space-append still
+                // forces a query CHANGE (re-running the search without the
+                // song that was just deleted from the device) — but the
+                // refreshed query is also COMMITTED so the results stay on
+                // screen instead of dropping back to the suggestion panel
+                // mid-flow.
+                val refreshedQuery = "$searchQuery "
+                searchQuery = refreshedQuery
+                submittedQuery = refreshedQuery
             }
         }
 
@@ -949,6 +1053,163 @@ private fun OnlineSearchHistoryRow(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 )
             }
+        }
+    }
+}
+
+/**
+ * IMPROVE(online-search-autocomplete): the Online TYPING body — live
+ * autocomplete suggestions from the active provider, shown while a query is
+ * being typed and has not been committed yet. Mirrors the recent-searches
+ * section's M3 expressive styling (smooth-corner cards on
+ * surfaceContainerLow) so the typing panel reads as the same surface the
+ * history and results lists use.
+ *
+ * Three visual states, all restrained by design:
+ *  - suggestions present -> the list (rows animate subtly as the provider
+ *    list changes under the user's typing),
+ *  - none yet + loading   -> a single small progress indicator that never
+ *    blocks text input,
+ *  - none + not loading   -> nothing (the query stays intact and the
+ *    keyboard's Search action still runs the full search).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun OnlineSearchSuggestionsSection(
+    suggestions: List<String>,
+    isLoading: Boolean,
+    onSuggestionSelected: (String) -> Unit,
+    // Reserve room for the bottom overlay (app navigation bar + mini player)
+    // exactly like the history / results lists do, so no row hides behind it
+    // when the keyboard is closed.
+    currentPlayingSongId: String? = null,
+    modifier: Modifier = Modifier
+) {
+    val localDensity = LocalDensity.current
+
+    val miniPlayerVisible = currentPlayingSongId != null
+    val bottomOverlay = if (miniPlayerVisible) {
+        bottomBarHeightDpForResults() + MiniPlayerHeight + MiniPlayerBottomSpacer + 24.dp
+    } else {
+        bottomBarHeightDpForResults() + 24.dp
+    }
+    val systemBarPaddingBottom =
+        WindowInsets.systemBars.asPaddingValues().calculateBottomPadding() + 94.dp
+    val legacyBottomPadding = MiniPlayerHeight + systemBarPaddingBottom
+    val suggestionsBottomPadding =
+        if (bottomOverlay > legacyBottomPadding) bottomOverlay else legacyBottomPadding
+
+    // The list must stay usable with the software keyboard open: while the
+    // IME is visible its inset replaces the bottom-overlay padding (that
+    // overlay sits BEHIND the keyboard), keeping every row scrollable to
+    // above the keyboard — the same policy the search results list applies.
+    val imePadding = WindowInsets.ime.getBottom(localDensity).dp
+
+    when {
+        suggestions.isEmpty() && isLoading -> {
+            Box(
+                modifier = modifier
+                    .fillMaxSize()
+                    .padding(top = 32.dp),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(28.dp),
+                    strokeWidth = 2.5.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
+        suggestions.isNotEmpty() -> {
+            LazyColumn(
+                modifier = modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(
+                    top = 4.dp,
+                    bottom = if (imePadding <= 8.dp) suggestionsBottomPadding else imePadding
+                )
+            ) {
+                items(
+                    suggestions,
+                    key = { "suggestion_$it" }
+                ) { suggestion ->
+                    SearchSuggestionRow(
+                        suggestion = suggestion,
+                        onClick = { onSuggestionSelected(suggestion) },
+                        // Subtle placement animation when the provider's list
+                        // changes under the user's typing.
+                        modifier = Modifier.animateItem()
+                    )
+                }
+            }
+        }
+
+        else -> {
+            // No suggestions (query below the provider's radar, or the fetch
+            // failed): render nothing — the typed query stays intact and the
+            // keyboard's Search action still runs the full search.
+        }
+    }
+}
+
+/**
+ * IMPROVE(online-search-autocomplete): a single autocomplete row — leading
+ * search icon + the provider's suggested query. Tapping it commits the
+ * suggestion (fills the field, records history and runs the full online
+ * search). Same smooth-corner card styling the recent-searches rows use so
+ * the two lists feel like one surface.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchSuggestionRow(
+    suggestion: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val rowShape = remember {
+        AbsoluteSmoothCornerShape(
+            cornerRadiusTL = 26.dp,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusTR = 26.dp,
+            smoothnessAsPercentBR = 60,
+            cornerRadiusBR = 26.dp,
+            smoothnessAsPercentBL = 60,
+            cornerRadiusBL = 26.dp,
+            smoothnessAsPercentTL = 60
+        )
+    }
+
+    Card(
+        onClick = onClick,
+        shape = rowShape,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Search,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = suggestion,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }

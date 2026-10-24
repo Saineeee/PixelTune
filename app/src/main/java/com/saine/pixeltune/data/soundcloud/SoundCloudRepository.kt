@@ -9,8 +9,10 @@ import com.saine.pixeltune.data.model.SearchFilterType
 import com.saine.pixeltune.data.model.SearchPage
 import com.saine.pixeltune.data.model.Song
 import com.saine.pixeltune.data.preferences.StreamingQuality
+import com.saine.pixeltune.data.search.SearchSuggestionUtils
 import com.saine.pixeltune.data.stream.CloudArtworkHelper
 import com.saine.pixeltune.data.surf.SoundCloudChartsParser
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -260,6 +262,31 @@ class SoundCloudRepository @Inject constructor(
         // existing callers — the search UI uses the paginated
         // [searchSoundCloudPaged] variant.
         return searchSoundCloudPaged(query, filter, proxyUrlProvider).results
+    }
+
+    /**
+     * IMPROVE(online-search-autocomplete): autocomplete suggestions for a
+     * partially typed online query, from NewPipe's SoundCloud suggestion
+     * extractor (the api-v2 /search/queries endpoint NewPipe itself uses —
+     * no API key, no extra dependency).
+     *
+     * The raw provider list is trimmed / de-blanked / de-duplicated and
+     * capped at [SearchSuggestionUtils.MAX_SUGGESTIONS] entries, preserving
+     * SoundCloud's relevance order. Best-effort by design: any network or
+     * extractor failure (including the SoundCloud client_id extraction)
+     * is logged (Timber) and returns an empty list — autocomplete must never
+     * break or block the normal search flow.
+     */
+    suspend fun getSuggestions(query: String): List<String> = withContext(Dispatchers.IO) {
+        val raw = try {
+            ServiceList.SoundCloud.suggestionExtractor.suggestionList(query)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w(e, "SoundCloud suggestion fetch failed for query: %s", query)
+            emptyList()
+        }
+        SearchSuggestionUtils.normalize(raw)
     }
 
     /**

@@ -87,6 +87,9 @@ class PlayerViewModelTest {
     private val _searchHistoryFlow = MutableStateFlow<ImmutableList<SearchHistoryItem>>(persistentListOf())
     private val _searchResultsFlow = MutableStateFlow<ImmutableList<SearchResultItem>>(persistentListOf())
     private val _selectedSearchFilterFlow = MutableStateFlow(SearchFilterType.ALL)
+    // IMPROVE(online-search-autocomplete): suggestion flows mirrored into uiState
+    private val _searchSuggestionsFlow = MutableStateFlow<ImmutableList<String>>(persistentListOf())
+    private val _isLoadingSuggestionsFlow = MutableStateFlow(false)
 
     @BeforeEach
     fun setUp() {
@@ -136,6 +139,11 @@ class PlayerViewModelTest {
         every { mockSearchStateHolder.searchHistory } returns _searchHistoryFlow
         every { mockSearchStateHolder.searchResults } returns _searchResultsFlow
         every { mockSearchStateHolder.selectedSearchFilter } returns _selectedSearchFilterFlow
+        // IMPROVE(online-search-autocomplete): the suggestion flows mirrored
+        // into the UI state — explicit stubs so the init collectors are
+        // deterministic.
+        every { mockSearchStateHolder.searchSuggestions } returns _searchSuggestionsFlow
+        every { mockSearchStateHolder.isLoadingSuggestions } returns _isLoadingSuggestionsFlow
         every { mockSearchStateHolder.loadSearchHistory(any()) } just runs
         every { mockSearchStateHolder.clearSearchHistory() } just runs
         every { mockSearchStateHolder.deleteSearchHistoryItem(any()) } just runs
@@ -463,6 +471,63 @@ class PlayerViewModelTest {
                 val emittedItem = awaitItem()
                 assertEquals(newFilter, emittedItem.selectedSearchFilter)
                 cancelAndConsumeRemainingEvents()
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("Search Suggestions")
+    inner class SearchSuggestionTests {
+
+        @Test
+        fun `selecting a suggestion executes the normal search with the selected query`() = runTest {
+            playerViewModel.selectSearchSuggestion("one piece opening 1")
+
+            // The committed query is exposed for the search field.
+            assertEquals("one piece opening 1", playerViewModel.searchQuery)
+            // It is recorded in the search history with the same rules as a
+            // normal submit...
+            verify(exactly = 1) { mockSearchStateHolder.onSearchQuerySubmitted("one piece opening 1") }
+            // ...and it runs through the EXISTING search pipeline.
+            verify(exactly = 1) { mockSearchStateHolder.performSearch("one piece opening 1") }
+            // The suggestion panel hides and pending requests are invalidated.
+            verify(exactly = 1) { mockSearchStateHolder.clearSuggestions() }
+        }
+
+        @Test
+        fun `selecting a blank suggestion is a no-op`() = runTest {
+            playerViewModel.selectSearchSuggestion("   ")
+
+            assertEquals("", playerViewModel.searchQuery)
+            verify(exactly = 0) { mockSearchStateHolder.onSearchQuerySubmitted(any()) }
+            verify(exactly = 0) { mockSearchStateHolder.performSearch(any()) }
+            verify(exactly = 0) { mockSearchStateHolder.clearSuggestions() }
+        }
+
+        @Test
+        fun `requestSearchSuggestions and clearSearchSuggestions delegate to the state holder`() = runTest {
+            playerViewModel.requestSearchSuggestions("one piece")
+            playerViewModel.clearSearchSuggestions()
+
+            verify(exactly = 1) { mockSearchStateHolder.requestSuggestions("one piece") }
+            verify(exactly = 1) { mockSearchStateHolder.clearSuggestions() }
+        }
+
+        @Test
+        fun `uiState mirrors the suggestion state flows`() = runTest {
+            val suggestions = listOf("one piece opening", "one piece ost")
+
+            playerViewModel.playerUiState.test {
+                var state = awaitItem()
+                while (state.searchSuggestions != suggestions) {
+                    _searchSuggestionsFlow.value = suggestions.toImmutableList()
+                    _isLoadingSuggestionsFlow.value = true
+                    state = awaitItem()
+                }
+
+                assertEquals(suggestions, state.searchSuggestions)
+                assertTrue(state.isLoadingSearchSuggestions)
+                cancelAndIgnoreRemainingEvents()
             }
         }
     }

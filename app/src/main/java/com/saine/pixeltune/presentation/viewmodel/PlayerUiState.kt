@@ -70,6 +70,13 @@ data class PlayerUiState(
     // IMPROVE(search-load-more): a "Load more" page is currently in flight —
     // the row renders a progress indicator instead of the button.
     val isLoadingMoreSearchResults: Boolean = false,
+    // IMPROVE(online-search-autocomplete): live autocomplete suggestions for
+    // the currently typed ONLINE query (empty when none apply) and whether a
+    // suggestion request is in flight. Kept separate from searchResults on
+    // purpose — suggestions belong to the TYPING state, results to a
+    // committed search.
+    val searchSuggestions: ImmutableList<String> = persistentListOf(),
+    val isLoadingSearchSuggestions: Boolean = false,
     val isSyncingLibrary: Boolean = false,
     val selectedSearchFilter: SearchFilterType = SearchFilterType.ALL,
     val currentStorageFilter: com.saine.pixeltune.data.model.StorageFilter = com.saine.pixeltune.data.model.StorageFilter.ALL,

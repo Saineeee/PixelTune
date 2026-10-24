@@ -8,6 +8,8 @@ import com.saine.pixeltune.data.model.SearchResultItem
 import com.saine.pixeltune.data.model.SearchFilterType
 import com.saine.pixeltune.data.model.SearchPage
 import com.saine.pixeltune.data.model.Song
+import com.saine.pixeltune.data.search.SearchSuggestionUtils
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
@@ -210,6 +212,30 @@ class YouTubeRepository @Inject constructor(
         // existing callers (queue refill, provider handoff, playlist import) —
         // the search UI uses the paginated [searchYouTubePaged] variant.
         return searchYouTubePaged(query, filter, proxyUrlProvider).results
+    }
+
+    /**
+     * IMPROVE(online-search-autocomplete): autocomplete suggestions for a
+     * partially typed online query, from NewPipe's YouTube suggestion
+     * extractor (the public suggestqueries endpoint the NewPipe app itself
+     * uses — no API key, no extra dependency).
+     *
+     * The raw provider list is trimmed / de-blanked / de-duplicated and
+     * capped at [SearchSuggestionUtils.MAX_SUGGESTIONS] entries, preserving
+     * YouTube's relevance order. Best-effort by design: any network or
+     * extractor failure is logged (Timber) and returns an empty list —
+     * autocomplete must never break or block the normal search flow.
+     */
+    suspend fun getSuggestions(query: String): List<String> = withContext(Dispatchers.IO) {
+        val raw = try {
+            ServiceList.YouTube.suggestionExtractor.suggestionList(query)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w(e, "YouTube suggestion fetch failed for query: %s", query)
+            emptyList()
+        }
+        SearchSuggestionUtils.normalize(raw)
     }
 
     /**

@@ -1836,6 +1836,29 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
+        // IMPROVE(online-search-autocomplete): mirror the Online typing
+        // panel's suggestion list + loading flag into the UI state the
+        // Search screen consumes.
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.combine(
+                searchStateHolder.searchSuggestions,
+                searchStateHolder.isLoadingSuggestions
+            ) { suggestions, loading ->
+                suggestions to loading
+            }.collect { (suggestions, loading) ->
+                _playerUiState.update {
+                    if (it.searchSuggestions == suggestions && it.isLoadingSearchSuggestions == loading) {
+                        it
+                    } else {
+                        it.copy(
+                            searchSuggestions = suggestions,
+                            isLoadingSearchSuggestions = loading
+                        )
+                    }
+                }
+            }
+        }
+
         viewModelScope.launch {
             searchStateHolder.isOnlineSearch.collect { isOnline ->
                 _playerUiState.update {
@@ -3888,6 +3911,41 @@ class PlayerViewModel @Inject constructor(
 
     fun clearSearchHistory() {
         searchStateHolder.clearSearchHistory()
+    }
+
+    // ---------------------------------------------------------------------
+    // IMPROVE(online-search-autocomplete): delegates for the Online typing
+    // panel — SearchStateHolder owns the provider requests and the suggestion
+    // state; the ViewModel only forwards, exactly like every other search
+    // operation, so no network or provider logic lives in the UI.
+    // ---------------------------------------------------------------------
+
+    /** Fetches autocomplete suggestions for the (still being typed) [query]. */
+    fun requestSearchSuggestions(query: String) {
+        searchStateHolder.requestSuggestions(query)
+    }
+
+    /** Hides the suggestion panel and invalidates any in-flight request. */
+    fun clearSearchSuggestions() {
+        searchStateHolder.clearSuggestions()
+    }
+
+    /**
+     * IMPROVE(online-search-autocomplete): COMMITS a tapped autocomplete
+     * suggestion — identical semantics to submitting the query from the
+     * keyboard: the search field's text updates, the query is recorded in
+     * the search history (same dedupe rules as a normal submit), the FULL
+     * online search pipeline runs for it, and the suggestion panel hides.
+     * The UI additionally keeps its local field state in sync and hides the
+     * keyboard.
+     */
+    fun selectSearchSuggestion(suggestion: String) {
+        val query = suggestion.trim()
+        if (query.isBlank()) return
+        searchQuery = query
+        searchStateHolder.onSearchQuerySubmitted(query)
+        searchStateHolder.performSearch(query)
+        searchStateHolder.clearSuggestions()
     }
 
     fun clearQueueExceptCurrent() {
