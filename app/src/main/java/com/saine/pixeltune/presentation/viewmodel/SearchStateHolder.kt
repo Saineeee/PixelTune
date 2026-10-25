@@ -718,6 +718,25 @@ class SearchStateHolder @Inject constructor(
             }
         }
 
+        // FIX(search-suggestions-glitch): the online loading flag used to be
+        // raised only AFTER the 300ms search debounce (inside the collector),
+        // so the window between the last keystroke and the debounced fetch
+        // showed isSearching = false while the HELD results still belonged to
+        // the PREVIOUS (shorter) query. Committing inside that window — IME
+        // search, a suggestion tap, a history row tap or backing out of the
+        // compose phase — swapped the body to RESULTS and flashed those STALE
+        // rows first, then crossfaded to the loading skeleton, then to the
+        // fresh results: a visible double-flash glitch right at the moment
+        // the suggestion list handed over to the results.
+        //
+        // Raising the flag the moment a non-blank ONLINE query is issued
+        // keeps the results area in its loading state continuously from
+        // keystroke to fresh results — the "results kept loading while you
+        // composed" promise, now literally true. Local searches stay exempt
+        // (they resolve synchronously from MediaStore), and a blank query
+        // still collapses the flag exactly like the collector's blank branch.
+        _isSearching.value = _isOnlineSearch.value && normalizedQuery.isNotBlank()
+
         // IMPROVE(search-suggestions): every search trigger is also a
         // potential autocomplete trigger — typing in the search bar routes
         // through here (SearchScreen's LaunchedEffect on the query), so the

@@ -22,9 +22,11 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
@@ -753,7 +755,34 @@ class MainActivity : ComponentActivity() {
                     }
                 },
                 bottomBar = {
-                    if (!shouldHideNavigationBar) {
+                    // FIX(search-suggestions-glitch): the bottom bar used to be
+                    // added / removed by a bare `if`, so entering or leaving the
+                    // Search screen's compose phase (onSearchBarActiveChange)
+                    // popped the whole bar away in a SINGLE frame — while the
+                    // search body's AnimatedContent transition (320ms), the IME
+                    // animation (~300ms) and the mini player's snapped target
+                    // (sheetCollapsedTargetY derives from this slot's measured
+                    // height) all moved at their own speeds. The one-frame pop
+                    // racing three other animations read as clipping / glitchy
+                    // jank exactly at those moments.
+                    //
+                    // Animating the slot instead (the app's vertical slide +
+                    // fade language, tucked toward the screen's bottom edge like
+                    // the nav bar's existing player-expansion tuck) makes the
+                    // Scaffold re-measure the slot per frame, so innerPadding —
+                    // and with it the mini player's collapsed target — GLIDE in
+                    // lockstep with the bar. Nothing snaps anymore.
+                    AnimatedVisibility(
+                        visible = !shouldHideNavigationBar,
+                        enter = expandVertically(
+                            animationSpec = tween(durationMillis = 220),
+                            expandFrom = Alignment.Bottom
+                        ) + fadeIn(animationSpec = tween(durationMillis = 150)),
+                        exit = shrinkVertically(
+                            animationSpec = tween(durationMillis = 200),
+                            shrinkTowards = Alignment.Bottom
+                        ) + fadeOut(animationSpec = tween(durationMillis = 120))
+                    ) {
                         val playerContentExpansionFraction = playerViewModel.playerContentExpansionFraction.value
                         val currentSongId by remember {
                             playerViewModel.stablePlayerState

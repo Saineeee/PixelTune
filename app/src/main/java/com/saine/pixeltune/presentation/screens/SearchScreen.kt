@@ -16,6 +16,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -76,9 +77,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -592,17 +596,44 @@ fun SearchScreen(
                             },
                             trailingIcon = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    // IMPROVE(search-suggestions): compact
-                                    // expressive loading indicator while the LIVE
-                                    // suggestions for the latest keystroke are in
-                                    // flight — the same morphing Material 3
-                                    // LoadingIndicator the results loading state
-                                    // uses, sized for the search bar.
-                                    if (isLoadingSuggestions && isOnlineSearch && searchQuery.isNotBlank()) {
-                                        LoadingIndicator(
-                                            modifier = Modifier.size(22.dp),
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
+                                    // FIX(search-suggestions-glitch): the compact
+                                    // morphing loading indicator used to pop in
+                                    // and out of this row as a bare conditional,
+                                    // so the clear button — and with it the query
+                                    // text's width — visibly JUMPED horizontally
+                                    // every time a suggestion fetch started or
+                                    // finished: several layout snaps per typed
+                                    // word. The slot now RESERVES its width
+                                    // whenever a query is present and only
+                                    // crossfades the indicator in and out of it,
+                                    // so the trailing area stays rock-stable
+                                    // while typing. It is also gated on the
+                                    // compose phase itself — the spinner belongs
+                                    // to the live suggestion list, not to the
+                                    // committed results view.
+                                    if (searchQuery.isNotBlank()) {
+                                        val showSuggestionSpinner =
+                                            isLoadingSuggestions && isOnlineSearch && isSearchEditing
+                                        Crossfade(
+                                            targetState = showSuggestionSpinner,
+                                            animationSpec = tween(durationMillis = 150),
+                                            label = "search_trailing_spinner"
+                                        ) { show ->
+                                            Box(
+                                                modifier = Modifier.size(
+                                                    width = 26.dp,
+                                                    height = 22.dp
+                                                ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (show) {
+                                                    LoadingIndicator(
+                                                        modifier = Modifier.size(22.dp),
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+                                        }
                                         Spacer(modifier = Modifier.width(8.dp))
                                     }
                                     if (searchQuery.isNotBlank()) {
@@ -697,7 +728,14 @@ fun SearchScreen(
             // TWO-PHASE search — suggestions while the user is composing a
             // non-blank Online query, results once it is committed, history
             // when Online + blank, genre grid when Local + blank.
-            val searchBodyMode by remember(searchQuery, isOnlineSearch, isSearchEditing) {
+            // FIX(search-suggestions-glitch): the mode state machine is a
+            // plain remembered derivedStateOf — every input it reads
+            // (searchQuery / isOnlineSearch / isSearchEditing) is a tracked
+            // State, so keying the remember block on the same values only
+            // forced a throwaway re-creation of the whole derived state on
+            // EVERY KEYSTROKE, recomposing the AnimatedContent's parent for
+            // nothing right as the suggestion list was updating.
+            val searchBodyMode by remember {
                 derivedStateOf {
                     when {
                         isOnlineSearch && searchQuery.isNotBlank() && isSearchEditing ->
@@ -708,8 +746,22 @@ fun SearchScreen(
                     }
                 }
             }
+            // FIX(search-suggestions-glitch): the body transition used to run
+            // with SizeTransform(clip = false) — during EVERY mode swap the
+            // sliding enter/exit pairs (offset up to 1/10 of the BODY height)
+            // drew OUTSIDE the body slot: the exiting list visibly slid over
+            // the Local/Online toggle row and the search bar above it, and the
+            // GENRE_BROWSE enter came down over them. That overshoot is what
+            // read as content "clipping" at exactly those moments. Clipping
+            // the transition to the body's own bounds (clip = true + an
+            // explicit clipToBounds on the container) masks the overflow at
+            // the slot edge, so the bodies now read as sliding UNDER the
+            // header chrome — the app's standard masked-transition language.
             AnimatedContent(
                 targetState = searchBodyMode,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clipToBounds(),
                 transitionSpec = {
                     val switchingToGenre = targetState == SearchBodyMode.GENRE_BROWSE
                     val enter = fadeIn(animationSpec = tween(durationMillis = 320, delayMillis = 70)) +
@@ -720,7 +772,7 @@ fun SearchScreen(
                         slideOutVertically(animationSpec = tween(durationMillis = 220)) { fullHeight ->
                             if (switchingToGenre) fullHeight / 12 else -fullHeight / 12
                         }
-                    (enter togetherWith exit).using(SizeTransform(clip = false))
+                    (enter togetherWith exit).using(SizeTransform(clip = true))
                 },
                 label = "search_mode_transition"
             ) { bodyMode ->
@@ -1273,8 +1325,15 @@ private fun OnlineSearchSuggestionsSection(
             Column(
                 modifier = modifier
                     .fillMaxSize()
+                    // FIX(search-suggestions-glitch): the skeleton branch used
+                    // to ignore the IME / navigation-bar insets entirely, so
+                    // while the keyboard was up (its exactly-when state) the
+                    // indicator + shimmer rows rendered UNDER the keyboard.
+                    // The list branch's own bottom padding now bounds the
+                    // skeleton too.
                     .padding(horizontal = 16.dp)
                     .verticalScroll(rememberScrollState())
+                    .padding(bottom = bottomPadding)
             ) {
                 Spacer(modifier = Modifier.height(20.dp))
                 Box(
@@ -1312,13 +1371,20 @@ private fun OnlineSearchSuggestionsSection(
                     }
                 ) { index ->
                     val item = historyMatches[index]
+                    // FIX(search-suggestions-glitch): no animateItem() here —
+                    // every keystroke produces an ALL-NEW key set for the
+                    // suggestion rows, so animateItem's appearance animation
+                    // re-ran for the WHOLE list on every suggestion arrival,
+                    // visibly blinking / flickering the list while typing.
+                    // The list is small and swaps wholesale — an instant swap
+                    // (keys kept for identity) is exactly how YouTube Music /
+                    // Spotify autocomplete behaves.
                     SearchSuggestionRow(
                         text = item.query,
                         query = query,
                         leadingIcon = Icons.Rounded.History,
                         onRowClick = { onSuggestionSelected(item.query) },
-                        onFillClick = { onSuggestionFill(item.query) },
-                        modifier = Modifier.animateItem()
+                        onFillClick = { onSuggestionFill(item.query) }
                     )
                 }
                 items(
@@ -1331,8 +1397,7 @@ private fun OnlineSearchSuggestionsSection(
                         query = query,
                         leadingIcon = Icons.Rounded.Search,
                         onRowClick = { onSuggestionSelected(suggestion) },
-                        onFillClick = { onSuggestionFill(suggestion) },
-                        modifier = Modifier.animateItem()
+                        onFillClick = { onSuggestionFill(suggestion) }
                     )
                 }
                 // IMPROVE(search-suggestions): the idle empty state — the
@@ -1342,8 +1407,7 @@ private fun OnlineSearchSuggestionsSection(
                     item(key = "suggestion_search_exact") {
                         SearchSuggestionFallbackRow(
                             query = query,
-                            onSearchExact = onSearchExact,
-                            modifier = Modifier.animateItem()
+                            onSearchExact = onSearchExact
                         )
                     }
                 }
@@ -1439,39 +1503,40 @@ private fun SearchSuggestionRow(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.width(12.dp))
+            // FIX(search-suggestions-glitch): the two-tone de-emphasis used to
+            // be TWO separate Texts in a Row — the typed half had
+            // TextOverflow.Clip, so long suggestions were cut MID-CHARACTER
+            // (a hard, glitchy-looking edge) and the row's width danced as
+            // the two halves re-measured. A single AnnotatedString Text keeps
+            // the exact same two-tone styling (de-emphasized typed part +
+            // medium-weight completion) while ellipsizing cleanly at the end,
+            // exactly like YouTube Music's autocomplete rows.
             val typed = query.trim()
-            if (typed.isNotEmpty() && text.startsWith(typed, ignoreCase = true)) {
-                Row(
-                    modifier = Modifier.weight(1f, fill = false)
-                ) {
-                    Text(
-                        text = text.substring(0, typed.length),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Clip,
-                        modifier = Modifier.alignByBaseline()
-                    )
-                    Text(
-                        text = text.substring(typed.length),
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.alignByBaseline()
-                    )
+            val emphasisColor = MaterialTheme.colorScheme.onSurface
+            val deEmphasisColor = MaterialTheme.colorScheme.onSurfaceVariant
+            val annotatedSuggestion = remember(text, typed, emphasisColor, deEmphasisColor) {
+                buildAnnotatedString {
+                    if (typed.isNotEmpty() && text.startsWith(typed, ignoreCase = true)) {
+                        withStyle(SpanStyle(color = deEmphasisColor)) {
+                            append(text.substring(0, typed.length))
+                        }
+                        withStyle(SpanStyle(color = emphasisColor, fontWeight = FontWeight.Medium)) {
+                            append(text.substring(typed.length))
+                        }
+                    } else {
+                        withStyle(SpanStyle(color = emphasisColor)) {
+                            append(text)
+                        }
+                    }
                 }
-            } else {
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false)
-                )
             }
+            Text(
+                text = annotatedSuggestion,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
             // Fill this suggestion into the search bar without committing it.
             IconButton(onClick = onFillClick, modifier = Modifier.size(40.dp)) {
                 Icon(
@@ -1532,22 +1597,33 @@ private fun SearchSuggestionFallbackRow(
                 tint = MaterialTheme.colorScheme.onSecondaryContainer
             )
             Spacer(modifier = Modifier.width(12.dp))
+            // FIX(search-suggestions-glitch): same single-AnnotatedString
+            // treatment as the suggestion rows — one Text, clean ellipsis,
+            // no mid-character clipping and no re-measure dance between two
+            // sibling Texts.
+            val onSecondaryContainer = MaterialTheme.colorScheme.onSecondaryContainer
+            val fallbackLabel = remember(query, onSecondaryContainer) {
+                val trimmed = query.trim()
+                buildAnnotatedString {
+                    withStyle(SpanStyle(color = onSecondaryContainer)) {
+                        append("Search for ")
+                    }
+                    withStyle(
+                        SpanStyle(
+                            color = onSecondaryContainer,
+                            fontWeight = FontWeight.Medium
+                        )
+                    ) {
+                        append("\"$trimmed\"")
+                    }
+                }
+            }
             Text(
-                text = "Search for ",
+                text = fallbackLabel,
                 style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                maxLines = 1,
-                overflow = TextOverflow.Clip,
-                modifier = Modifier.alignByBaseline()
-            )
-            Text(
-                text = "\"${query.trim()}\"",
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.alignByBaseline()
+                modifier = Modifier.weight(1f, fill = false)
             )
         }
     }
