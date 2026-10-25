@@ -13,6 +13,7 @@ import com.saine.pixeltune.data.youtube.YouTubeRepository
 import com.saine.pixeltune.data.youtube.YouTubeStreamProxy
 import com.saine.pixeltune.data.soundcloud.SoundCloudRepository
 import com.saine.pixeltune.data.soundcloud.SoundCloudStreamProxy
+import android.util.LruCache
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
@@ -58,12 +59,43 @@ class SearchStateHolder @Inject constructor(
 ) {
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 300L
+
+        /**
+         * IMPROVE(search-suggestions): autocomplete suggestions debounce —
+         * deliberately FASTER than the search debounce above so the dropdown
+         * reacts to the user's keystrokes noticeably before the (heavier)
+         * search results page lands, exactly like Spotify / YT Music's
+         * suggestion sheets do.
+         */
+        const val SUGGESTION_DEBOUNCE_MS = 200L
+
+        /** IMPROVE(search-suggestions): max suggestions kept per query. */
+        const val MAX_SUGGESTIONS = 10
+
+        /**
+         * IMPROVE(search-suggestions): entries in the per-session suggestion
+         * cache (provider-tagged query -> suggestions). Small on purpose —
+         * covers the "type, delete a char, retype" pattern instantly.
+         */
+        const val SUGGESTION_CACHE_SIZE = 24
     }
 
     private data class SearchRequest(
         val query: String,
         val requestId: Long,
         val isOnline: Boolean
+    )
+
+    /**
+     * IMPROVE(search-suggestions): one debounced autocomplete request —
+     * [requestId] races newer requests exactly like [SearchRequest] does for
+     * the search flow, and [provider] remembers which online provider the
+     * suggestions belong to.
+     */
+    private data class SuggestionRequest(
+        val query: String,
+        val requestId: Long,
+        val provider: OnlineProvider
     )
 
     enum class OnlineProvider {
@@ -75,6 +107,12 @@ class SearchStateHolder @Inject constructor(
 
     fun setOnlineProvider(provider: OnlineProvider) {
         _currentProvider.value = provider
+        // IMPROVE(search-suggestions): the provider changed — whatever
+        // suggestions are currently held belong to the OLD provider's index,
+        // so drop them (and the request that would publish them) right now.
+        // The next keystroke re-requests for the NEW provider; the per-session
+        // cache stays valid because its keys are provider-tagged.
+        resetSuggestionState()
     }
 
     /**
@@ -156,6 +194,61 @@ class SearchStateHolder @Inject constructor(
     private val _searchHistory = MutableStateFlow<ImmutableList<SearchHistoryItem>>(persistentListOf())
     val searchHistory = _searchHistory.asStateFlow()
 
+    // =================================================================================
+    // IMPROVE(search-suggestions): LIVE autocomplete suggestions for the Online
+    // search mode.
+    //
+    // Mirrors the search-request pipeline above (debounced SharedFlow +
+    // racing request ids + collectLatest), but with three deliberate
+    // differences so it feels like Spotify / YT Music's suggestion sheets:
+    //
+    //   1. FASTER debounce (200ms vs the search's 300ms) — suggestions are one
+    //      tiny request and should land before the results page does.
+    //   2. A small per-session cache keyed by provider + query, so the common
+    //      "type a char, delete it, retype" dance resolves INSTANTLY from
+    //      memory instead of hammering the suggestion endpoint.
+    //   3. Failures are silent — suggestions are a progressive enhancement,
+    //      never a user-facing error (the dropdown simply collapses).
+    //
+    // Only the ONLINE mode ever requests suggestions (Local search searches
+    // the device's MediaStore and has no remote suggestion source).
+    // =================================================================================
+
+    /** The suggestions for the CURRENT (trimmed) query — empty when none. */
+    private val _searchSuggestions = MutableStateFlow<ImmutableList<String>>(persistentListOf())
+    val searchSuggestions = _searchSuggestions.asStateFlow()
+
+    /**
+     * True while the suggestions for the latest keystroke are being fetched
+     * — drives the compact expressive loading indicator in the search bar's
+     * trailing slot and the dropdown's skeleton state.
+     */
+    private val _isLoadingSuggestions = MutableStateFlow(false)
+    val isLoadingSuggestions = _isLoadingSuggestions.asStateFlow()
+
+    private val suggestionRequests = MutableSharedFlow<SuggestionRequest>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
+    private val latestSuggestionRequestId = AtomicLong(0L)
+
+    private var suggestionJob: Job? = null
+
+    /**
+     * The (provider, query) the last emitted suggestion request belongs to —
+     * dedupes re-requests triggered by filter changes / mode toggles that
+     * did NOT change what the user typed.
+     */
+    private var lastSuggestionRequestKey: String? = null
+
+    /**
+     * Per-session suggestion cache (provider-tagged query -> cleaned
+     * suggestions). [LruCache] is internally synchronized, so the collector
+     * coroutine and the request emitters can share it safely.
+     */
+    private val suggestionCache = LruCache<String, ImmutableList<String>>(SUGGESTION_CACHE_SIZE)
+
     private val _isOnlineSearch = MutableStateFlow(true)
     val isOnlineSearch = _isOnlineSearch.asStateFlow()
 
@@ -183,6 +276,7 @@ class SearchStateHolder @Inject constructor(
     fun initialize(scope: CoroutineScope) {
         this.scope = scope
         observeSearchRequests()
+        observeSuggestionRequests()
         // IMPROVE(history-limit-settings): observe the "Max Search History"
         // preference. On change: trim the STORED history down to the new cap
         // (a lowered slider shrinks the collected history immediately — not
@@ -440,6 +534,128 @@ class SearchStateHolder @Inject constructor(
         _isOnlineSearch.value = isOnline
     }
 
+    /**
+     * IMPROVE(search-suggestions): the debounced autocomplete pipeline.
+     *
+     * collectLatest cancels the in-flight suggestion request the moment a
+     * newer keystroke lands (the request-id guard then keeps the older
+     * response from publishing), the per-session cache short-circuits the
+     * network for recently seen (provider, query) pairs, and every failure
+     * collapses to "no suggestions" without ever surfacing an error.
+     */
+    private fun observeSuggestionRequests() {
+        suggestionJob?.cancel()
+        suggestionJob = scope?.launch {
+            suggestionRequests
+                .debounce(SUGGESTION_DEBOUNCE_MS)
+                .collectLatest { request ->
+                    // Cache hit — publish instantly, no loading flash.
+                    val cached = suggestionCache.get(cacheKeyFor(request.provider, request.query))
+                    if (cached != null) {
+                        _isLoadingSuggestions.value = false
+                        if (_searchSuggestions.value != cached) {
+                            _searchSuggestions.value = cached
+                        }
+                        return@collectLatest
+                    }
+
+                    _isLoadingSuggestions.value = true
+                    try {
+                        val fetched = withContext(Dispatchers.IO) {
+                            if (request.provider == OnlineProvider.YOUTUBE) {
+                                youTubeRepository.getSearchSuggestions(request.query)
+                            } else {
+                                soundCloudRepository.getSearchSuggestions(request.query)
+                            }
+                        }
+
+                        val cleaned = fetched
+                            .asSequence()
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() && !it.equals(request.query, ignoreCase = true) }
+                            .distinct()
+                            .take(MAX_SUGGESTIONS)
+                            .toImmutableList()
+
+                        suggestionCache.put(cacheKeyFor(request.provider, request.query), cleaned)
+
+                        if (request.requestId == latestSuggestionRequestId.get()) {
+                            _isLoadingSuggestions.value = false
+                            if (_searchSuggestions.value != cleaned) {
+                                _searchSuggestions.value = cleaned
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // IMPROVE(search-suggestions): suggestion failures are
+                        // silent by design — a bot-check HTML page, a timeout,
+                        // or airplane mode simply collapse the dropdown; the
+                        // actual search flow is never disturbed.
+                        if (request.requestId == latestSuggestionRequestId.get()) {
+                            Log.e(
+                                "SearchStateHolder",
+                                "Error fetching search suggestions for query: ${request.query}",
+                                e
+                            )
+                            _isLoadingSuggestions.value = false
+                            _searchSuggestions.value = persistentListOf()
+                        }
+                    }
+                }
+        }
+    }
+
+    /**
+     * IMPROVE(search-suggestions): emits an autocomplete request for [query]
+     * when (and only when) it makes sense — Online mode, a non-blank query,
+     * and something that actually changed since the last request.
+     */
+    private fun maybeRequestSuggestions(query: String) {
+        if (!_isOnlineSearch.value) {
+            // Local mode has no remote suggestion source — drop any stale
+            // Online suggestions immediately.
+            resetSuggestionState()
+            return
+        }
+
+        if (query.isBlank()) {
+            // A blank query has nothing to autocomplete — drop whatever is
+            // held so a stale list can never re-appear on the next keystroke.
+            resetSuggestionState()
+            return
+        }
+
+        val provider = _currentProvider.value
+        val requestKey = cacheKeyFor(provider, query)
+        if (requestKey == lastSuggestionRequestKey) return
+        lastSuggestionRequestKey = requestKey
+
+        val requestId = latestSuggestionRequestId.incrementAndGet()
+        suggestionRequests.tryEmit(SuggestionRequest(query, requestId, provider))
+    }
+
+    /**
+     * IMPROVE(search-suggestions): drops the held suggestions + loading flag
+     * and forgets the last request key (so the same query is re-requested the
+     * next time it becomes relevant). Used when the query goes blank, when
+     * Local mode takes over, and when the online provider switches.
+     */
+    private fun resetSuggestionState() {
+        lastSuggestionRequestKey = null
+        _isLoadingSuggestions.value = false
+        if (_searchSuggestions.value.isNotEmpty()) {
+            _searchSuggestions.value = persistentListOf()
+        }
+    }
+
+    /**
+     * IMPROVE(search-suggestions): provider-tagged cache key — suggestions
+     * from YouTube and SoundCloud never collide.
+     */
+    private fun cacheKeyFor(provider: OnlineProvider, query: String): String =
+        "${provider.name}:$query"
+
     fun loadSearchHistory(limit: Int = 0) {
         // IMPROVE(history-limit-settings): no explicit limit → use the user's
         // configured cap (Settings -> Appearance). An explicit positive limit
@@ -486,6 +702,13 @@ class SearchStateHolder @Inject constructor(
             }
         }
 
+        // IMPROVE(search-suggestions): every search trigger is also a
+        // potential autocomplete trigger — typing in the search bar routes
+        // through here (SearchScreen's LaunchedEffect on the query), so the
+        // suggestion request rides along with the search request while
+        // keeping its own, faster debounce + race handling.
+        maybeRequestSuggestions(normalizedQuery)
+
         searchRequests.tryEmit(SearchRequest(normalizedQuery, requestId, _isOnlineSearch.value))
     }
 
@@ -517,6 +740,7 @@ class SearchStateHolder @Inject constructor(
 
     fun onCleared() {
         searchJob?.cancel()
+        suggestionJob?.cancel()
         scope = null
     }
 }

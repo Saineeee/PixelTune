@@ -213,6 +213,30 @@ class YouTubeRepository @Inject constructor(
     }
 
     /**
+     * IMPROVE(search-suggestions): LIVE autocomplete suggestions for the
+     * Online search — NewPipe's [SuggestionExtractor] for YouTube queries
+     * YouTube's official suggestion endpoint
+     * (suggestqueries-clients6.youtube.com/complete/search) in real time.
+     *
+     * Nothing is hardcoded: every keystroke's suggestion list is fetched from
+     * the network through the app's [NewPipeDownloader], which applies the
+     * same browser User-Agent / Accept-Language policy the regular YouTube
+     * search page requests already use (bot-check avoidance). The suggestions
+     * therefore track whatever YouTube currently recommends for the partial
+     * query — region-localized through NewPipe's content-country handling.
+     *
+     * Throws on network / parsing failures (bot-check HTML instead of JSON,
+     * timeouts, …) — the caller ([SearchStateHolder]) treats any failure as
+     * "no suggestions for this keystroke" and silently drops the suggestion
+     * dropdown, so a flaky suggestion endpoint can never disturb the actual
+     * search flow.
+     */
+    suspend fun getSearchSuggestions(query: String): List<String> = withContext(Dispatchers.IO) {
+        val extractor = ServiceList.YouTube.getSuggestionExtractor()
+        extractor.suggestionList(query)
+    }
+
+    /**
      * IMPROVE(search-load-more): the PAGED YouTube Music search — one page of
      * results plus the provider's continuation token, so the search screen can
      * offer "Load more" on EVERY filter chip (All / Songs / Albums / Artists /

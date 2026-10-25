@@ -478,6 +478,25 @@ class SoundCloudRepository @Inject constructor(
     }
 
     /**
+     * IMPROVE(search-suggestions): LIVE autocomplete suggestions for the
+     * Online search — NewPipe's [SuggestionExtractor] for SoundCloud queries
+     * the public api-v2.soundcloud.com/search/queries autocomplete endpoint
+     * in real time (the same endpoint the SoundCloud website's own search box
+     * uses, resolved through the shared SoundCloud client_id NewPipe already
+     * caches for the regular search flow).
+     *
+     * Nothing is hardcoded: every keystroke's suggestion list comes straight
+     * from the network. Throws on network / parsing failures — the caller
+     * ([SearchStateHolder]) treats any failure as "no suggestions for this
+     * keystroke" and silently drops the suggestion dropdown, so a flaky
+     * suggestion endpoint can never disturb the actual search flow.
+     */
+    suspend fun getSearchSuggestions(query: String): List<String> = withContext(Dispatchers.IO) {
+        val extractor = ServiceList.SoundCloud.getSuggestionExtractor()
+        extractor.suggestionList(query)
+    }
+
+    /**
      * IMPROVE(search-load-more): loads the NEXT page of a SoundCloud search
      * started by [searchSoundCloudPaged] — [previousPage] is the page the UI
      * holds; its continuation token is the opaque NewPipe `Page` this

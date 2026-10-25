@@ -1844,6 +1844,30 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
+        // IMPROVE(search-suggestions): mirror the LIVE autocomplete suggestion
+        // state (list + loading flag) into the UI state the Search screen's
+        // suggestion dropdown consumes. Same no-op-guard pattern as the
+        // pagination flags above so identical emissions don't recompose.
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.combine(
+                searchStateHolder.searchSuggestions,
+                searchStateHolder.isLoadingSuggestions
+            ) { suggestions, loading ->
+                suggestions to loading
+            }.collect { (suggestions, loading) ->
+                _playerUiState.update {
+                    if (it.searchSuggestions == suggestions && it.isLoadingSuggestions == loading) {
+                        it
+                    } else {
+                        it.copy(
+                            searchSuggestions = suggestions,
+                            isLoadingSuggestions = loading
+                        )
+                    }
+                }
+            }
+        }
+
         // Initialize LibraryStateHolder
         libraryStateHolder.initialize(viewModelScope)
 

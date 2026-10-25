@@ -3,17 +3,24 @@ package com.saine.pixeltune.presentation.screens
 import com.saine.pixeltune.presentation.navigation.navigateSafely
 import com.saine.pixeltune.presentation.components.ToggleSegmentButton
 
+import androidx.activity.compose.BackHandler
+
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -24,8 +31,10 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -54,6 +63,7 @@ import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SearchBar
 import androidx.compose.material3.SearchBarDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -109,10 +119,14 @@ import androidx.compose.material.icons.automirrored.rounded.CallMade
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.zIndex
 import androidx.media3.common.util.UnstableApi
 import androidx.navigation.NavHostController
 import com.saine.pixeltune.R
@@ -126,6 +140,7 @@ import com.saine.pixeltune.presentation.navigation.Screen
 import com.saine.pixeltune.presentation.screens.search.components.GenreCategoriesGrid
 import com.saine.pixeltune.presentation.viewmodel.PlaylistViewModel
 import com.saine.pixeltune.utils.SearchResultKeys
+import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -246,6 +261,67 @@ fun SearchScreen(
             playerViewModel.loadSearchHistory()
         }
     }
+
+    // =================================================================================
+    // IMPROVE(search-suggestions): LIVE autocomplete for the ONLINE search —
+    // Spotify / YT Music style.
+    //
+    // The suggestions themselves are fetched in real time by
+    // [SearchStateHolder] (NewPipe's SuggestionExtractor against the active
+    // provider — YouTube or SoundCloud); nothing here is hardcoded. This
+    // block only owns the PRESENTATION state:
+    //
+    //  - visibility is driven SOLELY by actual typing (onQueryChange), so
+    //    programmatic query fills (history fill, suggestion tap) never
+    //    re-open the dropdown;
+    //  - it collapses itself when the query goes blank, when Local mode
+    //    takes over, when nothing is left to show, and when the user commits
+    //    a query / taps the scrim / presses back;
+    //  - matching RECENT SEARCHES are surfaced above the online suggestions
+    //    (History icon) exactly like Spotify's mixed dropdown, so the feature
+    //    extends — never replaces — the existing history behavior.
+    // =================================================================================
+    var suggestionsDropdownVisible by remember { mutableStateOf(false) }
+
+    val onlineSuggestions = uiState.searchSuggestions
+    val isLoadingSuggestions = uiState.isLoadingSuggestions
+
+    // IMPROVE(search-suggestions): recent searches matching what the user is
+    // typing — instant (local Room data) and offline-safe, shown above the
+    // network suggestions with a History icon.
+    val suggestionHistoryMatches by remember(searchHistory, searchQuery) {
+        derivedStateOf {
+            val typed = searchQuery.trim()
+            if (typed.isEmpty()) {
+                emptyList()
+            } else {
+                searchHistory.filter { item ->
+                    item.query.isNotBlank() &&
+                        !item.query.equals(typed, ignoreCase = true) &&
+                        item.query.contains(typed, ignoreCase = true)
+                }.take(3)
+            }
+        }
+    }
+
+    // IMPROVE(search-suggestions): the overlay only renders when it has
+    // something to show — its loading skeleton, live suggestions, or
+    // matching recent searches.
+    val showSuggestionsOverlay = suggestionsDropdownVisible &&
+        isOnlineSearch &&
+        searchQuery.isNotBlank() &&
+        (
+            isLoadingSuggestions ||
+                onlineSuggestions.isNotEmpty() ||
+                suggestionHistoryMatches.isNotEmpty()
+            )
+
+    // IMPROVE(search-suggestions): measured height of the search-bar header —
+    // anchors the floating suggestion dropdown and its scrim right below it,
+    // on every screen size and inset configuration.
+    var searchBarHeaderHeightPx by remember { mutableStateOf(0) }
+    val searchBarHeaderHeightDp = with(LocalDensity.current) { searchBarHeaderHeightPx.toDp() }
+
     val onHistoryQuerySelected: (String) -> Unit = { query ->
         searchQuery = query
         playerViewModel.updateSearchQuery(query)
@@ -264,6 +340,26 @@ fun SearchScreen(
     }
     val onClearHistory: () -> Unit = {
         showClearSearchHistoryDialog = true
+    }
+
+    // IMPROVE(search-suggestions): tapping a suggestion (a live online
+    // suggestion OR a matching recent search) fills the search bar, records
+    // it like any other submitted query, and dismisses the dropdown +
+    // keyboard — the exact same behavior as tapping a recent-search row on
+    // the history landing, so both entry points feel identical.
+    val onSuggestionSelected: (String) -> Unit = { suggestion ->
+        searchQuery = suggestion
+        playerViewModel.updateSearchQuery(suggestion)
+        playerViewModel.onSearchQuerySubmitted(suggestion)
+        suggestionsDropdownVisible = false
+        keyboardController?.hide()
+    }
+
+    // IMPROVE(search-suggestions): dismissing the overlay reveals the live
+    // results that kept loading behind the scrim the whole time.
+    val dismissSuggestions: () -> Unit = {
+        suggestionsDropdownVisible = false
+        keyboardController?.hide()
     }
 
     val handleSongMoreOptionsClick: (Song) -> Unit = { song ->
@@ -300,6 +396,14 @@ fun SearchScreen(
         }
     }
 
+    // IMPROVE(search-suggestions): the back gesture dismisses the suggestion
+    // overlay FIRST (the IME consumes back while the keyboard is open, so
+    // this fires once the keyboard is already down) before it does anything
+    // else — the standard dropdown-dismiss behavior across the app's sheets.
+    BackHandler(enabled = showSuggestionsOverlay) {
+        suggestionsDropdownVisible = false
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -321,6 +425,10 @@ fun SearchScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp)
+                    // IMPROVE(search-suggestions): measured height of the
+                    // search-bar header — anchors the floating suggestion
+                    // dropdown and its scrim directly below it.
+                    .onSizeChanged { searchBarHeaderHeightPx = it.height }
             ) {
                 val searchBarInputFieldColors = SearchBarDefaults.inputFieldColors(
                     focusedTextColor = MaterialTheme.colorScheme.onSurface,
@@ -338,11 +446,19 @@ fun SearchScreen(
                             onQueryChange = {
                                 searchQuery = it
                                 playerViewModel.updateSearchQuery(it)
+                                // IMPROVE(search-suggestions): real typing
+                                // opens the autocomplete dropdown (it collapses
+                                // by itself for blank queries / Local mode).
+                                suggestionsDropdownVisible = true
                             },
                             onSearch = { query ->
                                 if (query.isNotBlank()) {
                                     playerViewModel.onSearchQuerySubmitted(query)
                                 }
+                                // IMPROVE(search-suggestions): committing the
+                                // query dismisses the suggestion overlay — the
+                                // results are what matter now.
+                                suggestionsDropdownVisible = false
                                 keyboardController?.hide()
                             },
                             expanded = false,
@@ -363,25 +479,40 @@ fun SearchScreen(
                                 )
                             },
                             trailingIcon = {
-                                if (searchQuery.isNotBlank()) {
-                                    IconButton(
-                                        onClick = {
-                                            searchQuery = ""
-                                            playerViewModel.updateSearchQuery("")
-                                        },
-                                        modifier = Modifier
-                                            .size(48.dp)
-                                            .padding(end = 10.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
-                                            )
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Close,
-                                            contentDescription = "Limpiar",
-                                            tint = MaterialTheme.colorScheme.primary
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    // IMPROVE(search-suggestions): compact
+                                    // expressive loading indicator while the LIVE
+                                    // suggestions for the latest keystroke are in
+                                    // flight — the same morphing Material 3
+                                    // LoadingIndicator the results loading state
+                                    // uses, sized for the search bar.
+                                    if (isLoadingSuggestions && isOnlineSearch && searchQuery.isNotBlank()) {
+                                        LoadingIndicator(
+                                            modifier = Modifier.size(22.dp),
+                                            color = MaterialTheme.colorScheme.primary
                                         )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                    }
+                                    if (searchQuery.isNotBlank()) {
+                                        IconButton(
+                                            onClick = {
+                                                searchQuery = ""
+                                                playerViewModel.updateSearchQuery("")
+                                            },
+                                            modifier = Modifier
+                                                .size(48.dp)
+                                                .padding(end = 10.dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
+                                                )
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Close,
+                                                contentDescription = "Limpiar",
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
                                     }
                                 }
                             },
@@ -596,6 +727,67 @@ fun SearchScreen(
                     }
                 }
             }
+        }
+
+        // IMPROVE(search-suggestions): the scrim dims everything below the
+        // search bar while the suggestion dropdown is open — tapping it (or
+        // pressing back) dismisses the overlay and reveals the live results,
+        // which kept loading behind it the whole time. The search bar itself
+        // stays fully interactive (the scrim starts below it), so the user
+        // can keep typing without the dropdown ever getting in the way.
+        AnimatedVisibility(
+            visible = showSuggestionsOverlay,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .zIndex(3f),
+            enter = fadeIn(tween(durationMillis = 160)),
+            exit = fadeOut(tween(durationMillis = 160))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+                    .padding(top = searchBarHeaderHeightDp + 8.dp)
+                    .background(Color.Black.copy(alpha = 0.30f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { dismissSuggestions() }
+            )
+        }
+
+        // IMPROVE(search-suggestions): the floating autocomplete dropdown —
+        // anchored right below the search bar, elevated above the dimmed
+        // content, and expanding downward with the app's existing animation
+        // language (tween 200-280ms enters, 160-220ms exits).
+        AnimatedVisibility(
+            visible = showSuggestionsOverlay,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(
+                    top = searchBarHeaderHeightDp + 8.dp,
+                    start = 24.dp,
+                    end = 24.dp
+                )
+                .zIndex(4f),
+            enter = fadeIn(tween(durationMillis = 200)) +
+                expandVertically(
+                    animationSpec = tween(durationMillis = 280),
+                    expandFrom = Alignment.Top
+                ),
+            exit = fadeOut(tween(durationMillis = 160)) +
+                shrinkVertically(
+                    animationSpec = tween(durationMillis = 220),
+                    shrinkTowards = Alignment.Top
+                )
+        ) {
+            SearchSuggestionsDropdown(
+                query = searchQuery,
+                suggestions = onlineSuggestions,
+                historyMatches = suggestionHistoryMatches,
+                isLoading = isLoadingSuggestions,
+                onSuggestionSelected = onSuggestionSelected
+            )
         }
     }
 
@@ -949,6 +1141,189 @@ private fun OnlineSearchHistoryRow(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 )
             }
+        }
+    }
+}
+
+/**
+ * IMPROVE(search-suggestions): the floating autocomplete dropdown for the
+ * Online search — Spotify / YT Music style.
+ *
+ * An elevated Material 3 surface (the app's smooth-corner card language,
+ * surfaceContainerHigh + shadow) holding, in order:
+ *  - matching RECENT SEARCHES (History icon) — instant, offline-safe, and
+ *    deduped against the typed query;
+ *  - LIVE provider suggestions (Search icon) with the typed part of each
+ *    suggestion de-emphasized so the completion reads at a glance.
+ *
+ * While the first suggestions for a keystroke are still in flight, a compact
+ * expressive [LoadingIndicator] row shows — the same morphing Material 3
+ * indicator the results loading state uses — so the dropdown materializes
+ * the instant the user starts typing instead of popping in later.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun SearchSuggestionsDropdown(
+    query: String,
+    suggestions: ImmutableList<String>,
+    historyMatches: List<SearchHistoryItem>,
+    isLoading: Boolean,
+    onSuggestionSelected: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val dropdownShape = remember {
+        AbsoluteSmoothCornerShape(
+            cornerRadiusTL = 26.dp,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusTR = 26.dp,
+            smoothnessAsPercentBR = 60,
+            cornerRadiusBR = 26.dp,
+            smoothnessAsPercentBL = 60,
+            cornerRadiusBL = 26.dp,
+            smoothnessAsPercentTL = 60
+        )
+    }
+
+    // IMPROVE(search-suggestions): adaptive height budget — roughly half the
+    // screen (clamped so small landscape screens still show ~4 rows and the
+    // dropdown never towers over the keyboard). The LazyColumn scrolls inside
+    // the budget, exactly like Spotify's capped suggestion sheet.
+    val configuration = LocalConfiguration.current
+    val maxDropdownHeight = remember(configuration.screenHeightDp) {
+        (configuration.screenHeightDp * 0.45f).dp.coerceAtLeast(220.dp)
+    }
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = dropdownShape,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shadowElevation = 6.dp
+    ) {
+        // IMPROVE(search-suggestions): the skeleton branch only shows while
+        // the FIRST suggestions for a keystroke are in flight and nothing
+        // else is displayable — cached / stale-but-valid lists keep showing
+        // (no flicker) while a refresh runs, matching the results list's
+        // Crossfade pattern.
+        val showSkeleton = isLoading && suggestions.isEmpty() && historyMatches.isEmpty()
+        Crossfade(
+            targetState = showSkeleton,
+            animationSpec = tween(durationMillis = 190),
+            label = "suggestions_state_fade"
+        ) { skeleton ->
+            if (skeleton) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 68.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    LoadingIndicator(
+                        modifier = Modifier.size(28.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = maxDropdownHeight),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    items(
+                        count = historyMatches.size,
+                        key = { index ->
+                            "suggestion_history_${historyMatches[index].id ?: historyMatches[index].query}"
+                        }
+                    ) { index ->
+                        val item = historyMatches[index]
+                        SearchSuggestionRow(
+                            text = item.query,
+                            query = query,
+                            leadingIcon = Icons.Rounded.History,
+                            onRowClick = { onSuggestionSelected(item.query) },
+                            modifier = Modifier.animateItem()
+                        )
+                    }
+                    items(
+                        count = suggestions.size,
+                        key = { index -> "suggestion_${suggestions[index]}" }
+                    ) { index ->
+                        val suggestion = suggestions[index]
+                        SearchSuggestionRow(
+                            text = suggestion,
+                            query = query,
+                            leadingIcon = Icons.Rounded.Search,
+                            onRowClick = { onSuggestionSelected(suggestion) },
+                            modifier = Modifier.animateItem()
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * IMPROVE(search-suggestions): one suggestion row. The typed part of the
+ * suggestion is de-emphasized (secondary color, regular weight) and the
+ * completion is emphasized (on-surface color, medium weight) so the user
+ * instantly sees what each suggestion ADDS to what they typed — the same
+ * visual trick Spotify / YT Music's autocomplete rows use.
+ */
+@Composable
+private fun SearchSuggestionRow(
+    text: String,
+    query: String,
+    leadingIcon: ImageVector,
+    onRowClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onRowClick)
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = leadingIcon,
+            contentDescription = null,
+            modifier = Modifier.size(22.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.width(14.dp))
+        val typed = query.trim()
+        if (typed.isNotEmpty() && text.startsWith(typed, ignoreCase = true)) {
+            Row(
+                modifier = Modifier.weight(1f, fill = false)
+            ) {
+                Text(
+                    text = text.substring(0, typed.length),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier.alignByBaseline()
+                )
+                Text(
+                    text = text.substring(typed.length),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.alignByBaseline()
+                )
+            }
+        } else {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
         }
     }
 }
