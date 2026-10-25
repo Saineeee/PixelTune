@@ -3897,6 +3897,17 @@ class PlayerViewModel @Inject constructor(
     }
 
     /**
+     * IMPROVE(search-suggestions): requests autocomplete suggestions for the
+     * CURRENT query without re-running the search — used when the compose
+     * phase of the search screen begins by focus alone (tapping the field to
+     * re-edit a committed query) and the held suggestions were dropped by a
+     * provider switch, a silently failed fetch, or a process restore.
+     */
+    fun requestSearchSuggestions(query: String) {
+        searchStateHolder.requestSearchSuggestions(query)
+    }
+
+    /**
      * IMPROVE(search-load-more): loads the next page of the current ONLINE
      * search — wired to the "Load more" row at the bottom of the search
      * results, available on EVERY filter chip (All / Songs / Albums /

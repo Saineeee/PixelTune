@@ -636,6 +636,22 @@ class SearchStateHolder @Inject constructor(
     }
 
     /**
+     * IMPROVE(search-suggestions): requests autocomplete suggestions for
+     * [query] WITHOUT re-running the search itself.
+     *
+     * Entering the compose phase by tapping the search field (a focus, not a
+     * keystroke) does not re-trigger the search pipeline, so a programmatic
+     * nudge is needed for the cases where no suggestions are held for the
+     * current query — the online provider was switched (which drops the old
+     * provider's list), a fetch silently failed, or the process was restored.
+     * The per-session cache and the last-request dedupe make this an instant
+     * no-op whenever fresh suggestions are already in hand.
+     */
+    fun requestSearchSuggestions(query: String) {
+        maybeRequestSuggestions(query.trim())
+    }
+
+    /**
      * IMPROVE(search-suggestions): drops the held suggestions + loading flag
      * and forgets the last request key (so the same query is re-requested the
      * next time it becomes relevant). Used when the query goes blank, when
