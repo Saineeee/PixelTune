@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -32,6 +33,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -173,6 +175,32 @@ private enum class SearchBodyMode { GENRE_BROWSE, ONLINE_HISTORY, RESULTS, SUGGE
 private enum class SearchResultsViewState { LOADING, EMPTY, RESULTS }
 
 /**
+ * IMPROVE(suggestion-preview): what the top-results preview strip of the
+ * compose phase shows — the same three-state grammar the results area uses
+ * (a shimmer skeleton while the live search is in flight, the top actual
+ * results once they land, nothing when the search has nothing to offer).
+ */
+private enum class SuggestionPreviewState { LOADING, RESULTS, HIDDEN }
+
+/**
+ * IMPROVE(suggestion-preview): the compose phase's FIXED suggestion-row
+ * budget — five rows total, exactly like the concept (and the compact
+ * autocomplete lists of YouTube Music / Spotify). The budget is SHARED by
+ * the matching recent searches and the live provider suggestions.
+ */
+private const val MAX_VISIBLE_SUGGESTION_ROWS = 5
+
+/**
+ * IMPROVE(suggestion-preview): how many of the five suggestion-row slots the
+ * matching recent searches may occupy — history is surfaced compactly so the
+ * provider's live completions always dominate the list.
+ */
+private const val MAX_HISTORY_SUGGESTION_ROWS = 2
+
+/** IMPROVE(suggestion-preview): album-art preview cards under the suggestions. */
+private const val SUGGESTION_PREVIEW_CARD_COUNT = 3
+
+/**
  * FIX(online-search-chip-crash): a search result paired with its globally-
  * unique LazyColumn key (see [SearchResultKeys.uniqueKeysFor]).
  */
@@ -304,7 +332,9 @@ fun SearchScreen(
 
     // IMPROVE(search-suggestions): recent searches matching what the user is
     // typing — instant (local Room data) and offline-safe, shown above the
-    // network suggestions with a History icon.
+    // network suggestions with a History icon. Capped at a compact slice of
+    // the compose list's fixed row budget so the provider's live completions
+    // always dominate the list (see [MAX_HISTORY_SUGGESTION_ROWS]).
     val suggestionHistoryMatches by remember(searchHistory, searchQuery) {
         derivedStateOf {
             val typed = searchQuery.trim()
@@ -315,21 +345,53 @@ fun SearchScreen(
                     item.query.isNotBlank() &&
                         !item.query.equals(typed, ignoreCase = true) &&
                         item.query.contains(typed, ignoreCase = true)
-                }.take(5)
+                }.take(MAX_HISTORY_SUGGESTION_ROWS)
             }
         }
     }
 
     // IMPROVE(search-suggestions): the live provider suggestions actually
     // rendered — deduped against the matching recent searches above them so a
-    // query never appears twice in the compose list.
+    // query never appears twice in the compose list, and capped to the
+    // REMAINDER of the compose list's fixed five-row budget so the suggestion
+    // list always reads as a compact five-row autocomplete (the concept),
+    // never an endless tail of look-alike rows.
     val visibleSuggestions by remember(onlineSuggestions, suggestionHistoryMatches) {
         derivedStateOf {
             val recentQueries = suggestionHistoryMatches
                 .map { it.query.lowercase() }
                 .toHashSet()
+            val remainingSlots = (MAX_VISIBLE_SUGGESTION_ROWS - suggestionHistoryMatches.size)
+                .coerceAtLeast(0)
             onlineSuggestions
                 .filter { it.lowercase() !in recentQueries }
+                .take(remainingSlots)
+                .toImmutableList()
+        }
+    }
+
+    // =================================================================================
+    // IMPROVE(suggestion-preview): the TOP actual results of the LIVE search for
+    // the query being composed, surfaced as album-art preview cards right under
+    // the suggestion rows — the concept's "top 3 actual search results".
+    //
+    // No new pipeline is needed: the two-phase search ALREADY keeps fetching
+    // the results in the state layer while the user types (that is the whole
+    // point of the compose phase — "the results keep loading so committing
+    // reveals them instantly"), so this simply surfaces the first three SONGS
+    // of that in-flight search. `isSearchingOnline` (raised the moment a
+    // keystroke lands and kept true until the fresh results publish — the
+    // glitch fix) is the exact freshness gate: while it is true any held
+    // results belong to an OLDER query, so the strip crossfades to its shimmer
+    // skeleton; the moment the fresh page lands (or the phase is re-entered
+    // by focus with current results already held) the cards fade in.
+    // =================================================================================
+    val suggestionPreviewSongs by remember(searchResults) {
+        derivedStateOf {
+            searchResults
+                .asSequence()
+                .mapNotNull { (it as? SearchResultItem.SongItem)?.song }
+                .take(SUGGESTION_PREVIEW_CARD_COUNT)
                 .toImmutableList()
         }
     }
@@ -411,6 +473,20 @@ fun SearchScreen(
         searchQuery = suggestion
         playerViewModel.updateSearchQuery(suggestion)
         enterSearchEditing()
+    }
+
+    // IMPROVE(suggestion-preview): tapping an album-art preview card plays
+    // that song RIGHT AWAY — the exact behavior of tapping the same row in
+    // the results list — and commits the compose phase: the query is recorded
+    // like any submitted search, the keyboard drops and the body lands on the
+    // full results it was already loading, with the mini player sliding back
+    // in above the now-playing song.
+    val onPreviewSongSelected: (Song) -> Unit = { song ->
+        if (searchQuery.isNotBlank()) {
+            playerViewModel.onSearchQuerySubmitted(searchQuery)
+        }
+        playerViewModel.showAndPlaySong(song)
+        exitSearchEditing()
     }
 
     // IMPROVE(search-suggestions): the "Search for …" fallback row of the
@@ -824,13 +900,19 @@ fun SearchScreen(
                     // IMPROVE(search-suggestions): the COMPOSE phase — the body
                     // itself becomes the live suggestion list (in flow, never an
                     // overlay), and the results keep loading in the state layer
-                    // so committing / backing out reveals them instantly.
+                    // so committing / backing out reveals them instantly. Under
+                    // the five suggestion rows, the top three SONGS of that
+                    // in-flight search peek through as album-art preview cards.
                     SearchBodyMode.SUGGESTIONS -> {
                         OnlineSearchSuggestionsSection(
                             query = searchQuery,
                             suggestions = visibleSuggestions,
                             historyMatches = suggestionHistoryMatches,
                             isLoading = isLoadingSuggestions,
+                            previewSongs = suggestionPreviewSongs,
+                            isPreviewLoading = isSearchingOnline,
+                            currentPlayingSongId = stablePlayerState.currentSong?.id,
+                            onPreviewSongSelected = onPreviewSongSelected,
                             onSuggestionSelected = onSuggestionSelected,
                             onSuggestionFill = onSuggestionFill,
                             onSearchExact = onSearchExactQuery
@@ -1276,17 +1358,23 @@ private fun OnlineSearchHistoryRow(
  * hidden "behind" anything: typing swaps the body itself, and committing (or
  * backing out) swaps it right back to the results that kept loading.
  *
- * The list holds, in order:
- *  - matching RECENT SEARCHES (History icon) — instant, offline-safe, deduped
- *    against the typed query;
- *  - LIVE provider suggestions (Search icon) with the typed part of each
- *    suggestion de-emphasized so the completion reads at a glance;
+ * The body holds, in order:
+ *  - a compact FIVE-ROW suggestion list (the fixed budget shared by matching
+ *    RECENT SEARCHES (History icon) and LIVE provider suggestions (Search
+ *    icon) with the typed part de-emphasized so the completion reads at a
+ *    glance) — exactly the concept's five suggestion pills;
+ *  - IMPROVE(suggestion-preview): the TOP RESULTS preview strip — the first
+ *    three SONGS of the live search that keeps running for the query being
+ *    composed, as square album-art cards with the song (and artist) name
+ *    centered under the art. Tapping one plays it on the spot, committing
+ *    the phase like any other result tap;
  *  - a "Search for …" action row whenever the provider has nothing to offer.
  *
  * While the first suggestions for a keystroke are in flight, a compact
  * expressive [LoadingIndicator] + shimmer skeleton shows — the same morphing
  * Material 3 indicator and the same Crossfade(190) state pattern the results
- * area uses.
+ * area uses — and the skeleton MIRRORS the final layout (five shimmer rows +
+ * three shimmer preview cards) so the load reads as the shape of what lands.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -1295,6 +1383,12 @@ private fun OnlineSearchSuggestionsSection(
     suggestions: ImmutableList<String>,
     historyMatches: List<SearchHistoryItem>,
     isLoading: Boolean,
+    // IMPROVE(suggestion-preview): the top songs of the LIVE search for the
+    // query being composed + its freshness gate (see SearchScreen).
+    previewSongs: ImmutableList<Song>,
+    isPreviewLoading: Boolean,
+    currentPlayingSongId: String?,
+    onPreviewSongSelected: (Song) -> Unit,
     onSuggestionSelected: (String) -> Unit,
     onSuggestionFill: (String) -> Unit,
     onSearchExact: () -> Unit,
@@ -1348,10 +1442,16 @@ private fun OnlineSearchSuggestionsSection(
                     )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                repeat(3) {
+                // IMPROVE(suggestion-preview): the skeleton mirrors the layout
+                // it is loading for — five shimmer suggestion pills, then the
+                // three shimmer preview cards — so the load reads as the exact
+                // shape of what is about to land (the app's skeleton grammar).
+                repeat(MAX_VISIBLE_SUGGESTION_ROWS) {
                     SuggestionSkeletonRow()
                     Spacer(modifier = Modifier.height(10.dp))
                 }
+                Spacer(modifier = Modifier.height(10.dp))
+                SuggestionPreviewSkeletonRow()
             }
         } else {
             LazyColumn(
@@ -1411,6 +1511,23 @@ private fun OnlineSearchSuggestionsSection(
                         )
                     }
                 }
+                // IMPROVE(suggestion-preview): the TOP RESULTS strip — the
+                // first three SONGS of the live search that keeps running for
+                // the query being composed, as square album-art cards with the
+                // song name centered under the art (the concept's "top 3
+                // actual search results"). A single stable key: the strip
+                // crossfades its OWN three states (skeleton / cards / hidden)
+                // internally, so the LazyColumn never re-keys it while typing
+                // — no animateItem, no appearance animation, exactly the
+                // glitch-free swap the suggestion rows above use.
+                item(key = "suggestion_results_preview") {
+                    SuggestionResultsPreview(
+                        songs = previewSongs,
+                        isLoading = isPreviewLoading,
+                        currentPlayingSongId = currentPlayingSongId,
+                        onSongSelected = onPreviewSongSelected
+                    )
+                }
             }
         }
     }
@@ -1444,6 +1561,220 @@ private fun SuggestionSkeletonRow(
             .height(60.dp)
             .clip(skeletonShape)
     )
+}
+
+/**
+ * IMPROVE(suggestion-preview): the TOP RESULTS strip of the compose phase —
+ * the first three SONGS of the live search that keeps running for the query
+ * being composed, right under the suggestion rows (the concept's "top 3
+ * actual search results": album art with the song name under it).
+ *
+ * The strip has the results area's exact three-state grammar, driven by the
+ * search pipeline's own freshness flag:
+ *  - LOADING — the live search for the current keystroke is in flight (any
+ *    held results belong to an OLDER query): three shimmer preview cards that
+ *    mirror the incoming layout;
+ *  - RESULTS — the fresh page landed: the album-art cards, crossfaded in over
+ *    the same 190ms the results area uses;
+ *  - HIDDEN — the settled search offers no songs (filtered chip / empty
+ *    provider page): the strip collapses to nothing, gracefully.
+ */
+@Composable
+private fun SuggestionResultsPreview(
+    songs: ImmutableList<Song>,
+    isLoading: Boolean,
+    currentPlayingSongId: String?,
+    onSongSelected: (Song) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val previewState = when {
+        isLoading -> SuggestionPreviewState.LOADING
+        songs.isNotEmpty() -> SuggestionPreviewState.RESULTS
+        else -> SuggestionPreviewState.HIDDEN
+    }
+
+    // IMPROVE(suggestion-preview): the section gap below the suggestion rows
+    // is deliberately LARGER than the 10dp row rhythm (the LazyColumn's own
+    // spacing + this spacer) — the concept's clear visual break between the
+    // autocomplete list and the results preview.
+    Column(modifier = modifier.fillMaxWidth()) {
+        Spacer(modifier = Modifier.height(10.dp))
+        Crossfade(
+            targetState = previewState,
+            animationSpec = tween(durationMillis = 190),
+            label = "suggestion_preview_fade"
+        ) { state ->
+            when (state) {
+                SuggestionPreviewState.LOADING -> {
+                    SuggestionPreviewSkeletonRow(modifier = Modifier.fillMaxWidth())
+                }
+
+                SuggestionPreviewState.RESULTS -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        songs.forEach { song ->
+                            SuggestionPreviewCard(
+                                song = song,
+                                isCurrentSong = currentPlayingSongId == song.id,
+                                onSongSelected = onSongSelected,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        // IMPROVE(suggestion-preview): pad the unused thirds so
+                        // every card keeps the concept's fixed one-third width
+                        // even when the live page offers fewer than three songs
+                        // — the strip's rhythm never re-flows while typing.
+                        repeat(SUGGESTION_PREVIEW_CARD_COUNT - songs.size) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+
+                SuggestionPreviewState.HIDDEN -> {
+                    // A settled search with no songs offers no preview — a
+                    // zero-height slot keeps the LazyColumn item stable (its
+                    // key never disappears mid-animation) while collapsing
+                    // the strip out of the layout cleanly.
+                    Spacer(modifier = Modifier.height(0.dp))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * IMPROVE(suggestion-preview): one album-art preview card — the app's media
+ * card grammar (square [SmartImage] artwork in the smooth-corner shape,
+ * centered title / subtitle captions under it, exactly like the Surf tab's
+ * carousel cards) scaled to a third of the body width. The whole card is the
+ * tap target and plays the song on the spot; the title takes the app's
+ * animated current-song accent (the carousel card's own highlight language).
+ */
+@Composable
+private fun SuggestionPreviewCard(
+    song: Song,
+    isCurrentSong: Boolean,
+    onSongSelected: (Song) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val artworkShape = remember {
+        AbsoluteSmoothCornerShape(
+            cornerRadiusTL = 20.dp,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusTR = 20.dp,
+            smoothnessAsPercentBR = 60,
+            cornerRadiusBR = 20.dp,
+            smoothnessAsPercentBL = 60,
+            cornerRadiusBL = 20.dp,
+            smoothnessAsPercentTL = 60
+        )
+    }
+    val titleColor by animateColorAsState(
+        targetValue = if (isCurrentSong) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurface,
+        animationSpec = tween(durationMillis = 280),
+        label = "suggestionPreviewTitleColor"
+    )
+
+    Column(
+        modifier = modifier
+            // Clip the WHOLE card (art + captions) to the smooth-corner
+            // silhouette: the artwork corners match the shape and the tap
+            // ripple stays bounded to it — the app's card clip language.
+            .clip(artworkShape)
+            .clickable { onSongSelected(song) }
+    ) {
+        SmartImage(
+            model = song.albumArtUriString,
+            contentDescription = song.title,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f),
+            shape = artworkShape
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = song.title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Medium,
+                color = titleColor,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (song.artist.isNotBlank()) {
+                Text(
+                    text = song.artist,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+/**
+ * IMPROVE(suggestion-preview): the loading shape of the preview strip — three
+ * equal shimmer cards (square artwork + two caption lines) mirroring the real
+ * cards that are about to land, the same ShimmerBox grammar the app's loading
+ * grids use.
+ */
+@Composable
+private fun SuggestionPreviewSkeletonRow(
+    modifier: Modifier = Modifier
+) {
+    val artworkShape = remember {
+        AbsoluteSmoothCornerShape(
+            cornerRadiusTL = 20.dp,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusTR = 20.dp,
+            smoothnessAsPercentBR = 60,
+            cornerRadiusBR = 20.dp,
+            smoothnessAsPercentBL = 60,
+            cornerRadiusBL = 20.dp,
+            smoothnessAsPercentTL = 60
+        )
+    }
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        repeat(SUGGESTION_PREVIEW_CARD_COUNT) {
+            Column(modifier = Modifier.weight(1f)) {
+                ShimmerBox(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .clip(artworkShape)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                ShimmerBox(
+                    modifier = Modifier
+                        .fillMaxWidth(0.85f)
+                        .height(14.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .align(Alignment.CenterHorizontally)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                ShimmerBox(
+                    modifier = Modifier
+                        .fillMaxWidth(0.6f)
+                        .height(12.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .align(Alignment.CenterHorizontally)
+                )
+            }
+        }
+    }
 }
 
 /**
@@ -1535,7 +1866,15 @@ private fun SearchSuggestionRow(
                 style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
+                // IMPROVE(suggestion-preview): the text now FILLS the row's
+                // remaining width so the autofill arrow is pinned to the FAR
+                // RIGHT edge of every suggestion row — exactly the concept's
+                // placement, and exactly how the recent-search rows on the
+                // history landing already place theirs (weight(1f), fill =
+                // true), so both lists finally read identically. fill = false
+                // used to let the arrow float right after the text, drifting
+                // row by row with every suggestion length.
+                modifier = Modifier.weight(1f)
             )
             // Fill this suggestion into the search bar without committing it.
             IconButton(onClick = onFillClick, modifier = Modifier.size(40.dp)) {
