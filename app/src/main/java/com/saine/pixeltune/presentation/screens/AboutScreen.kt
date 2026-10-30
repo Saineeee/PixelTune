@@ -131,7 +131,7 @@ private val CoreMaintainer = Contributor(
     detail = "Building PixelTune with direct community feedback.",
     avatarUrl = "https://avatars.githubusercontent.com/u/227827117?v=4",
     iconRes = R.drawable.round_developer_board_24,
-    githubUrl = "https://github.com/saineeee",
+    githubUrl = "https://github.com",
     buyMeACoffeeUrl = "https://buymeacoffee.com/sainnee"
 )
 
