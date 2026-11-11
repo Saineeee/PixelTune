@@ -1,27 +1,29 @@
 package com.saine.pixeltune.data.youtube
 
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.schabi.newpipe.extractor.downloader.Request as ExtractorRequest
 
 /**
  * Unit tests for [NewPipeDownloader].
  *
- * These tests pin down the browser User-Agent fix that addresses two production
- * bugs that were reproducible from the in-app logcats:
+ * These tests pin down the downloader's HTTP identity contract, which guards
+ * against two production incident classes that were reproducible from the
+ * in-app logcats:
  *
  *   1. YouTube playback stuck at 00:00
- *      NewPipe's `YoutubeStreamExtractor.fetchPage()` was throwing
- *      `ContentNotAvailableException: The page needs to be reloaded` because the
- *      app-wide OkHttp interceptor was replacing every request's User-Agent with
- *      `PixelTune/1.0 (Android; Music Player)`. YouTube saw a non-browser UA and
- *      served a bot-check page; the proxy then returned 404 to ExoPlayer, which
- *      silently sat at 00:00.
+ *      youtube.com HTML fetches (e.g. the search results page) were served a
+ *      bot-check page ("The page needs to be reloaded") whenever the request
+ *      carried a non-browser User-Agent; the proxy then returned 404 to
+ *      ExoPlayer, which silently sat at 00:00.
  *
  *   2. SoundCloud search returning zero results
  *      Some SoundCloud responses served to non-browser UAs omit the `<script>`
@@ -29,15 +31,27 @@ import org.schabi.newpipe.extractor.downloader.Request as ExtractorRequest
  *      client_id extraction and surfacing as `ParsingException: Could not get
  *      client id`.
  *
- * The fix lives in two places:
- *   - [NewPipeDownloader] explicitly sets a Chrome browser UA on every request
- *     it issues and refuses to let NewPipe's own `User-Agent` header override it.
- *   - `AppModule.provideOkHttpClient` only injects the default app UA when no UA
- *     is present, so the browser UA set here survives end-to-end.
+ * The contract these tests enforce (see [NewPipeDownloader.execute]):
+ *   - Requests WITHOUT a User-Agent (the youtube.com results HTML, the
+ *     SoundCloud homepage, sw.js) get a desktop Chrome browser UA — the fix
+ *     for both incidents above.
+ *   - NewPipe's OWN User-Agent — the ANDROID / IOS / VISIONOS InnerTube client
+ *     UAs that NewPipeExtractor v0.26.3 sends on its stream-extraction POSTs —
+ *     is forwarded verbatim. Overwriting it with a desktop Chrome UA is a
+ *     client-identity mismatch that YouTube answers with degraded responses
+ *     or bot checks (slow/failed stream resolution).
+ *   - Accept-Encoding is never forwarded verbatim so OkHttp keeps performing
+ *     transparent gzip decompression (the SoundCloud client_id scraper needs
+ *     uncompressed HTML).
+ *   - Response bodies are decoded with the charset the server declared in
+ *     Content-Type, defaulting to UTF-8 — the same behavior as OkHttp's
+ *     `.string()` and the official NewPipe app downloader. An ISO-8859-1
+ *     decode corrupted every non-ASCII title/artist into mojibake ("Ã©",
+ *     "ðŸŽµ") — the garbled YouTube/SoundCloud metadata users reported.
  *
- * No network calls are made — the OkHttp client below installs a short-circuit
- * interceptor that returns a synthetic 200 response and captures the outgoing
- * request headers for assertion.
+ * No network calls are made — the OkHttp clients below install short-circuit
+ * interceptors that return synthetic 200 responses and capture the outgoing
+ * request headers / response body bytes for assertion.
  */
 class NewPipeDownloaderTest {
 
@@ -107,36 +121,39 @@ class NewPipeDownloaderTest {
     }
 
     @Test
-    fun `does not let a NewPipe-supplied User-Agent override the browser UA`() {
-        // NewPipe sometimes attaches its own UA to outgoing requests (e.g. when
-        // the underlying extractor sets `User-Agent` in its headers map). Our
-        // downloader MUST ignore that and always send the browser UA — otherwise
-        // YouTube sees a non-browser UA and serves the "page needs to be reloaded"
-        // bot-check page, which is the exact bug we are guarding against.
+    fun `forwards a NewPipe-supplied User-Agent instead of overwriting it with the browser UA`() {
+        // NewPipeExtractor v0.26.3 identifies its mobile InnerTube clients
+        // (ANDROID / IOS / VISIONOS) through the User-Agent on the
+        // stream-extraction POSTs. Overwriting that with a desktop Chrome UA
+        // is a client-identity mismatch that YouTube answers with degraded
+        // responses or bot checks (slow/failed stream resolution), so when
+        // NewPipe supplies a UA it MUST be forwarded verbatim — the browser
+        // UA is only a default for requests that carry none.
         val capture = executeAndCaptureHeaders(
             mapOf("User-Agent" to listOf("NewPipe/0.26.1 (parser)"))
         )
 
         val ua = capture.capturedHeaders["User-Agent"]
-        assertEquals(
-            expectedBrowserUa,
-            ua,
-            "Browser UA must win over any UA supplied by NewPipe"
-        )
+        assertEquals("NewPipe/0.26.1 (parser)", ua)
+        assertNotEquals(expectedBrowserUa, ua)
     }
 
     @Test
-    fun `overrides User-Agent case-insensitively`() {
-        // Defensive: header-name matching in our skip-list is case-insensitive,
-        // so a NewPipe header keyed as "user-agent" (lowercase) must also be
-        // ignored, not appended on top of our browser UA (which would produce
-        // two User-Agent values and let OkHttp pick one arbitrarily).
+    fun `detects a NewPipe-supplied User-Agent case-insensitively and never duplicates it`() {
+        // Defensive: the "does NewPipe provide its own User-Agent?" check is
+        // case-insensitive, so a NewPipe header keyed as "user-agent"
+        // (lowercase) must ALSO be recognized and forwarded as-is — and the
+        // browser UA default must NOT be appended on top of it, which would
+        // produce two User-Agent values and let OkHttp pick one arbitrarily.
         val capture = executeAndCaptureHeaders(
             mapOf("user-agent" to listOf("NewPipe/0.26.1 (parser)"))
         )
 
-        val ua = capture.capturedHeaders["User-Agent"]
-        assertEquals(expectedBrowserUa, ua)
+        val uaHeaders = capture.capturedHeaders.entries
+            .filter { it.key.equals("User-Agent", ignoreCase = true) }
+        assertEquals(1, uaHeaders.size, "exactly one User-Agent header must be sent")
+        assertEquals("NewPipe/0.26.1 (parser)", uaHeaders.single().value)
+        assertNotEquals(expectedBrowserUa, uaHeaders.single().value)
     }
 
     @Test
@@ -215,44 +232,96 @@ class NewPipeDownloaderTest {
         assertEquals("", response.responseBody())
     }
 
-    @Test
-    fun `response body round-trips binary bytes losslessly via ISO-8859-1`() {
-        // YouTube returns binary Protobuf bodies for some inner-tube requests.
-        // NewPipe v0.26.1's Response body is typed as String, so we encode the
-        // raw bytes via ISO-8859-1 (a 1:1 byte<->char mapping). Verify that a
-        // caller doing `responseBody().getBytes(ISO_8859_1)` gets the exact
-        // original bytes back — including non-UTF-8 byte sequences.
-        val binaryPayload = byteArrayOf(
-            0x0A, 0x12.toByte(), 0x08.toByte(), 0x01, 0x12.toByte(), 0x0E.toByte(),
-            0xFF.toByte(), 0xFE.toByte(), 0xFD.toByte(), 0xFC.toByte(),
-            0x00, 0x7F, 0x80.toByte(), 0x81.toByte(), 0xC0.toByte(), 0xC1.toByte()
-        )
-
-        val client = OkHttpClient.Builder()
+    /**
+     * Builds an OkHttpClient whose interceptor returns a synthetic 200 response
+     * carrying exactly [payload] as the body (and [contentType] as BOTH the
+     * Content-Type header and the body's media type — [NewPipeDownloader]
+     * resolves the decode charset from the response HEADER, so it must be
+     * present on the wire) — no network I/O.
+     */
+    private fun binaryResponseClient(payload: ByteArray, contentType: String?): OkHttpClient =
+        OkHttpClient.Builder()
             .addInterceptor { chain ->
                 Response.Builder()
                     .request(chain.request())
                     .protocol(Protocol.HTTP_1_1)
                     .code(200)
                     .message("OK")
-                    .body(binaryPayload.toResponseBody(null))
+                    .apply {
+                        if (contentType != null) header("Content-Type", contentType)
+                    }
+                    .body(payload.toResponseBody(contentType?.toMediaType()))
                     .build()
             }
             .build()
 
+    private fun executeWithClient(client: OkHttpClient): org.schabi.newpipe.extractor.downloader.Response {
         val downloader = NewPipeDownloader(client)
         val request = ExtractorRequest.Builder()
             .httpMethod("GET")
             .url("https://www.example.com/")
             .build()
-        val response = downloader.execute(request)
+        return downloader.execute(request)
+    }
 
-        val roundTripped = response.responseBody()!!.toByteArray(Charsets.ISO_8859_1)
+    @Test
+    fun `decodes UTF-8 bodies correctly so non-ASCII metadata never becomes mojibake`() {
+        // FIX(mojibake-metadata): bodies are decoded with the Content-Type
+        // charset (default UTF-8), NOT ISO-8859-1. Under ISO-8859-1 every
+        // multi-byte UTF-8 sequence was garbled ("é" → "Ã©", emojis → "ðŸŽµ",
+        // Bengali/Hindi/Korean titles → symbol soup). NewPipe's consumers
+        // (nanojson, Jsoup, regex) parse the String body directly, so a
+        // correct decode is what keeps YouTube/SoundCloud titles readable.
+        val payload = "Café ☕ 音乐 — PixelTune".toByteArray(Charsets.UTF_8)
 
-        // Byte-for-byte equality with the original payload — no UTF-8 corruption.
-        assertEquals(binaryPayload.size, roundTripped.size)
-        for (i in binaryPayload.indices) {
-            assertEquals(binaryPayload[i], roundTripped[i], "byte mismatch at index $i")
-        }
+        val response = executeWithClient(
+            binaryResponseClient(payload, "application/json; charset=UTF-8")
+        )
+
+        assertEquals("Café ☕ 音乐 — PixelTune", response.responseBody())
+    }
+
+    @Test
+    fun `honors a non-UTF-8 charset declared in the Content-Type header`() {
+        // A server that really serves Latin-1 content gets a Latin-1 decode:
+        // 0xE9 is "é" in ISO-8859-1 (a UTF-8 decode would replace it with
+        // U+FFFD instead).
+        val payload = byteArrayOf(0xE9.toByte(), 'A'.code.toByte())
+
+        val response = executeWithClient(
+            binaryResponseClient(payload, "text/html; charset=ISO-8859-1")
+        )
+
+        assertEquals("éA", response.responseBody())
+    }
+
+    @Test
+    fun `replaces invalid UTF-8 bytes with U+FFFD instead of corrupting them into mojibake`() {
+        // Genuinely binary bytes (e.g. binary Protobuf inner-tube payloads)
+        // that are not valid UTF-8 decode with U+FFFD replacement — the same
+        // behavior as OkHttp's `.string()` and the official NewPipe downloader
+        // — never as Latin-1 mojibake characters ("Ã", "Â", ...).
+        val binaryPayload = byteArrayOf(
+            0x0A, 0x12.toByte(), 0x08.toByte(), 0x01, 0x12.toByte(), 0x0E.toByte(),
+            0xFF.toByte(), 0xFE.toByte(), 0xFD.toByte(), 0xFC.toByte(),
+            0x00, 0x7F, 0x80.toByte(), 0x81.toByte(), 0xC0.toByte(), 0xC1.toByte()
+        )
+
+        // No Content-Type → the UTF-8 default applies.
+        val response = executeWithClient(binaryResponseClient(binaryPayload, null))
+
+        val decoded = response.responseBody()!!
+        // Every valid ASCII byte survives unchanged; every invalid byte
+        // becomes U+FFFD — no mojibake characters anywhere in the body.
+        assertTrue(
+            decoded.all { it.code < 0x80 || it == '\uFFFD' },
+            "decoded body must contain only ASCII and U+FFFD, got: " +
+                decoded.map { it.code }
+        )
+        // All 8 bytes 0xFF 0xFE 0xFD 0xFC 0x80 0x81 0xC0 0xC1 are individually
+        // invalid UTF-8 and must each yield exactly one replacement char.
+        assertEquals(8, decoded.count { it == '\uFFFD' })
+        // The ASCII control-byte prefix survives byte-for-byte.
+        assertEquals("\u000A\u0012\u0008\u0001\u0012\u000E", decoded.substring(0, 6))
     }
 }

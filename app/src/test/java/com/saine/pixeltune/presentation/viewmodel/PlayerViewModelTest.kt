@@ -20,6 +20,7 @@ import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -332,6 +333,26 @@ class PlayerViewModelTest {
         
         @Test
         fun `shuffleAllSongs calls prepareShuffledQueue with random songs`() = runTest {
+            // The JVM unit-test classpath carries the android.jar stubs (with
+            // unitTests.isReturnDefaultValues = true), so Uri.parse returns
+            // null instead of a real Uri — MediaItemBuilder.playbackUri would
+            // NPE on `uri.scheme` before the engine calls are ever reached
+            // (the exception dies inside the viewModelScope coroutine, leaving
+            // only "setMediaItems was not called" behind). Stub a minimal Uri.
+            //
+            // IMPORTANT: the fake Uri is PRE-BUILT here, on the test thread,
+            // and installed with a plain `returns` — do NOT create mocks
+            // inside the `answers { }` lambda. The media-item build runs on
+            // Dispatchers.Default (see below), and creating/stubbing MockK
+            // mocks from a non-test worker thread deadlocks the MockK
+            // recorder — the worker hangs forever and the queued build never
+            // runs (the pre-existing cause of this test's failure).
+            // unmockkAll() in tearDown() removes the static mock afterwards.
+            mockkStatic(android.net.Uri::class)
+            val fakeUri = mockk<android.net.Uri>()
+            every { fakeUri.scheme } returns "content"
+            every { android.net.Uri.parse(any()) } returns fakeUri
+
             // Arrange
             val randomSongs = listOf(song2, song3, song1)
             coEvery { mockMusicRepository.getRandomSongs(500) } returns randomSongs
@@ -349,11 +370,40 @@ class PlayerViewModelTest {
             playerViewModel.shuffleAllSongs()
             advanceUntilIdle()
 
-            // Assert
+            // Assert — deterministic parts (these all run on the test scheduler):
             coVerify { mockMusicRepository.getRandomSongs(500) }
             coVerify { mockQueueStateHolder.prepareShuffledQueueSuspending(randomSongs, "All Songs (Shuffled)") }
-            // Verify playback started
-            verify { mockPlayer.setMediaItems(any(), any(), any()) }
+
+            // PERF(playback-start) moved MediaItem building onto
+            // Dispatchers.Default (a real thread pool) so 500-song queue builds
+            // never stall the main thread. runTest's virtual scheduler does not
+            // wait for real-thread work, so the engine calls
+            // (setMediaItems/prepare/play) land back on the scheduler slightly
+            // after advanceUntilIdle() returns. Poll in real time (bounded) and
+            // drain the scheduler between attempts instead of assuming the
+            // calls were already made.
+            var engineCallsLanded = false
+            var attempts = 0
+            while (!engineCallsLanded && attempts < 100) {
+                attempts++
+                try {
+                    verify { mockPlayer.setMediaItems(any(), any(), any()) }
+                    engineCallsLanded = true
+                } catch (_: AssertionError) {
+                    // Not landed yet — give the real Default-thread build some
+                    // wall-clock time, then drain the scheduler so the queued
+                    // continuation (playSongsAction) can run.
+                    Thread.sleep(50)
+                    advanceUntilIdle()
+                }
+            }
+            assertTrue(
+                engineCallsLanded,
+                "playback never started — setMediaItems was not called " +
+                    "within the ${attempts * 50} ms wait window"
+            )
+            // prepare()/play() run in the same scheduler task as setMediaItems,
+            // so once one has landed the others have too.
             verify { mockPlayer.prepare() }
             verify { mockPlayer.play() }
         }
@@ -408,7 +458,17 @@ class PlayerViewModelTest {
 
                 playerViewModel.clearSearchHistory()
                 
-                val emitted = awaitItem()
+                // The searchHistory update rides the combine collector, which
+                // shares playerUiState with many other collectors (isSearching,
+                // search results, pagination flags, ...). Emissions that still
+                // carry the OLD history can arrive first, so await the emptied
+                // state specifically instead of assuming it is the very next
+                // emission.
+                var emitted = awaitItem()
+                while (emitted.searchHistory.isNotEmpty()) {
+                    emitted = awaitItem()
+                }
+
                 assertTrue(emitted.searchHistory.isEmpty())
                 coVerify { mockSearchStateHolder.clearSearchHistory() }
                 cancelAndConsumeRemainingEvents()
@@ -439,7 +499,15 @@ class PlayerViewModelTest {
 
                 playerViewModel.deleteSearchHistoryItem(queryToDelete)
 
-                val emitted = awaitItem()
+                // Await the refreshed history specifically — unrelated
+                // playerUiState emissions that still carry the pre-delete
+                // history may arrive before the combine collector lands the
+                // updated list.
+                var emitted = awaitItem()
+                while (emitted.searchHistory != finalHistory) {
+                    emitted = awaitItem()
+                }
+
                 assertEquals(finalHistory, emitted.searchHistory)
                 
                 cancelAndConsumeRemainingEvents()
