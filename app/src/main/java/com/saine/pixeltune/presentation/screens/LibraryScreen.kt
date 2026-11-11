@@ -3848,11 +3848,20 @@ fun ArtistListItem(artist: Artist, onClick: () -> Unit, isLoading: Boolean = fal
                     contentAlignment = Alignment.Center
                 ) {
                     if (!artist.imageUrl.isNullOrEmpty()) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(LocalContext.current)
+                        val context = LocalContext.current
+                        // PERF(scroll): the request used to be rebuilt on every
+                        // recomposition of this row — ImageRequest has no
+                        // equals(), so each rebuild discarded the painter's
+                        // request pipeline. Remembered per image URL; Coil
+                        // resolves the 48 dp target size from constraints.
+                        val artistImageRequest = remember(context, artist.imageUrl) {
+                            ImageRequest.Builder(context)
                                 .data(artist.imageUrl)
                                 .crossfade(true)
-                                .build(),
+                                .build()
+                        }
+                        AsyncImage(
+                            model = artistImageRequest,
                             contentDescription = artist.name,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
@@ -3931,6 +3940,17 @@ fun AlbumListItem(
 
     val gradientBaseColor = itemDesignColorScheme.primaryContainer
     val onGradientColor = itemDesignColorScheme.onPrimaryContainer
+    // PERF(scroll): the art overlay gradient used to be rebuilt (Brush +
+    // shader) on every recomposition of this row — mirrored from the grid
+    // item's remembered brush.
+    val artOverlayBrush = remember(gradientBaseColor) {
+        Brush.horizontalGradient(
+            colors = listOf(
+                Color.Transparent,
+                gradientBaseColor
+            )
+        )
+    }
     val cardCornerRadius = 16.dp
     val selectionScale by animateFloatAsState(
         targetValue = if (isSelected) 0.99f else 1f,
@@ -4038,14 +4058,7 @@ fun AlbumListItem(
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(
-                                    Brush.horizontalGradient(
-                                        colors = listOf(
-                                            Color.Transparent,
-                                            gradientBaseColor
-                                        )
-                                    )
-                                )
+                                .background(brush = artOverlayBrush)
                         )
                     }
 

@@ -18,7 +18,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,7 +51,13 @@ fun SyncProgressBar(
 
     val currentCount = syncProgress.currentCount
     val totalCount = syncProgress.totalCount
-    val percentage = (animatedProgress * 100).roundToInt()
+    // PERF(sync): the percentage texts used to read the animated float
+    // directly, recomposing the whole card on every frame of each 300 ms
+    // tween — and the tweens chain continuously while a scan is running. The
+    // rounded percentage only changes ≤100 times per bar.
+    val percentage by remember {
+        derivedStateOf { (animatedProgress * 100).roundToInt() }
+    }
 
     Surface(
         modifier = modifier.fillMaxWidth(),

@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -302,19 +303,15 @@ fun BubblesLine(
     nextTime: Int,
     modifier: Modifier = Modifier,
 ) {
-    val position by positionFlow.collectAsStateWithLifecycle(initialValue = 0L)
-    val isCurrent = position in time until nextTime
-    val transition = rememberInfiniteTransition(label = "bubbles_transition")
-
-    // Animación ralentizada para apreciar mejor el efecto.
-    val animatedValue by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 3500, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ), label = "bubble_animation_progress"
-    )
+    // PERF(lyrics): the position flow used to be collected as state directly
+    // in this scope — every 250 ms playback tick recomposed each visible
+    // blank lyric line. The current-line check is now derived, so this
+    // composable only recomposes when the row actually enters/leaves the
+    // instrumental range.
+    val positionState = positionFlow.collectAsStateWithLifecycle(initialValue = 0L)
+    val isCurrent by remember(time, nextTime) {
+        derivedStateOf { positionState.value in time until nextTime }
+    }
 
     var show by remember { mutableStateOf(false) }
     LaunchedEffect(isCurrent) {
@@ -322,6 +319,21 @@ fun BubblesLine(
     }
 
     if (show) {
+        // PERF(lyrics): the infinite transition used to be created BEFORE the
+        // `show` gate — hidden rows kept a frame-clock coroutine ticking for
+        // as long as they were composed. It now only exists while visible.
+        val transition = rememberInfiniteTransition(label = "bubbles_transition")
+
+        // Animación ralentizada para apreciar mejor el efecto.
+        val animatedValue by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 3500, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ), label = "bubble_animation_progress"
+        )
+
         val density = LocalDensity.current
         // Círculos más pequeños para acentuar la animación de escala.
         val bubbleRadius = remember(density) { with(density) { 4.dp.toPx() } }
@@ -333,6 +345,13 @@ fun BubblesLine(
             makePathsCompatible(circleNodes, noteNodes)
             circleNodes to noteNodes
         }
+
+        // PERF(lyrics): the morph used to allocate a fresh List<PathNode> plus
+        // a Path (≈20 native ops) per bubble per frame — thousands of
+        // allocations per second during instrumental breaks. Three reusable
+        // Paths are now lerped in place; `animatedValue` is read inside the
+        // draw lambda, so the animation only invalidates the draw pass.
+        val bubblePaths = remember { List(3) { Path() } }
 
         Canvas(modifier = modifier.size(64.dp, 48.dp)) {
             val bubbleCount = 3
@@ -354,11 +373,9 @@ fun BubblesLine(
                 // Se calcula un desplazamiento horizontal dinámico que se activa con el morphing.
                 val xOffsetCorrection = lerpFloat(0f, bubbleRadius * 1.8f, morphProgress)
 
-                val morphedPath = lerpPath(
-                    start = morphableCircle,
-                    stop = morphableNote,
-                    fraction = morphProgress
-                ).toPath()
+                val morphedPath = bubblePaths[i]
+                morphedPath.rewind()
+                appendLerpedPath(morphedPath, morphableCircle, morphableNote, morphProgress)
 
                 // Se posiciona el contenedor de la animación en su columna.
                 translate(left = (size.width / (bubbleCount + 1)) * (i + 1)) {
@@ -382,47 +399,46 @@ fun BubblesLine(
 
 // --- Lógica de Path Morphing ---
 
-private fun lerpPath(start: List<PathNode>, stop: List<PathNode>, fraction: Float): List<PathNode> {
-    return start.mapIndexed { index, startNode ->
-        val stopNode = stop[index]
-        when (startNode) {
+/**
+ * PERF(lyrics): lerps two compatible PathNode lists directly into a reused
+ * [target] Path (the node lists are produced by [makePathsCompatible], so
+ * types are guaranteed to match at every index). Replaces the old
+ * lerpPath().toPath() chain that allocated a node list + Path per call.
+ */
+private fun appendLerpedPath(
+    target: Path,
+    start: List<PathNode>,
+    stop: List<PathNode>,
+    fraction: Float
+) {
+    for (index in start.indices) {
+        when (val startNode = start[index]) {
             is PathNode.MoveTo -> {
-                val stopMoveTo = stopNode as PathNode.MoveTo
-                PathNode.MoveTo(
-                    lerpFloat(startNode.x, stopMoveTo.x, fraction),
-                    lerpFloat(startNode.y, stopMoveTo.y, fraction)
+                val stopNode = stop[index] as PathNode.MoveTo
+                target.moveTo(
+                    lerpFloat(startNode.x, stopNode.x, fraction),
+                    lerpFloat(startNode.y, stopNode.y, fraction)
                 )
             }
             is PathNode.CurveTo -> {
-                val stopCurveTo = stopNode as PathNode.CurveTo
-                PathNode.CurveTo(
-                    lerpFloat(startNode.x1, stopCurveTo.x1, fraction),
-                    lerpFloat(startNode.y1, stopCurveTo.y1, fraction),
-                    lerpFloat(startNode.x2, stopCurveTo.x2, fraction),
-                    lerpFloat(startNode.y2, stopCurveTo.y2, fraction),
-                    lerpFloat(startNode.x3, stopCurveTo.x3, fraction),
-                    lerpFloat(startNode.y3, stopCurveTo.y3, fraction)
+                val stopNode = stop[index] as PathNode.CurveTo
+                target.cubicTo(
+                    lerpFloat(startNode.x1, stopNode.x1, fraction),
+                    lerpFloat(startNode.y1, stopNode.y1, fraction),
+                    lerpFloat(startNode.x2, stopNode.x2, fraction),
+                    lerpFloat(startNode.y2, stopNode.y2, fraction),
+                    lerpFloat(startNode.x3, stopNode.x3, fraction),
+                    lerpFloat(startNode.y3, stopNode.y3, fraction)
                 )
             }
-            else -> startNode
+            is PathNode.Close -> target.close()
+            else -> {}
         }
     }
 }
 
 private fun lerpFloat(start: Float, stop: Float, fraction: Float): Float {
     return start + (stop - start) * fraction
-}
-
-private fun List<PathNode>.toPath(): Path = Path().apply {
-    this@toPath.forEach { node ->
-        when (node) {
-            is PathNode.MoveTo -> moveTo(node.x, node.y)
-            is PathNode.LineTo -> lineTo(node.x, node.y)
-            is PathNode.CurveTo -> cubicTo(node.x1, node.y1, node.x2, node.y2, node.x3, node.y3)
-            is PathNode.Close -> close()
-            else -> {}
-        }
-    }
 }
 
 private fun makePathsCompatible(nodes1: MutableList<PathNode>, nodes2: MutableList<PathNode>): Pair<MutableList<PathNode>, MutableList<PathNode>> {

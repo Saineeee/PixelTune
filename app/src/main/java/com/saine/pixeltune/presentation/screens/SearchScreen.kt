@@ -72,6 +72,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -405,7 +406,6 @@ fun SearchScreen(
         keyboardController?.hide()
         focusManager.clearFocus()
     }
-
     // IMPROVE(search-suggestions): entering the compose phase — used by the
     // field's leading affordance and the history "fill" arrows.
     val enterSearchEditing: () -> Unit = {
@@ -481,12 +481,24 @@ fun SearchScreen(
     // like any submitted search, the keyboard drops and the body lands on the
     // full results it was already loading, with the mini player sliding back
     // in above the now-playing song.
-    val onPreviewSongSelected: (Song) -> Unit = { song ->
-        if (searchQuery.isNotBlank()) {
-            playerViewModel.onSearchQuerySubmitted(searchQuery)
+    // PERF(search): the query is read at this screen's top level, so every
+    // keystroke recomposes the whole screen scope. The callbacks below used
+    // to be recreated on every one of those recompositions — unstable lambda
+    // parameters defeat skippability, so every visible results row
+    // recomposed on each keystroke while live-filtering in LOCAL mode. They
+    // are now remembered (volatile captures go through rememberUpdatedState)
+    // so the rows can skip.
+    val currentSearchQuery by rememberUpdatedState(searchQuery)
+    val currentExitSearchEditing by rememberUpdatedState(exitSearchEditing)
+
+    val onPreviewSongSelected: (Song) -> Unit = remember(playerViewModel) {
+        { song ->
+            if (currentSearchQuery.isNotBlank()) {
+                playerViewModel.onSearchQuerySubmitted(currentSearchQuery)
+            }
+            playerViewModel.showAndPlaySong(song)
+            currentExitSearchEditing()
         }
-        playerViewModel.showAndPlaySong(song)
-        exitSearchEditing()
     }
 
     // IMPROVE(search-suggestions): the "Search for …" fallback row of the
@@ -494,40 +506,47 @@ fun SearchScreen(
     // compose phase's empty state: whenever the provider returns nothing (or
     // the request silently failed), the user still has a prominent, tappable
     // way to run the typed query.
-    val onSearchExactQuery: () -> Unit = {
-        if (searchQuery.isNotBlank()) {
-            playerViewModel.onSearchQuerySubmitted(searchQuery)
+    val onSearchExactQuery: () -> Unit = remember(playerViewModel) {
+        {
+            if (currentSearchQuery.isNotBlank()) {
+                playerViewModel.onSearchQuerySubmitted(currentSearchQuery)
+            }
+            currentExitSearchEditing()
         }
-        exitSearchEditing()
     }
 
-    val handleSongMoreOptionsClick: (Song) -> Unit = { song ->
-        selectedSongForInfo = song
-        playerViewModel.selectSongForInfo(song)
-        showSongInfoBottomSheet = true
+    val handleSongMoreOptionsClick: (Song) -> Unit = remember(playerViewModel) {
+        { song ->
+            selectedSongForInfo = song
+            playerViewModel.selectSongForInfo(song)
+            showSongInfoBottomSheet = true
+        }
     }
 
     val searchbarCornerRadius = 28.dp
 
     val dm = LocalPixelTuneDarkTheme.current
+    val colorScheme = MaterialTheme.colorScheme
 
-    val gradientColorsDark = listOf(
-        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-        Color.Transparent
-    ).toImmutableList()
-
-    val gradientColorsLight = listOf(
-        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f),
-        Color.Transparent
-    ).toImmutableList()
-
-    val gradientColors = if (dm) gradientColorsDark else gradientColorsLight
+    // PERF(search): these lists (and their immutable copies) used to be
+    // rebuilt on every keystroke-driven recomposition of this screen.
+    val gradientColors = remember(dm, colorScheme) {
+        if (dm) {
+            listOf(
+                colorScheme.primaryContainer.copy(alpha = 0.5f),
+                Color.Transparent
+            ).toImmutableList()
+        } else {
+            listOf(
+                colorScheme.onPrimaryContainer.copy(alpha = 0.2f),
+                Color.Transparent
+            ).toImmutableList()
+        }
+    }
 
     val gradientBrush = remember(gradientColors) {
         Brush.verticalGradient(colors = gradientColors)
     }
-
-    val colorScheme = MaterialTheme.colorScheme
 
     DisposableEffect(Unit) {
         onDispose {
@@ -966,9 +985,11 @@ fun SearchScreen(
                                     SearchResultsViewState.RESULTS -> SearchResultsList(
                                         results = searchResults,
                                         playerViewModel = playerViewModel,
-                                        onItemSelected = {
-                                            if (searchQuery.isNotBlank()) {
-                                                playerViewModel.onSearchQuerySubmitted(searchQuery)
+                                        onItemSelected = remember(playerViewModel) {
+                                            {
+                                                if (currentSearchQuery.isNotBlank()) {
+                                                    playerViewModel.onSearchQuerySubmitted(currentSearchQuery)
+                                                }
                                             }
                                         },
                                         currentPlayingSongId = stablePlayerState.currentSong?.id,
@@ -980,7 +1001,9 @@ fun SearchScreen(
                                         // more" row shows for every filter chip.
                                         hasMoreResults = isOnlineSearch && uiState.hasMoreSearchResults,
                                         isLoadingMoreResults = isOnlineSearch && uiState.isLoadingMoreSearchResults,
-                                        onLoadMoreResults = { playerViewModel.loadMoreSearchResults() },
+                                        onLoadMoreResults = remember(playerViewModel) {
+                                            { playerViewModel.loadMoreSearchResults() }
+                                        },
                                         // IMPROVE(cloud-playlist-import): the
                                         // "Add to your playlist" action on
                                         // online playlist rows.

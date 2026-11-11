@@ -13,6 +13,7 @@ import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -71,15 +72,21 @@ fun PixelTuneTheme(
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
+    // PERF(theme): the dynamic schemes do resource lookups and build a
+    // ~30-color scheme on every call — this used to run on every
+    // PixelTuneTheme recomposition. Cached per dark/light mode.
+    val dynamicColorScheme = remember(context, darkTheme) {
+        try {
+            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        } catch (e: Exception) {
+            // Fallback a los defaults si dynamic colors falla (raro, pero posible en algunos dispositivos)
+            if (darkTheme) DarkColorScheme else LightColorScheme
+        }
+    }
     val finalColorScheme = when {
         colorSchemePairOverride == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             // Tema dinámico del sistema como prioridad si no hay override
-            try {
-                if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-            } catch (e: Exception) {
-                // Fallback a los defaults si dynamic colors falla (raro, pero posible en algunos dispositivos)
-                if (darkTheme) DarkColorScheme else LightColorScheme
-            }
+            dynamicColorScheme
         }
         colorSchemePairOverride != null -> {
             // Usar el esquema del álbum si se proporciona

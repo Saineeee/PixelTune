@@ -12,7 +12,12 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.ui.graphics.TransformOrigin
 
-const val TRANSITION_DURATION = 500
+// PERF(nav): the previous 500 ms duration kept BOTH full screens composed and
+// drawn (and, on pop, both scaled) for a third longer than the motion needs —
+// extending the heaviest GPU/composition window of every navigation. 350 ms
+// keeps the exact same slide + scale + fade choreography and easing while
+// shortening the dual-composition window by 30%.
+const val TRANSITION_DURATION = 350
 private val TRANSITION_EASING = FastOutSlowInEasing
 
 // Push: Enter from Right

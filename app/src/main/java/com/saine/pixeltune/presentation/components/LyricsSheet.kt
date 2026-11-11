@@ -75,6 +75,9 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -820,46 +823,18 @@ fun LyricsSheet(
         }
        
        // Swipe Feedback Overlay
-       if (isSwipeActive || swipeProgress.value > 0f) {
-           val isNext = dragOffset < 0
-           val overlayAlignment = if (isNext) Alignment.CenterEnd else Alignment.CenterStart
-           val icon = if (isNext) Icons.Rounded.SkipNext else Icons.Rounded.SkipPrevious
-           
-           Box(
-               modifier = Modifier
-                   .align(overlayAlignment)
-                   .size(100.dp) // Base size
-                   .padding(
-                       start = if(isNext) 0.dp else 6.dp,
-                       end = if(isNext) 6.dp else 0.dp
-                   )
-                   .graphicsLayer {
-                        val widthPx = size.width
-                        val initialOffset = if(isNext) widthPx else -widthPx
-                        translationX = initialOffset * (1f - swipeProgress.value)
-
-                        scaleX = 0.8f + (swipeProgress.value * 0.2f)
-                        scaleY = 0.8f + (swipeProgress.value * 0.2f)
-                   }
-                   .background(
-                        color = accentColor, // No alpha modulation
-                        shape = RoundedCornerShape(
-                            topStart = if(isNext) 360.dp else 8.dp,
-                            bottomStart = if(isNext) 360.dp else 8.dp,
-                            topEnd = if(isNext) 8.dp else 360.dp,
-                            bottomEnd = if(isNext) 8.dp else 360.dp
-                        )
-                   ),
-               contentAlignment = Alignment.Center
-           ) {
-               Icon(
-                   imageVector = icon,
-                   contentDescription = null,
-                   modifier = Modifier.size(48.dp),
-                   tint = onAccentColor
-               )
-           }
-       }
+       // PERF(lyrics): the overlay's visibility/direction used to be evaluated
+       // in the sheet's root content scope — reading swipeProgress.value and
+       // dragOffset there recomposed the entire lyrics column, toolbar and
+       // controls on every drag delta. The reads now live inside the overlay
+       // composable (and its layer lambda), so only the overlay updates.
+       SwipeFeedbackOverlay(
+           swipeProgress = swipeProgress,
+           isSwipeActive = { isSwipeActive },
+           dragOffset = { dragOffset },
+           accentColor = accentColor,
+           onAccentColor = onAccentColor
+       )
 
       }
     }
@@ -1357,15 +1332,11 @@ private fun LyricsTrackInfo(
 
     val albumShape = CircleShape
 
-    val infiniteTransition = rememberInfiniteTransition(label = "vinylRotation")
-    val rotation by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(4000, easing = LinearEasing)
-        ),
-        label = "rotation"
-    )
+    // PERF(lyrics): an unused `rememberInfiniteTransition` ("vinylRotation")
+    // used to run here — a frame-clock coroutine writing animation state at
+    // the display refresh rate for as long as the lyrics screen was open,
+    // even while paused, despite its value never being read (the actual spin
+    // uses the `currentRotation` Animatable below). Removed.
 
     // Helper state to stop rotation when paused, but we want it to pause in place?
     // Using infiniteTransition.animateFloat will reset on recomposition if spec changes or stops.
@@ -1450,6 +1421,67 @@ private fun LyricsTrackInfo(
                 .size(width = 18.dp, height = 16.dp),
             color = contentColor,
             isPlaying = isPlaying
+        )
+    }
+}
+
+/**
+ * PERF(lyrics): isolated scope for the swipe-to-skip feedback overlay. The
+ * visibility and direction reads (per-pointer-event states) used to live in
+ * the lyrics sheet's root content scope, recomposing the entire sheet
+ * content on every drag delta. Here the derived Booleans only invalidate
+ * THIS composable when they flip, and the per-frame translation/scale of the
+ * pill is applied inside the graphicsLayer lambda (draw phase only).
+ */
+@Composable
+private fun BoxScope.SwipeFeedbackOverlay(
+    swipeProgress: Animatable<Float, AnimationVector1D>,
+    isSwipeActive: () -> Boolean,
+    dragOffset: () -> Float,
+    accentColor: Color,
+    onAccentColor: Color
+) {
+    val visible by remember {
+        derivedStateOf { isSwipeActive() || swipeProgress.value > 0f }
+    }
+    if (!visible) return
+
+    val isNext by remember { derivedStateOf { dragOffset() < 0f } }
+    val overlayAlignment = if (isNext) Alignment.CenterEnd else Alignment.CenterStart
+    val icon = if (isNext) Icons.Rounded.SkipNext else Icons.Rounded.SkipPrevious
+
+    Box(
+        modifier = Modifier
+            .align(overlayAlignment)
+            .size(100.dp) // Base size
+            .padding(
+                start = if (isNext) 0.dp else 6.dp,
+                end = if (isNext) 6.dp else 0.dp
+            )
+            .graphicsLayer {
+                val widthPx = size.width
+                val initialOffset = if (isNext) widthPx else -widthPx
+                translationX = initialOffset * (1f - swipeProgress.value)
+
+                scaleX = 0.8f + (swipeProgress.value * 0.2f)
+                scaleY = 0.8f + (swipeProgress.value * 0.2f)
+            }
+            .background(
+                color = accentColor, // No alpha modulation
+                shape = RoundedCornerShape(
+                    topStart = if (isNext) 360.dp else 8.dp,
+                    bottomStart = if (isNext) 360.dp else 8.dp,
+                    topEnd = if (isNext) 8.dp else 360.dp,
+                    bottomEnd = if (isNext) 8.dp else 360.dp
+                )
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(48.dp),
+            tint = onAccentColor
         )
     }
 }

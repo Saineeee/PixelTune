@@ -365,21 +365,26 @@ fun HomeScreen(
                 }
             }
         }
+        val scrimColor = MaterialTheme.colorScheme.surfaceContainerLowest
+        // PERF(home): this bottom scrim brush (and its gradient stops) used
+        // to be rebuilt on every HomeScreen recomposition — remembered per
+        // theme color like the other screens' scrims.
+        val bottomScrimBrush = remember(scrimColor) {
+            Brush.verticalGradient(
+                colorStops = arrayOf(
+                    0.0f to Color.Transparent,
+                    0.2f to Color.Transparent,
+                    0.8f to scrimColor,
+                    1.0f to scrimColor
+                )
+            )
+        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
                 .height(170.dp)
-                .background(
-                    brush = Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0.0f to Color.Transparent,
-                            0.2f to Color.Transparent,
-                            0.8f to MaterialTheme.colorScheme.surfaceContainerLowest,
-                            1.0f to MaterialTheme.colorScheme.surfaceContainerLowest
-                        )
-                    )
-                )
+                .background(brush = bottomScrimBrush)
         ) {
 
         }
@@ -466,6 +471,21 @@ fun YourMixHeader(
     val buttonCorners = 68.dp
     val colors = MaterialTheme.colorScheme
 
+    // PERF(home): the squircle shape (and its path math) used to be rebuilt on
+    // every recomposition of this header.
+    val playButtonShape = remember(buttonCorners) {
+        AbsoluteSmoothCornerShape(
+            cornerRadiusTL = buttonCorners,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusBR = buttonCorners,
+            smoothnessAsPercentTL = 60,
+            cornerRadiusBL = buttonCorners,
+            smoothnessAsPercentBR = 60,
+            cornerRadiusTR = buttonCorners,
+            smoothnessAsPercentBL = 60,
+        )
+    }
+
     val titleStyle = rememberYourMixTitleStyle()
 
     Box(
@@ -503,16 +523,7 @@ fun YourMixHeader(
             onClick = onPlayShuffled,
             containerColor = if (isShuffleEnabled) colors.primary else colors.tertiaryContainer,
             contentColor = if (isShuffleEnabled) colors.onPrimary else colors.onTertiaryContainer,
-            shape = AbsoluteSmoothCornerShape(
-                cornerRadiusTL = buttonCorners,
-                smoothnessAsPercentTR = 60,
-                cornerRadiusBR = buttonCorners,
-                smoothnessAsPercentTL = 60,
-                cornerRadiusBL = buttonCorners,
-                smoothnessAsPercentBR = 60,
-                cornerRadiusTR = buttonCorners,
-                smoothnessAsPercentBL = 60,
-            )
+            shape = playButtonShape
         ) {
             Icon(
                 painter = painterResource(R.drawable.rounded_shuffle_24),

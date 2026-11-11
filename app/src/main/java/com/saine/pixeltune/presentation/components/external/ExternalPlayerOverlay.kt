@@ -48,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import coil.size.Size
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -242,7 +243,13 @@ fun ExternalPlayerOverlay(
                                     title = currentSong.title,
                                     modifier = Modifier
                                         .size(96.dp)
-                                        .clip(RoundedCornerShape(18.dp))
+                                        .clip(RoundedCornerShape(18.dp)),
+                                    // PERF(external-player): decode bounded to the
+                                    // 96 dp display size instead of the embedded
+                                    // art's original resolution (full-res album
+                                    // bitmaps are typically ~1000px / ~4 MB —
+                                    // decoded here for a ~256 px thumbnail).
+                                    targetSize = Size(256, 256)
                                 )
                             }
 

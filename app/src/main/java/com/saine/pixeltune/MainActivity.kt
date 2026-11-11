@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.Trace
 import android.provider.Settings
 import android.util.Log
+import kotlin.math.roundToInt
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -783,7 +784,21 @@ class MainActivity : ComponentActivity() {
                             shrinkTowards = Alignment.Bottom
                         ) + fadeOut(animationSpec = tween(durationMillis = 120))
                     ) {
-                        val playerContentExpansionFraction = playerViewModel.playerContentExpansionFraction.value
+                        // PERF(player-sheet): `playerContentExpansionFraction` is an
+                        // Animatable that changes EVERY FRAME during the sheet
+                        // drag/settle gesture. It used to be read raw here (and
+                        // used as a `remember` key twice below), which recomposed
+                        // this whole bottom-bar scope — nav Surface + all
+                        // navigation items — at the display frame rate during the
+                        // app's most jank-sensitive gesture, and re-allocated the
+                        // `derivedStateOf`s every frame (defeating derivation).
+                        // It is now captured once as a stable derived state and
+                        // read only inside derived blocks / the layer lambda.
+                        val playerContentExpansionFractionState = remember {
+                            derivedStateOf {
+                                playerViewModel.playerContentExpansionFraction.value.coerceIn(0f, 1f)
+                            }
+                        }
                         val currentSongId by remember {
                             playerViewModel.stablePlayerState
                                 .map { it.currentSong?.id }
@@ -793,39 +808,36 @@ class MainActivity : ComponentActivity() {
                         val navBarCornerRadius by playerViewModel.navBarCornerRadius.collectAsStateWithLifecycle()
                         val navBarElevation = 3.dp
 
-                        val playerContentActualBottomRadiusTargetValue by remember(
+                        // PERF(player-sheet): the radius used to be an
+                        // `animateDpAsState` chasing a per-frame target — the
+                        // spring was retargeted every frame and the nav bar's
+                        // AbsoluteSmoothCornerShape (plus its outline) was
+                        // rebuilt at the frame rate. The sheet fraction is
+                        // already time-animated by the sheet controller, so the
+                        // radius is now derived directly from it (mirroring
+                        // SheetVisualState's player-area radius) and quantized
+                        // to 0.5 dp so the Surface only re-shapes ~28 times
+                        // across the whole gesture instead of every frame.
+                        val playerContentActualBottomRadius by remember(
                             navBarStyle,
                             showPlayerContentArea,
-                            playerContentExpansionFraction,
+                            navBarCornerRadius
                         ) {
                             derivedStateOf {
-                                if (navBarStyle == NavBarStyle.FULL_WIDTH) {
-                                    return@derivedStateOf lerp(navBarCornerRadius.dp, 26.dp, playerContentExpansionFraction)
-                                }
-
-                                if (showPlayerContentArea) {
-                                    if (playerContentExpansionFraction < 0.2f) {
-                                        lerp(12.dp, 26.dp, (playerContentExpansionFraction / 0.2f).coerceIn(0f, 1f))
+                                val fraction = playerContentExpansionFractionState.value
+                                val targetDp = when {
+                                    navBarStyle == NavBarStyle.FULL_WIDTH ->
+                                        lerp(navBarCornerRadius.dp, 26.dp, fraction)
+                                    showPlayerContentArea -> if (fraction < 0.2f) {
+                                        lerp(12.dp, 26.dp, (fraction / 0.2f).coerceIn(0f, 1f))
                                     } else {
                                         26.dp
                                     }
-                                } else {
-                                    navBarCornerRadius.dp
+                                    else -> navBarCornerRadius.dp
                                 }
+                                ((targetDp.value * 2f).roundToInt() / 2f).dp
                             }
                         }
-
-                        val playerContentActualBottomRadius by animateDpAsState(
-                            targetValue = playerContentActualBottomRadiusTargetValue,
-                            animationSpec = androidx.compose.animation.core.spring(
-                                dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
-                                stiffness = androidx.compose.animation.core.Spring.StiffnessMedium
-                            ),
-                            label = "PlayerContentBottomRadius"
-                        )
-
-                        val navBarHideFraction = if (showPlayerContentArea) playerContentExpansionFraction else 0f
-                        val navBarHideFractionClamped = navBarHideFraction.coerceIn(0f, 1f)
 
                         val actualShape = remember(playerContentActualBottomRadius, showPlayerContentArea, navBarStyle, navBarCornerRadius) {
                             val bottomRadius = if (navBarStyle == NavBarStyle.FULL_WIDTH) 0.dp else navBarCornerRadius.dp
@@ -852,13 +864,15 @@ class MainActivity : ComponentActivity() {
                             with(density) { bottomBarPadding.toPx() }
                         }
                         val animatedTranslationY by remember(
-                            navBarHideFractionClamped,
+                            showPlayerContentArea,
                             componentHeightPx,
                             shadowOverflowPx,
                             bottomBarPaddingPx,
                         ) {
                             derivedStateOf {
-                                (componentHeightPx + shadowOverflowPx + bottomBarPaddingPx) * navBarHideFractionClamped
+                                val hideFraction =
+                                    if (showPlayerContentArea) playerContentExpansionFractionState.value else 0f
+                                (componentHeightPx + shadowOverflowPx + bottomBarPaddingPx) * hideFraction.coerceIn(0f, 1f)
                             }
                         }
 

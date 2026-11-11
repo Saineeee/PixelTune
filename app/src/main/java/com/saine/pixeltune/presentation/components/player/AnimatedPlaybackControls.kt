@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,6 +24,7 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,6 +34,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalConfiguration
@@ -129,22 +133,26 @@ fun AnimatedPlaybackControls(
                 else -> compressionWeight
             }
 
-            val prevWeight by animateFloatAsState(
+            // PERF(player-controls): the animated weights used to be read in
+            // this Row scope — every frame of the ~240 ms weight morph
+            // recomposed and re-laid-out ALL three buttons (plus re-created
+            // the play button's clip shape). Each button now reads its own
+            // weight inside its own scope, so a morph only invalidates the
+            // animating button, and the play button's corner morphs in the
+            // graphics layer (draw phase) instead of a rebuilt clip modifier.
+            val prevWeightState = animateFloatAsState(
                 targetValue = weightFor(PlaybackButtonType.PREVIOUS),
                 animationSpec = pressAnimationSpec,
                 label = "prevWeight"
             )
-            Box(
-                modifier = Modifier
-                    .weight(prevWeight)
-                    .fillMaxHeight()
-                    .clip(CircleShape)
-                    .background(colorPreviousButton)
-                    .clickable {
-                        lastClicked = PlaybackButtonType.PREVIOUS
-                        onPrevious()
-                    },
-                contentAlignment = Alignment.Center
+            PlaybackWeightButton(
+                weightState = prevWeightState,
+                backgroundColor = colorPreviousButton,
+                shapeProvider = { CircleShape },
+                onClick = {
+                    lastClicked = PlaybackButtonType.PREVIOUS
+                    onPrevious()
+                }
             ) {
                 Icon(
                     painter = painterResource(R.drawable.rounded_skip_previous_24),
@@ -154,12 +162,12 @@ fun AnimatedPlaybackControls(
                 )
             }
 
-            val playWeight by animateFloatAsState(
+            val playWeightState = animateFloatAsState(
                 targetValue = weightFor(PlaybackButtonType.PLAY_PAUSE),
                 animationSpec = pressAnimationSpec,
                 label = "playWeight"
             )
-            val playCorner by animateDpAsState(
+            val playCornerState = animateDpAsState(
                 targetValue = if (!playPauseVisualState) playPauseCornerPlaying else playPauseCornerPaused,
                 animationSpec = spring(
                     dampingRatio = Spring.DampingRatioNoBouncy,
@@ -167,28 +175,26 @@ fun AnimatedPlaybackControls(
                 ),
                 label = "playCorner"
             )
-            val playShape = AbsoluteSmoothCornerShape(
-                cornerRadiusTL = playCorner,
-                smoothnessAsPercentTR = 60,
-                cornerRadiusBL = playCorner,
-                smoothnessAsPercentTL = 60,
-                cornerRadiusTR = playCorner,
-                smoothnessAsPercentBL = 60,
-                cornerRadiusBR = playCorner,
-                smoothnessAsPercentBR = 60
-            )
-            Box(
-                modifier = Modifier
-                    .weight(playWeight)
-                    .fillMaxHeight()
-                    .clip(playShape)
-                    .background(colorPlayPause)
-                    .clickable {
-                        lastClicked = PlaybackButtonType.PLAY_PAUSE
-                        hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onPlayPause()
-                    },
-                contentAlignment = Alignment.Center
+            PlaybackWeightButton(
+                weightState = playWeightState,
+                backgroundColor = colorPlayPause,
+                shapeProvider = {
+                    AbsoluteSmoothCornerShape(
+                        cornerRadiusTL = playCornerState.value,
+                        smoothnessAsPercentTR = 60,
+                        cornerRadiusBL = playCornerState.value,
+                        smoothnessAsPercentTL = 60,
+                        cornerRadiusTR = playCornerState.value,
+                        smoothnessAsPercentBL = 60,
+                        cornerRadiusBR = playCornerState.value,
+                        smoothnessAsPercentBR = 60
+                    )
+                },
+                onClick = {
+                    lastClicked = PlaybackButtonType.PLAY_PAUSE
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onPlayPause()
+                }
             ) {
                 MorphingPlayPauseIcon(
                     isPlaying = playPauseVisualState,
@@ -197,22 +203,19 @@ fun AnimatedPlaybackControls(
                 )
             }
 
-            val nextWeight by animateFloatAsState(
+            val nextWeightState = animateFloatAsState(
                 targetValue = weightFor(PlaybackButtonType.NEXT),
                 animationSpec = pressAnimationSpec,
                 label = "nextWeight"
             )
-            Box(
-                modifier = Modifier
-                    .weight(nextWeight)
-                    .fillMaxHeight()
-                    .clip(CircleShape)
-                    .background(colorNextButton)
-                    .clickable {
-                        lastClicked = PlaybackButtonType.NEXT
-                        onNext()
-                    },
-                contentAlignment = Alignment.Center
+            PlaybackWeightButton(
+                weightState = nextWeightState,
+                backgroundColor = colorNextButton,
+                shapeProvider = { CircleShape },
+                onClick = {
+                    lastClicked = PlaybackButtonType.NEXT
+                    onNext()
+                }
             ) {
                 Icon(
                     painter = painterResource(R.drawable.rounded_skip_next_24),
@@ -222,6 +225,38 @@ fun AnimatedPlaybackControls(
                 )
             }
         }
+    }
+}
+
+/**
+ * PERF(player-controls): a playback button that reads its animated weight
+ * inside its OWN scope (instead of the parent Row's), so the weight morph
+ * only recomposes the animating button. The clip shape is applied through
+ * `graphicsLayer { shape; clip }` — evaluated in the draw phase — so shape
+ * changes (e.g. the play button's corner morph) never rebuild the modifier
+ * chain or re-measure the button.
+ */
+@Composable
+private fun RowScope.PlaybackWeightButton(
+    weightState: State<Float>,
+    backgroundColor: Color,
+    shapeProvider: () -> Shape,
+    onClick: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .weight(weightState.value)
+            .fillMaxHeight()
+            .graphicsLayer {
+                shape = shapeProvider()
+                clip = true
+            }
+            .background(backgroundColor)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
     }
 }
 

@@ -22,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import coil.size.Size
@@ -70,11 +71,13 @@ private fun DailyMixCard(
     onClickOpen: () -> Unit,
     playerViewModel: PlayerViewModel
 ) {
-    val headerSongs = songs.take(3).toImmutableList()
-    val visibleSongs = songs.take(4).toImmutableList()
+    // PERF(home): these immutable sub-lists (and the card's squircle shape)
+    // used to be rebuilt on every recomposition of the card.
+    val headerSongs = remember(songs) { songs.take(3).toImmutableList() }
+    val visibleSongs = remember(songs) { songs.take(4).toImmutableList() }
     val cornerRadius = 30.dp
-    Card(
-        shape = AbsoluteSmoothCornerShape(
+    val cardShape = remember(cornerRadius) {
+        AbsoluteSmoothCornerShape(
             cornerRadiusBR = cornerRadius,
             smoothnessAsPercentTL = 60,
             cornerRadiusTR = cornerRadius,
@@ -83,7 +86,10 @@ private fun DailyMixCard(
             smoothnessAsPercentBL = 60,
             cornerRadiusTL = cornerRadius,
             smoothnessAsPercentBR = 60
-        ),
+        )
+    }
+    Card(
+        shape = cardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.elevatedCardElevation(0.dp),
         modifier = Modifier.fillMaxWidth()
@@ -126,18 +132,24 @@ fun DailyMixHeader(thumbnails: ImmutableList<Song>) {
         }
     }
 
+    // PERF(home): the header gradient used to be rebuilt (Brush + shader) on
+    // every recomposition; remembered per theme colors like the other scrims.
+    val primary = MaterialTheme.colorScheme.primary
+    val tertiary = MaterialTheme.colorScheme.tertiary
+    val headerBrush = remember(primary, tertiary) {
+        Brush.horizontalGradient(
+            colors = listOf(
+                primary.copy(alpha = 0.7f),
+                tertiary.copy(alpha = 0.7f)
+            )
+        )
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(80.dp)
-            .background(
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.7f)
-                    )
-                )
-            ),
+            .background(brush = headerBrush),
         contentAlignment = Alignment.CenterStart
     ) {
         Row(
@@ -194,22 +206,24 @@ fun DailyMixHeader(thumbnails: ImmutableList<Song>) {
 
 @Composable
 fun threeShapeSwitch(index: Int, thirdShapeCornerRadius: Dp = 16.dp): Shape { // Ensure the function returns a Shape
-    return when (index) { // Return the result of the when expression
-        0 -> RoundedStarShape(
-            sides = 6,
-            rotation = 10f
-        )
+    // PERF(home): these shapes used to be re-created twice per thumbnail on
+    // every recomposition of the header (clip + border) — each squircle build
+    // runs smooth-corner path math.
+    return when (index) {
+        0 -> remember { RoundedStarShape(sides = 6, rotation = 10f) }
         1 -> CircleShape
-        2 -> AbsoluteSmoothCornerShape(
-            cornerRadiusBL = thirdShapeCornerRadius,
-            cornerRadiusTR = thirdShapeCornerRadius,
-            smoothnessAsPercentBL = 60,
-            smoothnessAsPercentTR = 60,
-            cornerRadiusTL = thirdShapeCornerRadius,
-            cornerRadiusBR = thirdShapeCornerRadius,
-            smoothnessAsPercentTL = 60,
-            smoothnessAsPercentBR = 60
-        )
+        2 -> remember(thirdShapeCornerRadius) {
+            AbsoluteSmoothCornerShape(
+                cornerRadiusBL = thirdShapeCornerRadius,
+                cornerRadiusTR = thirdShapeCornerRadius,
+                smoothnessAsPercentBL = 60,
+                smoothnessAsPercentTR = 60,
+                cornerRadiusTL = thirdShapeCornerRadius,
+                cornerRadiusBR = thirdShapeCornerRadius,
+                smoothnessAsPercentTL = 60,
+                smoothnessAsPercentBR = 60
+            )
+        }
         else -> CircleShape // It's good practice to have a default case
     }
 }

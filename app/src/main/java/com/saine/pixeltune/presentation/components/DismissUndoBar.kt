@@ -28,6 +28,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.addOutline
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.unit.dp
 import com.saine.pixeltune.ui.theme.GoogleSansRounded
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
@@ -51,6 +56,25 @@ fun DismissUndoBar(
             )
         )
     }
+
+    // PERF(undo-bar): the shrinking fill used to be `fillMaxWidth(fraction =
+    // progress.value)` — a layout parameter driven from a per-frame Animatable
+    // read in composition, which recomposed AND re-laid-out the whole bar
+    // (texts, buttons) for the entire undo window (~4 s at the display frame
+    // rate). The fill is now drawn in the draw phase with a reused Path: the
+    // same rounded, left-anchored shrinking fill, zero recomposition.
+    val fillColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+    val fillShape = AbsoluteSmoothCornerShape(
+        cornerRadiusTR = 12.dp,
+        smoothnessAsPercentTL = 60,
+        cornerRadiusTL = 12.dp,
+        smoothnessAsPercentTR = 60,
+        cornerRadiusBR = 12.dp,
+        smoothnessAsPercentBL = 60,
+        cornerRadiusBL = 12.dp,
+        smoothnessAsPercentBR = 60
+    )
+    val fillPath = remember { Path() }
 
     Surface(
         modifier = modifier,
@@ -103,21 +127,23 @@ fun DismissUndoBar(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .fillMaxWidth(fraction = progress.value.coerceIn(0f, 1f))
-                    .fillMaxHeight()
-                    .background(
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
-                        shape = AbsoluteSmoothCornerShape(
-                            cornerRadiusTR = 12.dp,
-                            smoothnessAsPercentTL = 60,
-                            cornerRadiusTL = 12.dp,
-                            smoothnessAsPercentTR = 60,
-                            cornerRadiusBR = 12.dp,
-                            smoothnessAsPercentBL = 60,
-                            cornerRadiusBL = 12.dp,
-                            smoothnessAsPercentBR = 60
-                        )
-                    )
+                    .matchParentSize()
+                    .drawBehind {
+                        val fraction = progress.value.coerceIn(0f, 1f)
+                        if (fraction > 0f) {
+                            fillPath.reset()
+                            fillPath.addOutline(
+                                fillShape.createOutline(
+                                    size = Size(size.width * fraction, size.height),
+                                    layoutDirection = layoutDirection,
+                                    density = this
+                                )
+                            )
+                            clipPath(fillPath) {
+                                drawRect(color = fillColor)
+                            }
+                        }
+                    }
             )
         }
     }

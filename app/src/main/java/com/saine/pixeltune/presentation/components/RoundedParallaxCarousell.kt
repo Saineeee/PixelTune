@@ -128,7 +128,15 @@ fun rememberCarouselState(initialItem: Int = 0, itemCount: () -> Int): CarouselS
             currentItemOffsetFraction = 0f,
             itemCount = itemCount
         )
-    }.apply { pagerState.pageCountState.value = itemCount }
+    }.apply {
+        // PERF(carousel): hosts typically pass a fresh (but equal) `itemCount`
+        // lambda on every recomposition — writing it unconditionally into the
+        // backing state invalidated every pageCount reader (the carousel's
+        // measure) on each host recomposition. Only write on identity change.
+        if (pagerState.pageCountState.value !== itemCount) {
+            pagerState.pageCountState.value = itemCount
+        }
+    }
 }
 
 /** API pública del carrusel tipo Multi-Browse con clip redondeado real. */
@@ -138,10 +146,7 @@ fun RoundedHorizontalMultiBrowseCarousel(
     state: CarouselState,
     modifier: Modifier = Modifier,
     itemSpacing: Dp = 0.dp,
-    flingBehavior: TargetedFlingBehavior = PagerDefaults.flingBehavior(
-        state = state.pagerState,
-        pagerSnapDistance = PagerSnapDistance.atMost(1)
-    ),
+    flingBehavior: TargetedFlingBehavior? = null,
     userScrollEnabled: Boolean = true,
     itemCornerRadius: Dp = 16.dp,
     carouselStyle: String,
@@ -158,30 +163,17 @@ fun RoundedHorizontalMultiBrowseCarousel(
         else -> 1 // Default to one peek
     }
 
-    if (carouselStyle == CarouselStyle.NO_PEEK) {
-        val settleEpsilon = 0.001f
-        LaunchedEffect(state.pagerState) {
-            snapshotFlow {
-                state.pagerState.isScrollInProgress to state.pagerState.currentPageOffsetFraction
-            }
-                .distinctUntilChanged()
-                .collect { (inProgress, offset) ->
-                    if (inProgress || abs(offset) <= settleEpsilon) return@collect
-
-                    val pageCount = state.pagerState.pageCount
-                    if (pageCount == 0) return@collect
-
-                    // NO_PEEK must never stay visually between two album arts.
-                    val targetPage = state.pagerState.currentPage.coerceIn(0, pageCount - 1)
-                    state.scrollToItem(targetPage)
-                }
-        }
-    }
-
-    RoundedCarousel(
-        state = state,
-        orientation = Orientation.Horizontal,
-        keylineList = { _, spacingPx ->
+    // PERF(carousel): the keyline lambda used to be recreated on every host
+    // recomposition (it is normally passed inline and captures this scope).
+    // Because `RoundedCarousel` keys `remember(keylineList)` on the lambda
+    // instance, a new instance tore down the `CarouselPageSize` — resetting
+    // the resolved keyline Strategy to Empty and forcing a full re-measure /
+    // re-populate cascade of every carousel item on ANY player-state change.
+    // Remembering it (all captures are stable values) keeps the pager's
+    // PageSize — and its strategy — alive across recompositions.
+    val rememberedKeylineList: (availableSpace: Float, itemSpacing: Float) -> KeylineList =
+        remember(state, density, carouselWidthPx, carouselStyle) {
+        { _: Float, spacingPx: Float ->
             val itemCount = state.pagerState.pageCountState.value.invoke()
             when (carouselStyle) {
                 CarouselStyle.NO_PEEK -> multiBrowseKeylineList(
@@ -228,12 +220,56 @@ fun RoundedHorizontalMultiBrowseCarousel(
                     alignment = CarouselAlignment.Start
                 )
             }
-        },
+        }
+    }
+
+    // NOTE: PagerDefaults.flingBehavior is itself a @Composable that memoizes
+    // internally, so it is invoked in composition (as the parameter default
+    // did) rather than inside a remember block.
+
+    if (carouselStyle == CarouselStyle.NO_PEEK) {
+        val settleEpsilon = 0.001f
+        LaunchedEffect(state.pagerState) {
+            // PERF(carousel): observe only the scroll-in-progress flag (it
+            // flips twice per gesture) — the old (flag, fraction) pair
+            // re-emitted and allocated on every scroll frame.
+            snapshotFlow { state.pagerState.isScrollInProgress }
+                .distinctUntilChanged()
+                .collect { inProgress ->
+                    if (inProgress) return@collect
+
+                    val offset = state.pagerState.currentPageOffsetFraction
+                    if (abs(offset) <= settleEpsilon) return@collect
+
+                    val pageCount = state.pagerState.pageCount
+                    if (pageCount == 0) return@collect
+
+                    // NO_PEEK must never stay visually between two album arts.
+                    val targetPage = state.pagerState.currentPage.coerceIn(0, pageCount - 1)
+                    // PERF(carousel): animate the correction instead of a hard
+                    // snap — the instant jump-cut read as jank; the short eased
+                    // settle keeps the same "never rest between items"
+                    // guarantee while feeling smooth.
+                    state.animateScrollToItem(
+                        targetPage,
+                        animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)
+                    )
+                }
+        }
+    }
+
+    RoundedCarousel(
+        state = state,
+        orientation = Orientation.Horizontal,
+        keylineList = rememberedKeylineList,
         contentPadding = PaddingValues(0.dp),
         maxNonFocalVisibleItemCount = maxNonFocalItems,
         modifier = modifier,
         itemSpacing = itemSpacing,
-        flingBehavior = flingBehavior,
+        flingBehavior = flingBehavior ?: PagerDefaults.flingBehavior(
+            state = state.pagerState,
+            pagerSnapDistance = PagerSnapDistance.atMost(1)
+        ),
         userScrollEnabled = true, // Always allow user scrolling
         itemCornerRadius = itemCornerRadius,
         carouselStyle = carouselStyle, // Pass style down
@@ -266,7 +302,13 @@ private fun RoundedCarousel(
     val pageSize = remember(keylineList) {
         CarouselPageSize(keylineList, beforeContentPadding, afterContentPadding)
     }
-    val snapPosition = KeylineSnapPosition(pageSize)
+    val snapPosition = remember(pageSize) { KeylineSnapPosition(pageSize) }
+    // PERF(carousel): a fresh `{ pageSize.strategy }` lambda used to be created
+    // for every page on every recomposition, making the item modifier element
+    // compare unequal and forcing `update()` → invalidateMeasurement() on all
+    // items each recomposition. The stable accessor (pageSize itself is now
+    // remembered with a stable key) keeps element equality intact.
+    val strategyAccessor: () -> Strategy = remember(pageSize) { { pageSize.strategy } }
 
     HorizontalPager(
         state = state.pagerState,
@@ -290,6 +332,12 @@ private fun RoundedCarousel(
         }
 
         val clipShape = remember(cachedShape) {
+            // PERF(carousel): createOutline runs per placement frame while the
+            // carousel scrolls; allocating a fresh Path (+ Outline wrapper) per
+            // call churned ~2k objects/sec while swiping. The Path is reused —
+            // draw passes are single-threaded and each layer consumes its
+            // outline within the same frame, before the next rebuild.
+            val reusablePath = Path()
             object : Shape {
                 override fun createOutline(
                     size: Size,
@@ -306,11 +354,10 @@ private fun RoundedCarousel(
                     val baseOutline = cachedShape.createOutline(localSize, layoutDirection, density)
 
                     // 3) Lo pasamos a Path y lo trasladamos a (left,top) del maskRect
-                    val path = Path().apply {
-                        addOutline(baseOutline)
-                        translate(Offset(rect.left, rect.top))
-                    }
-                    return Outline.Generic(path)
+                    reusablePath.reset()
+                    reusablePath.addOutline(baseOutline)
+                    reusablePath.translate(Offset(rect.left, rect.top))
+                    return Outline.Generic(reusablePath)
                 }
             }
         }
@@ -325,8 +372,19 @@ private fun RoundedCarousel(
 
         //val clipShape = rememberRoundedClipShape(carouselItemInfo, itemCornerRadius)
 
+        // PERF(carousel): reading `currentPage` directly in every page's
+        // composition recomposed ALL composed pages (plus their beyond-viewport
+        // neighbors) at each page crossing. The derived Boolean only
+        // invalidates pages whose fade target actually flips; the alpha value
+        // itself is still applied in the graphicsLayer lambda (draw phase).
+        val isBeyondPeekTarget by remember(page, state, carouselStyle) {
+            derivedStateOf {
+                carouselStyle == CarouselStyle.ONE_PEEK &&
+                    page > state.pagerState.currentPage + 1
+            }
+        }
         val animatedAlpha by animateFloatAsState(
-            targetValue = if (carouselStyle == CarouselStyle.ONE_PEEK && page > state.pagerState.currentPage + 1) 0f else 1f,
+            targetValue = if (isBeyondPeekTarget) 0f else 1f,
             animationSpec = tween(durationMillis = 200),
             label = "CarouselItemAlpha"
         )
@@ -337,7 +395,7 @@ private fun RoundedCarousel(
                 .carouselItem(
                     index = page,
                     state = state,
-                    strategy = { pageSize.strategy },
+                    strategy = strategyAccessor,
                     carouselItemDrawInfo = carouselItemInfo,
                     clipShape = clipShape
                 )
@@ -483,12 +541,22 @@ private data class CarouselItemModifierNodeElement(
     }
 
     override fun update(node: CarouselItemModifierNode) {
-        node.index = index
-        node.state = state
-        node.strategy = strategy
-        node.carouselItemDrawInfo = carouselItemDrawInfo
-        node.clipShape = clipShape
-        node.invalidateMeasurement()
+        // PERF(carousel): update() used to invalidate the item's measurement
+        // unconditionally — even when nothing changed — which re-measured every
+        // carousel item on any recomposition. Only invalidate on real changes.
+        if (node.index != index ||
+            node.state !== state ||
+            node.strategy !== strategy ||
+            node.carouselItemDrawInfo !== carouselItemDrawInfo ||
+            node.clipShape !== clipShape
+        ) {
+            node.index = index
+            node.state = state
+            node.strategy = strategy
+            node.carouselItemDrawInfo = carouselItemDrawInfo
+            node.clipShape = clipShape
+            node.invalidateMeasurement()
+        }
     }
 }
 
@@ -590,7 +658,7 @@ private class CarouselItemModifierNode(
 
                 // --- actualizar info para la máscara (para MaskScope, etc.)
                 carouselItemDrawInfo.sizeState = ik.size
-                carouselItemDrawInfo.minSizeState = roundedKeylines.minBy { it.size }.size
+                carouselItemDrawInfo.minSizeState = roundedKeylines.minSize
                 carouselItemDrawInfo.maxSizeState = roundedKeylines.firstFocal.size
                 carouselItemDrawInfo.maskRectState = maskRect
 
@@ -652,10 +720,36 @@ private class Strategy(
     private val endShiftPoints = getStepInterpolationPoints(endShiftDistance, endKeylineSteps, false)
     private var lastStartAndEndKeylineListSteps: List<KeylineList>? = null
 
+    // PERF(carousel): while scrolling, every visible item asks for the keyline
+    // list at the SAME scroll offset — the interpolation used to run per item
+    // (twice: rounded + continuous), each call allocating a new list of
+    // Keylines plus a KeylineList whose constructor runs five index scans —
+    // 100+ objects per scroll frame. Both variants are now computed once per
+    // (scrollOffset, maxScrollOffset) change and shared by all items in the
+    // frame. Layout passes are single-threaded, so plain fields are safe.
+    private var cachedScrollOffset = Float.NaN
+    private var cachedMaxScrollOffset = Float.NaN
+    private var cachedContinuous: KeylineList? = null
+    private var cachedRounded: KeylineList? = null
+
     fun getKeylineListForScrollOffset(
         scrollOffset: Float,
         maxScrollOffset: Float,
         roundToNearestStep: Boolean = false,
+    ): KeylineList {
+        if (scrollOffset != cachedScrollOffset || maxScrollOffset != cachedMaxScrollOffset) {
+            cachedScrollOffset = scrollOffset
+            cachedMaxScrollOffset = maxScrollOffset
+            cachedContinuous = computeKeylineListForScrollOffset(scrollOffset, maxScrollOffset, false)
+            cachedRounded = computeKeylineListForScrollOffset(scrollOffset, maxScrollOffset, true)
+        }
+        return if (roundToNearestStep) cachedRounded!! else cachedContinuous!!
+    }
+
+    private fun computeKeylineListForScrollOffset(
+        scrollOffset: Float,
+        maxScrollOffset: Float,
+        roundToNearestStep: Boolean,
     ): KeylineList {
         val positiveScrollOffset = max(0f, scrollOffset)
         val startShiftOffset = startShiftDistance
@@ -729,6 +823,11 @@ private class KeylineList internal constructor(keylines: List<Keyline>) : List<K
     val lastFocalIndex: Int = indexOfLast { it.isFocal }
     val lastFocal: Keyline get() = get(lastFocalIndex)
     val focalCount: Int = lastFocalIndex - firstFocalIndex + 1
+
+    // PERF(carousel): precomputed once per KeylineList (they are now built once
+    // per scroll frame instead of once per item) — replaces a per-item
+    // `minBy { it.size }` scan on every placement frame.
+    val minSize: Float = if (keylines.isEmpty()) 0f else minOf { it.size }
 
     fun isFirstFocalItemAtStartOfContainer(): Boolean {
         val firstFocalLeft = firstFocal.offset - (firstFocal.size / 2)
@@ -1073,7 +1172,7 @@ class CarouselPagerState(
                     listOf(
                         it.currentPage,
                         it.currentPageOffsetFraction.coerceIn(MinPageOffset, MaxPageOffset),
-                        it.pageCountState.value
+                        it.pageCount
                     )
                 },
                 restore = {
