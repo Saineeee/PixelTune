@@ -63,21 +63,25 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
@@ -85,6 +89,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
@@ -121,9 +128,10 @@ import com.saine.pixeltune.ui.theme.GoogleSansRounded
 import com.saine.pixeltune.ui.theme.GenreThemeUtils
 import com.saine.pixeltune.ui.theme.LocalPixelTuneDarkTheme
 import kotlinx.collections.immutable.ImmutableList
-import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
 
 /**
@@ -191,21 +199,36 @@ fun SurfScreen(
     )
 
     // On-device personalisation, derived exactly like HomeScreen derives its
-    // sections: remember over the live flows + the pure SurfSectionsBuilder.
+    // sections over the live flows + the pure SurfSectionsBuilder — except the
+    // builders run OFF the main thread: buildTopArtists makes several full
+    // passes over the library (per-song lowercase allocations + a sort), which
+    // used to run inside composition on every history/engagement emission
+    // while music played. produceState keeps the previous section visible
+    // while the next one computes, so nothing flashes.
     // Cloud plays participate — a listener who only streams still gets their
     // Jump back in songs, cloud Top artists and the related-tracks seed.
-    val jumpBackIn = remember(playbackHistory, allSongs) {
-        SurfSectionsBuilder.buildJumpBackIn(
-            playbackHistory = playbackHistory,
-            allSongs = allSongs
-        )
+    val jumpBackIn by produceState(
+        initialValue = emptyList<SurfJumpBackInEntry>(),
+        playbackHistory, allSongs
+    ) {
+        value = withContext(Dispatchers.Default) {
+            SurfSectionsBuilder.buildJumpBackIn(
+                playbackHistory = playbackHistory,
+                allSongs = allSongs
+            )
+        }
     }
-    val topArtists = remember(engagementStats, allSongs, playbackHistory) {
-        SurfSectionsBuilder.buildTopArtists(
-            engagementStats = engagementStats,
-            allSongs = allSongs,
-            playbackHistory = playbackHistory
-        )
+    val topArtists by produceState(
+        initialValue = emptyList<SurfTopArtist>(),
+        engagementStats, allSongs, playbackHistory
+    ) {
+        value = withContext(Dispatchers.Default) {
+            SurfSectionsBuilder.buildTopArtists(
+                engagementStats = engagementStats,
+                allSongs = allSongs,
+                playbackHistory = playbackHistory
+            )
+        }
     }
     // Browse = the curated genre & mood seeds first (the discovery grid), then
     // the library's own genres that the curated set doesn't cover — a local
@@ -213,6 +236,12 @@ fun SurfScreen(
     val browseGenres = remember(localGenres) { buildBrowseGenres(localGenres) }
     val localGenreIds = remember(localGenres) {
         localGenres.mapTo(HashSet(localGenres.size)) { it.id.lowercase() }
+    }
+    // PERF(scroll): the genre rows are chunked ONCE per genre-list change —
+    // chunking inside the LazyColumn content block re-allocated the whole
+    // row matrix on every content re-execution.
+    val browseGenreRows = remember(browseGenres) {
+        browseGenres.chunked(BROWSE_GENRE_GRID_COLUMNS)
     }
 
     var showStreamingProviderSheet by remember { mutableStateOf(false) }
@@ -252,18 +281,21 @@ fun SurfScreen(
     // The Library's tinted backdrop: the theme's container colour washing
     // down through the title zone into the content sheet.
     val isDarkTheme = LocalPixelTuneDarkTheme.current
-    val gradientColors = if (isDarkTheme) {
-        listOf(
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-            Color.Transparent
-        )
-    } else {
-        listOf(
-            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f),
-            Color.Transparent
-        )
-    }.toImmutableList()
-    val gradientBrush = remember(gradientColors) {
+    // PERF: one remember keyed on the scheme — the stop lists used to be
+    // re-allocated on every screen recomposition just to key the brush cache.
+    val colorScheme = MaterialTheme.colorScheme
+    val gradientBrush = remember(isDarkTheme, colorScheme) {
+        val gradientColors = if (isDarkTheme) {
+            listOf(
+                colorScheme.primaryContainer.copy(alpha = 0.5f),
+                Color.Transparent
+            )
+        } else {
+            listOf(
+                colorScheme.onPrimaryContainer.copy(alpha = 0.2f),
+                Color.Transparent
+            )
+        }
         Brush.verticalGradient(colors = gradientColors)
     }
 
@@ -273,8 +305,17 @@ fun SurfScreen(
     // sheet rises under the status bar, so the edge never shows a clipped
     // curve against the system bar.
     val topBarScrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
-    val sheetTopCornerRadius by remember(topBarScrollBehavior) {
-        derivedStateOf {
+    // PERF(scroll): the corner radius tracks collapsedFraction, which is
+    // written on EVERY scroll frame of the enter-always header. Reading it
+    // in composition (the old derivedStateOf + AbsoluteSmoothCornerShape(
+    // sheetTopCornerRadius) build) re-executed the whole content sheet —
+    // Surface, PullToRefreshBox, LazyColumn and its content lambdas — per
+    // scroll frame. The deferred shape below reads the fraction at
+    // outline-creation time instead: the corner still animates 1:1 with the
+    // collapse, but only the Surface's outline is rebuilt (layout/draw
+    // phase) — zero recomposition while scrolling.
+    val sheetShape = remember(topBarScrollBehavior) {
+        DeferredSheetTopShape {
             lerp(
                 SurfSheetTopCornerRadius,
                 0.dp,
@@ -305,16 +346,7 @@ fun SurfScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(top = innerPadding.calculateTopPadding()),
-                shape = AbsoluteSmoothCornerShape(
-                    cornerRadiusTL = sheetTopCornerRadius,
-                    smoothnessAsPercentTL = 60,
-                    cornerRadiusTR = sheetTopCornerRadius,
-                    smoothnessAsPercentTR = 60,
-                    cornerRadiusBL = 0.dp,
-                    smoothnessAsPercentBL = 60,
-                    cornerRadiusBR = 0.dp,
-                    smoothnessAsPercentBR = 60
-                ),
+                shape = sheetShape,
                 color = MaterialTheme.colorScheme.surface
             ) {
                 PullToRefreshBox(
@@ -524,9 +556,14 @@ fun SurfScreen(
                             item(key = "surf_browse_genres", contentType = "surf_section_browse_genres") {
                                 SurfSectionHeader(title = stringResource(R.string.surf_browse_genres_title))
                             }
-                            browseGenres.chunked(BROWSE_GENRE_GRID_COLUMNS).forEachIndexed { rowIndex, rowGenres ->
+                            // PERF(keys): keyed by the row's CONTENT — an
+                            // index-baked key shifted every subsequent row's
+                            // identity when a library genre appeared or
+                            // disappeared, recomposing the whole grid tail.
+                            browseGenreRows.forEachIndexed { rowIndex, rowGenres ->
                                 item(
-                                    key = "surf_browse_genre_row_$rowIndex",
+                                    key = "surf_browse_genre_row_" +
+                                            rowGenres.joinToString("_") { it.id },
                                     contentType = "surf_browse_genre_row"
                                 ) {
                                     SurfBrowseGenreRow(
@@ -1282,7 +1319,13 @@ private fun CarouselItemScope.SurfMediaCard(
     onLongClick: (() -> Unit)? = null,
     isCurrent: Boolean = false
 ) {
-    val artworkCorner by animateDpAsState(
+    // PERF(morph): the corner morph (280ms on every isCurrent flip, for every
+    // visible carousel card on song changes) used to read the animated Dp in
+    // composition to rebuild AbsoluteSmoothCornerShape instances — the card
+    // recomposed every animation frame. Keeping the State and reading it
+    // inside the deferred shape's createOutline moves the morph to the
+    // draw/layout phase: same tween, same corners, redraw-only frames.
+    val artworkCorner = animateDpAsState(
         targetValue = if (isCurrent) 28.dp else 16.dp,
         animationSpec = tween(durationMillis = 280),
         label = "surfCardArtworkCorner"
@@ -1293,8 +1336,8 @@ private fun CarouselItemScope.SurfMediaCard(
         animationSpec = tween(durationMillis = 280),
         label = "surfCardTitleColor"
     )
-    val artworkShape = remember(artworkCorner) {
-        AbsoluteSmoothCornerShape(cornerRadius = artworkCorner, smoothnessAsPercent = 60)
+    val artworkShape = remember {
+        DeferredArtworkShape { artworkCorner.value }
     }
     Column(
         modifier = Modifier
@@ -1526,4 +1569,49 @@ private fun SongInfoBottomSheetHost(
             playerViewModel = playerViewModel
         )
     }
+}
+
+/**
+ * PERF(smoothness): a Shape that resolves its (possibly animating) corner
+ * radius at outline-creation time instead of composition time. States that
+ * change every frame — the top-bar collapse fraction, an animated Dp — then
+ * invalidate only the outline (layout/draw phase), never the composable
+ * scope that hosts the shape. Same geometry, same animation, zero
+ * recomposition per frame.
+ */
+private class DeferredSheetTopShape(
+    private val topRadiusProvider: () -> Dp
+) : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        val topRadius = topRadiusProvider()
+        return AbsoluteSmoothCornerShape(
+            cornerRadiusTL = topRadius,
+            smoothnessAsPercentTL = 60,
+            cornerRadiusTR = topRadius,
+            smoothnessAsPercentTR = 60,
+            cornerRadiusBL = 0.dp,
+            smoothnessAsPercentBL = 60,
+            cornerRadiusBR = 0.dp,
+            smoothnessAsPercentBR = 60
+        ).createOutline(size, layoutDirection, density)
+    }
+}
+
+/** Same deferral as [DeferredSheetTopShape], for the carousel card's uniform artwork-corner morph. */
+private class DeferredArtworkShape(
+    private val cornerRadiusProvider: () -> Dp
+) : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline =
+        AbsoluteSmoothCornerShape(
+            cornerRadius = cornerRadiusProvider(),
+            smoothnessAsPercent = 60
+        ).createOutline(size, layoutDirection, density)
 }

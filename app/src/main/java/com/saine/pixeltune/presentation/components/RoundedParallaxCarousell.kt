@@ -161,12 +161,23 @@ fun RoundedHorizontalMultiBrowseCarousel(
     if (carouselStyle == CarouselStyle.NO_PEEK) {
         val settleEpsilon = 0.001f
         LaunchedEffect(state.pagerState) {
+            // PERF(scroll): a raw `isScrollInProgress to offsetFraction` Pair
+            // emitted a NEW object every scroll frame (Pairs never compare
+            // equal across frames), so the flow machinery + collect body ran
+            // per frame even though it early-returned. The sentinel form
+            // emits -1f for the whole in-progress scroll (deduped to a single
+            // emission) and the settled |offset| once at the end — identical
+            // settle decision, zero per-frame work.
             snapshotFlow {
-                state.pagerState.isScrollInProgress to state.pagerState.currentPageOffsetFraction
+                if (state.pagerState.isScrollInProgress) {
+                    -1f
+                } else {
+                    abs(state.pagerState.currentPageOffsetFraction)
+                }
             }
                 .distinctUntilChanged()
-                .collect { (inProgress, offset) ->
-                    if (inProgress || abs(offset) <= settleEpsilon) return@collect
+                .collect { offset ->
+                    if (offset <= settleEpsilon) return@collect
 
                     val pageCount = state.pagerState.pageCount
                     if (pageCount == 0) return@collect
@@ -178,10 +189,15 @@ fun RoundedHorizontalMultiBrowseCarousel(
         }
     }
 
-    RoundedCarousel(
-        state = state,
-        orientation = Orientation.Horizontal,
-        keylineList = { _, spacingPx ->
+    // PERF(smoothness): the keyline lambda used to be a fresh instance on
+    // every recomposition of this carousel, which keyed `remember(keylineList)`
+    // in RoundedCarousel into rebuilding CarouselPageSize (with a fresh
+    // Strategy) and a new KeylineSnapPosition on every song / queue / style
+    // change — a full pager remeasure + keyline-strategy recompute (the
+    // triple-nested cost search) exactly when the artwork swaps. Remembering
+    // the lambda keeps the page size + snap position alive across changes.
+    val rememberedKeylineList = remember(density, carouselWidthPx, carouselStyle, state) {
+        { _: Float, spacingPx: Float ->
             val itemCount = state.pagerState.pageCountState.value.invoke()
             when (carouselStyle) {
                 CarouselStyle.NO_PEEK -> multiBrowseKeylineList(
@@ -228,7 +244,13 @@ fun RoundedHorizontalMultiBrowseCarousel(
                     alignment = CarouselAlignment.Start
                 )
             }
-        },
+        }
+    }
+
+    RoundedCarousel(
+        state = state,
+        orientation = Orientation.Horizontal,
+        keylineList = rememberedKeylineList,
         contentPadding = PaddingValues(0.dp),
         maxNonFocalVisibleItemCount = maxNonFocalItems,
         modifier = modifier,
@@ -266,7 +288,9 @@ private fun RoundedCarousel(
     val pageSize = remember(keylineList) {
         CarouselPageSize(keylineList, beforeContentPadding, afterContentPadding)
     }
-    val snapPosition = KeylineSnapPosition(pageSize)
+    // PERF(smoothness): remembered so a new SnapPosition instance (full pager
+    // snap reconfiguration) is only built when the page size genuinely changes.
+    val snapPosition = remember(pageSize) { KeylineSnapPosition(pageSize) }
 
     HorizontalPager(
         state = state.pagerState,
@@ -291,6 +315,12 @@ private fun RoundedCarousel(
 
         val clipShape = remember(cachedShape) {
             object : Shape {
+                // PERF(scroll): the mask follows maskRect every scroll frame,
+                // so createOutline rebuilds per frame while scrolling — the
+                // Path is now reused (rewound + rebuilt) instead of allocating
+                // a fresh one per frame per visible item.
+                private val reusablePath = Path()
+
                 override fun createOutline(
                     size: Size,
                     layoutDirection: LayoutDirection,
@@ -306,11 +336,10 @@ private fun RoundedCarousel(
                     val baseOutline = cachedShape.createOutline(localSize, layoutDirection, density)
 
                     // 3) Lo pasamos a Path y lo trasladamos a (left,top) del maskRect
-                    val path = Path().apply {
-                        addOutline(baseOutline)
-                        translate(Offset(rect.left, rect.top))
-                    }
-                    return Outline.Generic(path)
+                    reusablePath.rewind()
+                    reusablePath.addOutline(baseOutline)
+                    reusablePath.translate(Offset(rect.left, rect.top))
+                    return Outline.Generic(reusablePath)
                 }
             }
         }
@@ -325,8 +354,19 @@ private fun RoundedCarousel(
 
         //val clipShape = rememberRoundedClipShape(carouselItemInfo, itemCornerRadius)
 
+        // PERF(scroll): `currentPage` used to be read in the MEASURE phase
+        // (computing itemZIndex) — every page crossing remeasured ALL visible
+        // items. The derived Boolean below narrows the composition read to
+        // only the items whose fade target actually flips, and the zIndex
+        // itself is computed in the placement block (a placement-phase read).
+        val alphaTarget by remember(page, carouselStyle, state) {
+            derivedStateOf {
+                carouselStyle == CarouselStyle.ONE_PEEK &&
+                        page > state.pagerState.currentPage + 1
+            }
+        }
         val animatedAlpha by animateFloatAsState(
-            targetValue = if (carouselStyle == CarouselStyle.ONE_PEEK && page > state.pagerState.currentPage + 1) 0f else 1f,
+            targetValue = if (alphaTarget) 0f else 1f,
             animationSpec = tween(durationMillis = 200),
             label = "CarouselItemAlpha"
         )
@@ -337,6 +377,7 @@ private fun RoundedCarousel(
                 .carouselItem(
                     index = page,
                     state = state,
+                    orientation = orientation,
                     strategy = { pageSize.strategy },
                     carouselItemDrawInfo = carouselItemInfo,
                     clipShape = clipShape
@@ -453,12 +494,14 @@ private class CarouselItemDrawInfoImpl : CarouselItemDrawInfo {
 private fun Modifier.carouselItem(
     index: Int,
     state: CarouselState,
+    orientation: Orientation,
     strategy: () -> Strategy,
     carouselItemDrawInfo: CarouselItemDrawInfoImpl,
     clipShape: Shape,
 ): Modifier = this then CarouselItemModifierNodeElement(
     index = index,
     state = state,
+    orientation = orientation,
     strategy = strategy,
     carouselItemDrawInfo = carouselItemDrawInfo,
     clipShape = clipShape
@@ -468,6 +511,7 @@ private fun Modifier.carouselItem(
 private data class CarouselItemModifierNodeElement(
     val index: Int,
     val state: CarouselState,
+    val orientation: Orientation,
     val strategy: () -> Strategy,
     val carouselItemDrawInfo: CarouselItemDrawInfoImpl,
     val clipShape: Shape,
@@ -476,6 +520,7 @@ private data class CarouselItemModifierNodeElement(
         return CarouselItemModifierNode(
             index = index,
             state = state,
+            orientation = orientation,
             strategy = strategy,
             carouselItemDrawInfo = carouselItemDrawInfo,
             clipShape = clipShape
@@ -485,6 +530,7 @@ private data class CarouselItemModifierNodeElement(
     override fun update(node: CarouselItemModifierNode) {
         node.index = index
         node.state = state
+        node.orientation = orientation
         node.strategy = strategy
         node.carouselItemDrawInfo = carouselItemDrawInfo
         node.clipShape = clipShape
@@ -496,6 +542,7 @@ private data class CarouselItemModifierNodeElement(
 private class CarouselItemModifierNode(
     var index: Int,
     var state: CarouselState,
+    var orientation: Orientation,
     var strategy: () -> Strategy,
     var carouselItemDrawInfo: CarouselItemDrawInfoImpl,
     var clipShape: Shape,
@@ -504,7 +551,15 @@ private class CarouselItemModifierNode(
         val strategyResult = strategy()
         if (!strategyResult.isValid) return layout(0, 0) {}
 
-        val isVertical = state.pagerState.layoutInfo.orientation == Orientation.Vertical
+        // PERF(scroll): the orientation used to be read off
+        // state.pagerState.layoutInfo — snapshot state rewritten on EVERY
+        // pager measure pass (i.e. every scroll frame) — which subscribed
+        // every visible item's measurement to per-frame invalidation. It is
+        // a compile-time constant for this carousel, so it is passed in like
+        // the index/state params. Same for the zIndex below: currentPage is
+        // now read in the placement block, so page crossings no longer
+        // remeasure the whole visible run.
+        val isVertical = orientation == Orientation.Vertical
         val isRtl = layoutDirection == LayoutDirection.Rtl
 
         val mainAxisSize = strategyResult.itemMainAxisSize
@@ -522,12 +577,12 @@ private class CarouselItemModifierNode(
             }
 
         val placeable = measurable.measure(itemConstraints)
-        val itemZIndex =
-            if (index == state.pagerState.currentPage) 1f
-            else if (index == 0) 0f
-            else 1f / index.toFloat()
 
         return layout(placeable.width, placeable.height) {
+            val itemZIndex =
+                if (index == state.pagerState.currentPage) 1f
+                else if (index == 0) 0f
+                else 1f / index.toFloat()
             placeable.placeWithLayer(0, 0, zIndex = itemZIndex) {
                 // --- keylines e interpolación
                 val scrollOffset = calculateCurrentScrollOffset(state, strategyResult)

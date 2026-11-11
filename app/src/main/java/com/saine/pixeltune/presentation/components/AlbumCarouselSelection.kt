@@ -55,9 +55,15 @@ fun AlbumCarouselSection(
                 ?: 0
     }
 
+    // PERF(smoothness): a fresh `{ queue.size }` lambda per recomposition was
+    // written into pagerState.pageCountState on every pass (lambdas never
+    // compare structurally equal), notifying the measure-phase readers and
+    // remeasuring the pager on every song / queue / expansion change.
+    val pageCount = remember(queue) { { queue.size } }
+
     val carouselState = rememberRoundedParallaxCarouselState(
         initialPage = initialIndex,
-        pageCount = { queue.size }
+        pageCount = pageCount
     )
 
     // Calculate target size based on quality

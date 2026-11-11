@@ -72,16 +72,12 @@ data class PlayerUiState(
     val isLoadingMoreSearchResults: Boolean = false,
     val isSyncingLibrary: Boolean = false,
     val selectedSearchFilter: SearchFilterType = SearchFilterType.ALL,
-    // IMPROVE(search-suggestions): LIVE autocomplete suggestions for the
-    // current (trimmed) Online-mode query — fetched in real time from the
-    // active provider (YouTube / SoundCloud) through NewPipe's
-    // SuggestionExtractor. Empty when none are available (offline, bot-check,
-    // or simply no matches); the suggestion dropdown collapses on empty.
-    val searchSuggestions: ImmutableList<String> = persistentListOf(),
-    // IMPROVE(search-suggestions): true while the suggestions for the latest
-    // keystroke are being fetched — drives the compact expressive loading
-    // indicator in the search bar's trailing slot and the dropdown skeleton.
-    val isLoadingSuggestions: Boolean = false,
+    // NOTE(search-suggestions): the LIVE autocomplete suggestions + loading
+    // flag were moved OUT of this monolithic state — they emit at the cadence
+    // of typing, and riding them through playerUiState recomposed the whole
+    // SearchScreen per emission. They now live as granular StateFlows on
+    // PlayerViewModel (searchSuggestions / isLoadingSuggestions), collected
+    // only by the suggestion section and the trailing spinner slot.
     val currentStorageFilter: com.saine.pixeltune.data.model.StorageFilter = com.saine.pixeltune.data.model.StorageFilter.ALL,
     val showQueueItemUndoBar: Boolean = false,
     val lastRemovedQueueSong: Song? = null,

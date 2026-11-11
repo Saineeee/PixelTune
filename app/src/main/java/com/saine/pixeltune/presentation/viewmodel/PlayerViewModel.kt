@@ -874,6 +874,22 @@ class PlayerViewModel @Inject constructor(
     var searchQuery by mutableStateOf("")
         private set
 
+    /**
+     * PERF(search-suggestions): granular autocomplete flows. The suggestion
+     * pipeline emits at the cadence of typing (a burst = several emissions
+     * per second); riding them through the monolithic [playerUiState]
+     * recomposed the ENTIRE SearchScreen on every emission — SearchBar,
+     * toggle row, body transitions and all — right in the middle of the
+     * typing window. The suggestion section (and the trailing spinner slot)
+     * now observe these directly, so pipeline emissions recompose only the
+     * parts of the screen that actually display suggestions.
+     */
+    val searchSuggestions: StateFlow<ImmutableList<String>>
+        get() = searchStateHolder.searchSuggestions
+
+    val isLoadingSuggestions: StateFlow<Boolean>
+        get() = searchStateHolder.isLoadingSuggestions
+
     fun updateSearchQuery(query: String) {
         searchQuery = query
     }
@@ -1840,30 +1856,6 @@ class PlayerViewModel @Inject constructor(
             searchStateHolder.isOnlineSearch.collect { isOnline ->
                 _playerUiState.update {
                     it.copy(isOnlineSearch = isOnline)
-                }
-            }
-        }
-
-        // IMPROVE(search-suggestions): mirror the LIVE autocomplete suggestion
-        // state (list + loading flag) into the UI state the Search screen's
-        // suggestion dropdown consumes. Same no-op-guard pattern as the
-        // pagination flags above so identical emissions don't recompose.
-        viewModelScope.launch {
-            kotlinx.coroutines.flow.combine(
-                searchStateHolder.searchSuggestions,
-                searchStateHolder.isLoadingSuggestions
-            ) { suggestions, loading ->
-                suggestions to loading
-            }.collect { (suggestions, loading) ->
-                _playerUiState.update {
-                    if (it.searchSuggestions == suggestions && it.isLoadingSuggestions == loading) {
-                        it
-                    } else {
-                        it.copy(
-                            searchSuggestions = suggestions,
-                            isLoadingSuggestions = loading
-                        )
-                    }
                 }
             }
         }

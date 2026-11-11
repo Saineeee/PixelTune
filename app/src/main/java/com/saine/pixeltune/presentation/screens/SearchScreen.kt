@@ -74,6 +74,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.flow.StateFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -327,15 +328,21 @@ fun SearchScreen(
     var isSearchEditing by rememberSaveable { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
 
-    val onlineSuggestions = uiState.searchSuggestions
-    val isLoadingSuggestions = uiState.isLoadingSuggestions
+    // PERF(search-suggestions): the live provider suggestions + their loading
+    // flag arrive as GRANULAR flows collected by the suggestion section and
+    // the search bar's trailing spinner slot. They used to ride the
+    // monolithic playerUiState, so every pipeline emission (the cadence of
+    // typing: a fetch per settled keystroke) recomposed the ENTIRE screen —
+    // SearchBar construction, gradient lists, toggle row, AnimatedContent
+    // machinery — exactly in the typing window. Nothing about the data or
+    // the visuals changed; only the recomposition scope shrank.
 
     // IMPROVE(search-suggestions): recent searches matching what the user is
     // typing — instant (local Room data) and offline-safe, shown above the
     // network suggestions with a History icon. Capped at a compact slice of
     // the compose list's fixed row budget so the provider's live completions
     // always dominate the list (see [MAX_HISTORY_SUGGESTION_ROWS]).
-    val suggestionHistoryMatches by remember(searchHistory, searchQuery) {
+    val suggestionHistoryMatches by remember(searchHistory) {
         derivedStateOf {
             val typed = searchQuery.trim()
             if (typed.isEmpty()) {
@@ -356,19 +363,11 @@ fun SearchScreen(
     // REMAINDER of the compose list's fixed five-row budget so the suggestion
     // list always reads as a compact five-row autocomplete (the concept),
     // never an endless tail of look-alike rows.
-    val visibleSuggestions by remember(onlineSuggestions, suggestionHistoryMatches) {
-        derivedStateOf {
-            val recentQueries = suggestionHistoryMatches
-                .map { it.query.lowercase() }
-                .toHashSet()
-            val remainingSlots = (MAX_VISIBLE_SUGGESTION_ROWS - suggestionHistoryMatches.size)
-                .coerceAtLeast(0)
-            onlineSuggestions
-                .filter { it.lowercase() !in recentQueries }
-                .take(remainingSlots)
-                .toImmutableList()
-        }
-    }
+    // PERF(search-suggestions): derived INSIDE OnlineSearchSuggestionsSection
+    // now (see the PERF note above) — keying the remember on searchQuery / the
+    // collected suggestion list (both tracked INSIDE the derived block)
+    // threw the whole DerivedState away and re-registered it on every
+    // keystroke and every suggestion arrival.
 
     // =================================================================================
     // IMPROVE(suggestion-preview): the TOP actual results of the LIVE search for
@@ -400,18 +399,26 @@ fun SearchScreen(
     // drops, the field's focus is released (so a later tap on the field can
     // RE-ENTER the phase through the focus listener) and the body animates
     // from the suggestion list to the results that kept loading.
-    val exitSearchEditing: () -> Unit = {
-        isSearchEditing = false
-        keyboardController?.hide()
-        focusManager.clearFocus()
+    // PERF(typing): all the interaction handlers below are remembered on
+    // their unstable captures — a fresh lambda per keystroke re-executed the
+    // whole handler graph and (worse) broke the per-row remember keys in the
+    // lists below, recomposing every visible row on every keystroke.
+    val exitSearchEditing: () -> Unit = remember(keyboardController, focusManager) {
+        {
+            isSearchEditing = false
+            keyboardController?.hide()
+            focusManager.clearFocus()
+        }
     }
 
     // IMPROVE(search-suggestions): entering the compose phase — used by the
     // field's leading affordance and the history "fill" arrows.
-    val enterSearchEditing: () -> Unit = {
-        isSearchEditing = true
-        searchInputFocusRequester.requestFocus()
-        keyboardController?.show()
+    val enterSearchEditing: () -> Unit = remember(searchInputFocusRequester, keyboardController) {
+        {
+            isSearchEditing = true
+            searchInputFocusRequester.requestFocus()
+            keyboardController?.show()
+        }
     }
 
     // IMPROVE(search-suggestions): while the user composes a query the app's
@@ -434,23 +441,31 @@ fun SearchScreen(
         }
     }
 
-    val onHistoryQuerySelected: (String) -> Unit = { query ->
-        searchQuery = query
-        playerViewModel.updateSearchQuery(query)
-        // Re-record so the tapped entry bubbles back to the top of recents.
-        playerViewModel.onSearchQuerySubmitted(query)
-        exitSearchEditing()
+    val onHistoryQuerySelected: (String) -> Unit = remember(playerViewModel, exitSearchEditing) {
+        { query ->
+            searchQuery = query
+            playerViewModel.updateSearchQuery(query)
+            // Re-record so the tapped entry bubbles back to the top of recents.
+            playerViewModel.onSearchQuerySubmitted(query)
+            exitSearchEditing()
+        }
     }
-    val onHistoryQueryFill: (String) -> Unit = { query ->
-        searchQuery = query
-        playerViewModel.updateSearchQuery(query)
-        enterSearchEditing()
+    val onHistoryQueryFill: (String) -> Unit = remember(playerViewModel, enterSearchEditing) {
+        { query ->
+            searchQuery = query
+            playerViewModel.updateSearchQuery(query)
+            enterSearchEditing()
+        }
     }
-    val onDeleteHistoryEntry: (String) -> Unit = { query ->
-        playerViewModel.deleteSearchHistoryItem(query)
+    val onDeleteHistoryEntry: (String) -> Unit = remember(playerViewModel) {
+        { query ->
+            playerViewModel.deleteSearchHistoryItem(query)
+        }
     }
-    val onClearHistory: () -> Unit = {
-        showClearSearchHistoryDialog = true
+    val onClearHistory: () -> Unit = remember {
+        {
+            showClearSearchHistoryDialog = true
+        }
     }
 
     // IMPROVE(search-suggestions): tapping a suggestion (a live online
@@ -458,21 +473,25 @@ fun SearchScreen(
     // it like any other submitted query and commits the query — the exact
     // same behavior as tapping a recent-search row on the history landing,
     // so both entry points feel identical.
-    val onSuggestionSelected: (String) -> Unit = { suggestion ->
-        searchQuery = suggestion
-        playerViewModel.updateSearchQuery(suggestion)
-        playerViewModel.onSearchQuerySubmitted(suggestion)
-        exitSearchEditing()
+    val onSuggestionSelected: (String) -> Unit = remember(playerViewModel, exitSearchEditing) {
+        { suggestion ->
+            searchQuery = suggestion
+            playerViewModel.updateSearchQuery(suggestion)
+            playerViewModel.onSearchQuerySubmitted(suggestion)
+            exitSearchEditing()
+        }
     }
 
     // IMPROVE(search-suggestions): the trailing arrow of a suggestion row —
     // fills the suggestion into the field WITHOUT committing it, so the user
     // keeps composing from a longer starting point (YouTube Music's
     // drill-down autocomplete gesture).
-    val onSuggestionFill: (String) -> Unit = { suggestion ->
-        searchQuery = suggestion
-        playerViewModel.updateSearchQuery(suggestion)
-        enterSearchEditing()
+    val onSuggestionFill: (String) -> Unit = remember(playerViewModel, enterSearchEditing) {
+        { suggestion ->
+            searchQuery = suggestion
+            playerViewModel.updateSearchQuery(suggestion)
+            enterSearchEditing()
+        }
     }
 
     // IMPROVE(suggestion-preview): tapping an album-art preview card plays
@@ -481,12 +500,14 @@ fun SearchScreen(
     // like any submitted search, the keyboard drops and the body lands on the
     // full results it was already loading, with the mini player sliding back
     // in above the now-playing song.
-    val onPreviewSongSelected: (Song) -> Unit = { song ->
-        if (searchQuery.isNotBlank()) {
-            playerViewModel.onSearchQuerySubmitted(searchQuery)
+    val onPreviewSongSelected: (Song) -> Unit = remember(playerViewModel, exitSearchEditing) {
+        { song ->
+            if (searchQuery.isNotBlank()) {
+                playerViewModel.onSearchQuerySubmitted(searchQuery)
+            }
+            playerViewModel.showAndPlaySong(song)
+            exitSearchEditing()
         }
-        playerViewModel.showAndPlaySong(song)
-        exitSearchEditing()
     }
 
     // IMPROVE(search-suggestions): the "Search for …" fallback row of the
@@ -494,40 +515,70 @@ fun SearchScreen(
     // compose phase's empty state: whenever the provider returns nothing (or
     // the request silently failed), the user still has a prominent, tappable
     // way to run the typed query.
-    val onSearchExactQuery: () -> Unit = {
-        if (searchQuery.isNotBlank()) {
-            playerViewModel.onSearchQuerySubmitted(searchQuery)
+    val onSearchExactQuery: () -> Unit = remember(playerViewModel, exitSearchEditing) {
+        {
+            if (searchQuery.isNotBlank()) {
+                playerViewModel.onSearchQuerySubmitted(searchQuery)
+            }
+            exitSearchEditing()
         }
-        exitSearchEditing()
     }
 
-    val handleSongMoreOptionsClick: (Song) -> Unit = { song ->
-        selectedSongForInfo = song
-        playerViewModel.selectSongForInfo(song)
-        showSongInfoBottomSheet = true
+    val handleSongMoreOptionsClick: (Song) -> Unit = remember(playerViewModel) {
+        { song ->
+            selectedSongForInfo = song
+            playerViewModel.selectSongForInfo(song)
+            showSongInfoBottomSheet = true
+        }
+    }
+
+    // PERF(search): the results list keys every per-row remembered lambda on
+    // this handler — a fresh instance per screen recomposition (favorites,
+    // playback state, library emissions…) used to invalidate all of them and
+    // recompose every visible results row.
+    val onSearchItemSelected: () -> Unit = remember(playerViewModel) {
+        {
+            if (searchQuery.isNotBlank()) {
+                playerViewModel.onSearchQuerySubmitted(searchQuery)
+            }
+        }
     }
 
     val searchbarCornerRadius = 28.dp
 
     val dm = LocalPixelTuneDarkTheme.current
+    val colorScheme = MaterialTheme.colorScheme
 
-    val gradientColorsDark = listOf(
-        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-        Color.Transparent
-    ).toImmutableList()
-
-    val gradientColorsLight = listOf(
-        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f),
-        Color.Transparent
-    ).toImmutableList()
-
-    val gradientColors = if (dm) gradientColorsDark else gradientColorsLight
-
-    val gradientBrush = remember(gradientColors) {
-        Brush.verticalGradient(colors = gradientColors)
+    // PERF(typing): the two stop lists used to be re-allocated on every
+    // recomposition of this screen (i.e. every keystroke) purely to key the
+    // remembered brush.
+    val gradientBrush = remember(dm, colorScheme) {
+        Brush.verticalGradient(
+            colors = if (dm) {
+                listOf(
+                    colorScheme.primaryContainer.copy(alpha = 0.5f),
+                    Color.Transparent
+                )
+            } else {
+                listOf(
+                    colorScheme.onPrimaryContainer.copy(alpha = 0.2f),
+                    Color.Transparent
+                )
+            }
+        )
     }
 
-    val colorScheme = MaterialTheme.colorScheme
+    // PERF(search): the genre-browse bottom scrim used to rebuild its brush +
+    // colour list on every screen recomposition while the grid was visible.
+    val genreScrimBrush = remember(colorScheme) {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color.Transparent,
+                colorScheme.surfaceContainerLowest.copy(0.5f),
+                colorScheme.surfaceContainerLowest
+            )
+        )
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -688,28 +739,10 @@ fun SearchScreen(
                                     // to the live suggestion list, not to the
                                     // committed results view.
                                     if (searchQuery.isNotBlank()) {
-                                        val showSuggestionSpinner =
-                                            isLoadingSuggestions && isOnlineSearch && isSearchEditing
-                                        Crossfade(
-                                            targetState = showSuggestionSpinner,
-                                            animationSpec = tween(durationMillis = 150),
-                                            label = "search_trailing_spinner"
-                                        ) { show ->
-                                            Box(
-                                                modifier = Modifier.size(
-                                                    width = 26.dp,
-                                                    height = 22.dp
-                                                ),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                if (show) {
-                                                    LoadingIndicator(
-                                                        modifier = Modifier.size(22.dp),
-                                                        color = MaterialTheme.colorScheme.primary
-                                                    )
-                                                }
-                                            }
-                                        }
+                                        SuggestionSpinnerSlot(
+                                            isLoadingSuggestionsFlow = playerViewModel.isLoadingSuggestions,
+                                            enabled = isOnlineSearch && isSearchEditing
+                                        )
                                         Spacer(modifier = Modifier.width(8.dp))
                                     }
                                     if (searchQuery.isNotBlank()) {
@@ -872,15 +905,7 @@ fun SearchScreen(
                                     .align(Alignment.BottomCenter)
                                     .height(80.dp)
                                     .background(
-                                        brush = Brush.verticalGradient(
-                                            colors = listOf(
-                                                Color.Transparent,
-                                                MaterialTheme.colorScheme.surfaceContainerLowest.copy(
-                                                    0.5f
-                                                ),
-                                                MaterialTheme.colorScheme.surfaceContainerLowest
-                                            )
-                                        )
+                                        brush = genreScrimBrush
                                     )
                             )
                         }
@@ -906,9 +931,9 @@ fun SearchScreen(
                     SearchBodyMode.SUGGESTIONS -> {
                         OnlineSearchSuggestionsSection(
                             query = searchQuery,
-                            suggestions = visibleSuggestions,
+                            suggestionsFlow = playerViewModel.searchSuggestions,
                             historyMatches = suggestionHistoryMatches,
-                            isLoading = isLoadingSuggestions,
+                            isLoadingSuggestionsFlow = playerViewModel.isLoadingSuggestions,
                             previewSongs = suggestionPreviewSongs,
                             isPreviewLoading = isSearchingOnline,
                             currentPlayingSongId = stablePlayerState.currentSong?.id,
@@ -966,11 +991,7 @@ fun SearchScreen(
                                     SearchResultsViewState.RESULTS -> SearchResultsList(
                                         results = searchResults,
                                         playerViewModel = playerViewModel,
-                                        onItemSelected = {
-                                            if (searchQuery.isNotBlank()) {
-                                                playerViewModel.onSearchQuerySubmitted(searchQuery)
-                                            }
-                                        },
+                                        onItemSelected = onSearchItemSelected,
                                         currentPlayingSongId = stablePlayerState.currentSong?.id,
                                         isPlaying = stablePlayerState.isPlaying,
                                         onSongMoreOptionsClick = handleSongMoreOptionsClick,
@@ -1261,13 +1282,26 @@ fun OnlineSearchHistorySection(
             ) {
                 items(
                     historyItems,
-                    key = { "history_${it.id ?: it.query}" }
+                    key = { "history_${it.id ?: it.query}" },
+                    contentType = { "history_row" }
                 ) { item ->
+                    // PERF(skipping): per-row remembered lambdas — the landing
+                    // list recomposes on history refreshes; the rows themselves
+                    // used to re-compose every time because of fresh lambdas.
+                    val onRowClick = remember(item.query, onQuerySelected) {
+                        { onQuerySelected(item.query) }
+                    }
+                    val onRowFillClick = remember(item.query, onQueryFill) {
+                        { onQueryFill(item.query) }
+                    }
+                    val onRowDeleteClick = remember(item.query, onDeleteEntry) {
+                        { onDeleteEntry(item.query) }
+                    }
                     OnlineSearchHistoryRow(
                         item = item,
-                        onClick = { onQuerySelected(item.query) },
-                        onFillClick = { onQueryFill(item.query) },
-                        onDeleteClick = { onDeleteEntry(item.query) }
+                        onClick = onRowClick,
+                        onFillClick = onRowFillClick,
+                        onDeleteClick = onRowDeleteClick
                     )
                 }
             }
@@ -1350,6 +1384,43 @@ private fun OnlineSearchHistoryRow(
 }
 
 /**
+ * IMPROVE(search-suggestions): the compact morphing loading indicator in the
+ * search bar's trailing slot. It collects the suggestion pipeline's loading
+ * flag in its OWN scope (the flag flips at fetch cadence while typing) —
+ * reading it at the screen scope recomposed the whole SearchBar per flip.
+ * Same reserved-width Crossfade as before, identical visuals.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun SuggestionSpinnerSlot(
+    isLoadingSuggestionsFlow: StateFlow<Boolean>,
+    enabled: Boolean
+) {
+    val isLoading by isLoadingSuggestionsFlow.collectAsStateWithLifecycle()
+    val showSuggestionSpinner = isLoading && enabled
+    Crossfade(
+        targetState = showSuggestionSpinner,
+        animationSpec = tween(durationMillis = 150),
+        label = "search_trailing_spinner"
+    ) { show ->
+        Box(
+            modifier = Modifier.size(
+                width = 26.dp,
+                height = 22.dp
+            ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (show) {
+                LoadingIndicator(
+                    modifier = Modifier.size(22.dp),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+}
+
+/**
  * IMPROVE(search-suggestions): the COMPOSE-phase body of the Online search —
  * the re-imagined autocomplete surface, YouTube Music / Spotify style.
  *
@@ -1380,9 +1451,11 @@ private fun OnlineSearchHistoryRow(
 @Composable
 private fun OnlineSearchSuggestionsSection(
     query: String,
-    suggestions: ImmutableList<String>,
+    // PERF(search-suggestions): collected HERE (section scope), not at the
+    // screen scope — see the PERF note in SearchScreen.
+    suggestionsFlow: StateFlow<ImmutableList<String>>,
     historyMatches: List<SearchHistoryItem>,
-    isLoading: Boolean,
+    isLoadingSuggestionsFlow: StateFlow<Boolean>,
     // IMPROVE(suggestion-preview): the top songs of the LIVE search for the
     // query being composed + its freshness gate (see SearchScreen).
     previewSongs: ImmutableList<Song>,
@@ -1394,6 +1467,34 @@ private fun OnlineSearchSuggestionsSection(
     onSearchExact: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val onlineSuggestions by suggestionsFlow.collectAsStateWithLifecycle()
+    val isLoading by isLoadingSuggestionsFlow.collectAsStateWithLifecycle()
+
+    // IMPROVE(search-suggestions): the live provider suggestions actually
+    // rendered — deduped against the matching recent searches above them so a
+    // query never appears twice in the compose list, and capped to the
+    // REMAINDER of the compose list's fixed five-row budget so the suggestion
+    // list always reads as a compact five-row autocomplete (the concept),
+    // never an endless tail of look-alike rows.
+    // PERF(search-suggestions): a single derived state, keyed only on the
+    // (plain-list) history matches — the suggestion list and the typed query
+    // are tracked State reads INSIDE the block, so arrivals and keystrokes
+    // update this derivation without re-creating it.
+    val visibleSuggestions by remember(historyMatches) {
+        derivedStateOf {
+            val recentQueries = historyMatches
+                .map { it.query.lowercase() }
+                .toHashSet()
+            val remainingSlots = (MAX_VISIBLE_SUGGESTION_ROWS - historyMatches.size)
+                .coerceAtLeast(0)
+            onlineSuggestions
+                .filter { it.lowercase() !in recentQueries }
+                .take(remainingSlots)
+                .toImmutableList()
+        }
+    }
+    val suggestions = visibleSuggestions
+
     val localDensity = LocalDensity.current
     // While the user composes, the app's bottom bar (navigation + mini
     // player) is tucked away by onSearchBarActiveChange — only the system
@@ -1468,7 +1569,12 @@ private fun OnlineSearchSuggestionsSection(
                     count = historyMatches.size,
                     key = { index ->
                         "suggestion_history_${historyMatches[index].id ?: historyMatches[index].query}"
-                    }
+                    },
+                    // PERF(recycling): four distinct row types share this
+                    // LazyColumn — contentType keeps slot recycling from
+                    // tearing down a history row's composition to rebuild a
+                    // suggestion row (and back) as counts change while typing.
+                    contentType = { "suggestion_history_row" }
                 ) { index ->
                     val item = historyMatches[index]
                     // FIX(search-suggestions-glitch): no animateItem() here —
@@ -1479,32 +1585,50 @@ private fun OnlineSearchSuggestionsSection(
                     // The list is small and swaps wholesale — an instant swap
                     // (keys kept for identity) is exactly how YouTube Music /
                     // Spotify autocomplete behaves.
+                    // PERF(skipping): per-row remembered lambdas keep rows
+                    // skippable when unrelated state changes.
+                    val onRowClick = remember(item.query, onSuggestionSelected) {
+                        { onSuggestionSelected(item.query) }
+                    }
+                    val onFillClick = remember(item.query, onSuggestionFill) {
+                        { onSuggestionFill(item.query) }
+                    }
                     SearchSuggestionRow(
                         text = item.query,
                         query = query,
                         leadingIcon = Icons.Rounded.History,
-                        onRowClick = { onSuggestionSelected(item.query) },
-                        onFillClick = { onSuggestionFill(item.query) }
+                        onRowClick = onRowClick,
+                        onFillClick = onFillClick
                     )
                 }
                 items(
                     count = suggestions.size,
-                    key = { index -> "suggestion_${suggestions[index]}" }
+                    key = { index -> "suggestion_${suggestions[index]}" },
+                    contentType = { "suggestion_row" }
                 ) { index ->
                     val suggestion = suggestions[index]
+                    val onRowClick = remember(suggestion, onSuggestionSelected) {
+                        { onSuggestionSelected(suggestion) }
+                    }
+                    val onFillClick = remember(suggestion, onSuggestionFill) {
+                        { onSuggestionFill(suggestion) }
+                    }
                     SearchSuggestionRow(
                         text = suggestion,
                         query = query,
                         leadingIcon = Icons.Rounded.Search,
-                        onRowClick = { onSuggestionSelected(suggestion) },
-                        onFillClick = { onSuggestionFill(suggestion) }
+                        onRowClick = onRowClick,
+                        onFillClick = onFillClick
                     )
                 }
                 // IMPROVE(search-suggestions): the idle empty state — the
                 // provider had nothing (or the request silently failed), so
                 // offer the typed query itself as a prominent action row.
                 if (!isLoading && suggestions.isEmpty() && historyMatches.isEmpty()) {
-                    item(key = "suggestion_search_exact") {
+                    item(
+                        key = "suggestion_search_exact",
+                        contentType = "suggestion_fallback_row"
+                    ) {
                         SearchSuggestionFallbackRow(
                             query = query,
                             onSearchExact = onSearchExact
@@ -1520,7 +1644,10 @@ private fun OnlineSearchSuggestionsSection(
                 // internally, so the LazyColumn never re-keys it while typing
                 // — no animateItem, no appearance animation, exactly the
                 // glitch-free swap the suggestion rows above use.
-                item(key = "suggestion_results_preview") {
+                item(
+                    key = "suggestion_results_preview",
+                    contentType = "suggestion_results_preview"
+                ) {
                     SuggestionResultsPreview(
                         songs = previewSongs,
                         isLoading = isPreviewLoading,
@@ -2131,12 +2258,16 @@ fun SearchResultsList(
         keyedResults.groupBy { keyed -> sectionForResultItem(keyed.item) }
     }
 
-    val sectionOrder = listOf(
-        SearchFilterType.SONGS,
-        SearchFilterType.ALBUMS,
-        SearchFilterType.ARTISTS,
-        SearchFilterType.PLAYLISTS
-    )
+    // PERF(scroll): remembered — a fresh list per recomposition of the results
+    // body (play/pause flips, favorites, library emissions) served no purpose.
+    val sectionOrder = remember {
+        listOf(
+            SearchFilterType.SONGS,
+            SearchFilterType.ALBUMS,
+            SearchFilterType.ARTISTS,
+            SearchFilterType.PLAYLISTS
+        )
+    }
 
     val imePadding = WindowInsets.ime.getBottom(localDensity).dp
     val systemBarPaddingBottom = WindowInsets.systemBars.asPaddingValues().calculateBottomPadding() + 94.dp

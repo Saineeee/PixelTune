@@ -109,6 +109,7 @@ import com.saine.pixeltune.utils.BubblesLine
 import com.saine.pixeltune.utils.ProviderText
 import com.saine.pixeltune.presentation.components.snapping.ExperimentalSnapperApi
 import com.saine.pixeltune.presentation.components.snapping.SnapperLayoutInfo
+import com.saine.pixeltune.presentation.components.snapping.SnapperLayoutItemInfo
 import com.saine.pixeltune.presentation.components.snapping.rememberLazyListSnapperLayoutInfo
 import com.saine.pixeltune.presentation.components.snapping.rememberSnapperFlingBehavior
 import com.saine.pixeltune.utils.LyricsUtils
@@ -910,12 +911,20 @@ fun SyncedLyricsList(
         }
         val highlightOffsetPx = remember(highlightOffsetDp, density) { with(density) { highlightOffsetDp.toPx() } }
 
-        val snapperLayoutInfo = rememberLazyListSnapperLayoutInfo(
-            lazyListState = listState,
-            snapOffsetForItem = { layoutInfo, item ->
+        // PERF(smoothness): the snap-offset lambda used to be a fresh instance
+        // on every recomposition of this scope (lyrics line changes, theme,
+        // etc.), which keyed rememberLazyListSnapperLayoutInfo into rebuilding
+        // the layout info — and with it a whole new SnapperFlingBehavior for
+        // the LazyColumn — on every one of those recompositions.
+        val snapOffsetForItem = remember(highlightOffsetPx) {
+            { layoutInfo: SnapperLayoutInfo, item: SnapperLayoutItemInfo ->
                 val viewportHeight = layoutInfo.endScrollOffset - layoutInfo.startScrollOffset
                 highlightSnapOffsetPx(viewportHeight, item.size, highlightOffsetPx)
             }
+        }
+        val snapperLayoutInfo = rememberLazyListSnapperLayoutInfo(
+            lazyListState = listState,
+            snapOffsetForItem = snapOffsetForItem
         )
         val flingBehavior = rememberSnapperFlingBehavior(layoutInfo = snapperLayoutInfo)
 

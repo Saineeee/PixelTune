@@ -7,10 +7,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalDensity
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -43,63 +43,105 @@ fun SineWaveLine(
     samples: Int = 400,
     cap: StrokeCap = StrokeCap.Round
 ) {
-    val density = LocalDensity.current
-
-    // --- LÓGICA DE ANIMACIÓN ---
-    // 1. Creamos una transición infinita que se encargará de repetir la animación.
-    val infiniteTransition = rememberInfiniteTransition(label = "SineWaveAnimation")
-
-    // 2. Animamos un valor flotante (la fase) de 0 a 2π (un ciclo completo de la onda).
-    //    Esto crea el efecto de desplazamiento.
-    val animatedPhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 2f * PI.toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = animationDurationMillis, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "phaseAnimation"
-    )
-
-    // 3. Decidimos qué fase usar: la animada o la estática.
-    val currentPhase = if (animate == true) animatedPhase else phase
-
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        val centerY = h / 2f
-
-        // Convertimos dp a px dentro del scope de dibujo para eficiencia
-        val strokePx = with(density) { strokeWidth.toPx() }
-        val ampPx = with(density) { amplitude.toPx() }
-
-        if (w <= 0f || samples < 2) return@Canvas
-
-        // Construimos el path senoidal usando la fase actual (animada o estática)
-        val path = Path().apply {
-            val step = w / (samples - 1)
-            // Usamos currentPhase para el punto inicial
-            moveTo(0f, centerY + (ampPx * sin(currentPhase)))
-            for (i in 1 until samples) {
-                val x = i * step
-                // theta recorre 0..(2π * waves)
-                val theta = (x / w) * (2f * PI.toFloat() * waves) + currentPhase
-                val y = centerY + ampPx * sin(theta)
-                lineTo(x, y)
-            }
-        }
-
-        drawPath(
-            path = path,
-            color = color,
-            style = Stroke(
-                width = strokePx,
-                cap = cap,
-                join = StrokeJoin.Round
+    // PERF(smoothness): the animated phase used to be read in COMPOSITION
+    // (`by` delegation) and captured as a plain Float by the draw lambda —
+    // every frame of the infinite transition recomposed the composable, and
+    // a fresh 400-segment Path was allocated per frame. The state is now
+    // read inside the draw lambda (redraw-only, PlayingEqIcon's own pattern)
+    // and the Path is reused (rewound + rebuilt).
+    //
+    // The static branch (animate != true) no longer creates an infinite
+    // transition at all — it used to keep a 60 Hz frame loop running that
+    // drew nothing (PlaylistContainer uses the static form).
+    if (animate == true) {
+        val infiniteTransition = rememberInfiniteTransition(label = "SineWaveAnimation")
+        val animatedPhase = infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 2f * PI.toFloat(),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = animationDurationMillis, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
             ),
-            alpha = alpha
+            label = "phaseAnimation"
         )
+        val reusablePath = remember { Path() }
+        Canvas(modifier = modifier) {
+            drawSineWave(
+                path = reusablePath,
+                phase = animatedPhase.value,
+                color = color,
+                alpha = alpha,
+                strokeWidth = strokeWidth,
+                amplitude = amplitude,
+                waves = waves,
+                samples = samples,
+                cap = cap
+            )
+        }
+    } else {
+        val reusablePath = remember { Path() }
+        Canvas(modifier = modifier) {
+            drawSineWave(
+                path = reusablePath,
+                phase = phase,
+                color = color,
+                alpha = alpha,
+                strokeWidth = strokeWidth,
+                amplitude = amplitude,
+                waves = waves,
+                samples = samples,
+                cap = cap
+            )
+        }
     }
+}
+
+/** Shared geometry: builds (rewinding + refilling the reused path) and strokes the sine curve. */
+private fun DrawScope.drawSineWave(
+    path: Path,
+    phase: Float,
+    color: Color,
+    alpha: Float,
+    strokeWidth: Dp,
+    amplitude: Dp,
+    waves: Float,
+    samples: Int,
+    cap: StrokeCap
+) {
+    val w = size.width
+    val h = size.height
+    val centerY = h / 2f
+
+    // Convertimos dp a px dentro del scope de dibujo para eficiencia
+    // (DrawScope is itself a Density)
+    val strokePx = strokeWidth.toPx()
+    val ampPx = amplitude.toPx()
+
+    if (w <= 0f || samples < 2) return
+
+    // Construimos el path senoidal usando la fase actual (animada o estática)
+    path.rewind()
+    val step = w / (samples - 1)
+    // Usamos la fase recibida para el punto inicial
+    path.moveTo(0f, centerY + (ampPx * sin(phase)))
+    for (i in 1 until samples) {
+        val x = i * step
+        // theta recorre 0..(2π * waves)
+        val theta = (x / w) * (2f * PI.toFloat() * waves) + phase
+        val y = centerY + ampPx * sin(theta)
+        path.lineTo(x, y)
+    }
+
+    drawPath(
+        path = path,
+        color = color,
+        style = Stroke(
+            width = strokePx,
+            cap = cap,
+            join = StrokeJoin.Round
+        ),
+        alpha = alpha
+    )
 }
 
 /**

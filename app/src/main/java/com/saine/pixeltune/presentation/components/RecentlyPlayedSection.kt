@@ -165,11 +165,20 @@ fun RecentlyPlayedSection(
                             }
                             row.pills.forEach { cell ->
                                 key(cell.item.song.id) {
+                                    // PERF(skipping): remembered per pill so
+                                    // the pill can skip when the section
+                                    // recomposes for unrelated reasons (a
+                                    // song change used to hand all ten pills a
+                                    // fresh lambda and re-run their corner /
+                                    // colour tweens' composition).
+                                    val pillClick = remember(cell.item.song, onSongClick) {
+                                        { onSongClick(cell.item.song) }
+                                    }
                                     RecentlyPlayedPill(
                                         item = cell.item,
                                         isCurrentSong = currentSongId == cell.item.song.id,
                                         modifier = Modifier.width(cell.width),
-                                        onClick = { onSongClick(cell.item.song) }
+                                        onClick = pillClick
                                     )
                                 }
                             }

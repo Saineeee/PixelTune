@@ -22,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import coil.size.Size
@@ -70,11 +71,16 @@ private fun DailyMixCard(
     onClickOpen: () -> Unit,
     playerViewModel: PlayerViewModel
 ) {
-    val headerSongs = songs.take(3).toImmutableList()
-    val visibleSongs = songs.take(4).toImmutableList()
+    // PERF(smoothness): these slices (and the card / button shapes below)
+    // used to be re-allocated on every recomposition of the card — the Home
+    // screen recomposes this section on song changes and stats ticks, so the
+    // allocations landed exactly while the surrounding LazyColumn was also
+    // composing neighbours.
+    val headerSongs = remember(songs) { songs.take(3).toImmutableList() }
+    val visibleSongs = remember(songs) { songs.take(4).toImmutableList() }
     val cornerRadius = 30.dp
-    Card(
-        shape = AbsoluteSmoothCornerShape(
+    val cardShape = remember {
+        AbsoluteSmoothCornerShape(
             cornerRadiusBR = cornerRadius,
             smoothnessAsPercentTL = 60,
             cornerRadiusTR = cornerRadius,
@@ -83,7 +89,10 @@ private fun DailyMixCard(
             smoothnessAsPercentBL = 60,
             cornerRadiusTL = cornerRadius,
             smoothnessAsPercentBR = 60
-        ),
+        )
+    }
+    Card(
+        shape = cardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.elevatedCardElevation(0.dp),
         modifier = Modifier.fillMaxWidth()
@@ -126,18 +135,25 @@ fun DailyMixHeader(thumbnails: ImmutableList<Song>) {
         }
     }
 
+    // PERF: the three thumbnail shapes used to be constructed TWICE per
+    // thumbnail per recomposition (once for clip, once for border) —
+    // smooth-corner / star geometry is not cheap to build.
+    val thumbnailShapes = remember { listOf(threeShapeSwitch(0), threeShapeSwitch(1), threeShapeSwitch(2)) }
+    val headerColorScheme = MaterialTheme.colorScheme
+    val headerBrush = remember(headerColorScheme) {
+        Brush.horizontalGradient(
+            colors = listOf(
+                headerColorScheme.primary.copy(alpha = 0.7f),
+                headerColorScheme.tertiary.copy(alpha = 0.7f)
+            )
+        )
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(80.dp)
-            .background(
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.7f)
-                    )
-                )
-            ),
+            .background(brush = headerBrush),
         contentAlignment = Alignment.CenterStart
     ) {
         Row(
@@ -167,11 +183,12 @@ fun DailyMixHeader(thumbnails: ImmutableList<Song>) {
             ) {
                 thumbnails.forEachIndexed { index, song ->
                     val modifier = shapeConditionalModifier(index)
+                    val shape = thumbnailShapes[index.coerceAtMost(thumbnailShapes.lastIndex)]
                     Box(
                         modifier = modifier
                             //.size(48.dp)
-                            .clip(threeShapeSwitch(index))
-                            .border(2.dp, MaterialTheme.colorScheme.surface, threeShapeSwitch(index))
+                            .clip(shape)
+                            .border(2.dp, MaterialTheme.colorScheme.surface, shape)
                     ) {
                         SmartImage(
                             model = song.albumArtUriString,
@@ -192,7 +209,7 @@ fun DailyMixHeader(thumbnails: ImmutableList<Song>) {
     }
 }
 
-@Composable
+// Not @Composable: pure shape construction (usable inside remember blocks).
 fun threeShapeSwitch(index: Int, thirdShapeCornerRadius: Dp = 16.dp): Shape { // Ensure the function returns a Shape
     return when (index) { // Return the result of the when expression
         0 -> RoundedStarShape(
@@ -256,17 +273,18 @@ private fun ViewAllDailyMixButton(
         colors = ButtonDefaults.filledTonalButtonColors(
             containerColor = Color.Transparent
         ),
-        shape = AbsoluteSmoothCornerShape(
-            cornerRadiusTL = 10.dp,
-            cornerRadiusTR = 10.dp,
-            smoothnessAsPercentTL = 70,
-            smoothnessAsPercentTR = 70,
-            cornerRadiusBL = 60.dp,
-            cornerRadiusBR = 60.dp,
-            smoothnessAsPercentBL = 70,
-            smoothnessAsPercentBR = 70
-
-        )
+        shape = remember {
+            AbsoluteSmoothCornerShape(
+                cornerRadiusTL = 10.dp,
+                cornerRadiusTR = 10.dp,
+                smoothnessAsPercentTL = 70,
+                smoothnessAsPercentTR = 70,
+                cornerRadiusBL = 60.dp,
+                cornerRadiusBR = 60.dp,
+                smoothnessAsPercentBL = 70,
+                smoothnessAsPercentBR = 70
+            )
+        }
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),

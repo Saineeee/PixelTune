@@ -103,8 +103,19 @@ fun SurfListScreen(
     playlistViewModel: PlaylistViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val stablePlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
-    val favoriteIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle()
+    // PERF(smoothness): the whole StablePlayerState used to be collected here,
+    // so ANY of its fields flipping (buffering refills on proxy streams,
+    // lyrics loads, play/pause, duration resolves…) recomposed the entire
+    // screen — re-running the LazyColumn content and (with unremembered row
+    // lambdas) every visible row — while the user was fling-scrolling. The
+    // screen reads exactly two fields, so they arrive as sliced, deduped
+    // flows now (SurfScreen's own idiom).
+    val isPlaying by remember(playerViewModel.stablePlayerState) {
+        playerViewModel.stablePlayerState.map { it.isPlaying }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = false)
+    val miniPlayerVisible by remember(playerViewModel.stablePlayerState) {
+        playerViewModel.stablePlayerState.map { it.currentSong != null }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = false)
 
     val currentSongId by remember(playerViewModel.stablePlayerState) {
         playerViewModel.stablePlayerState.map { it.currentSong?.id }.distinctUntilChanged()
@@ -118,17 +129,21 @@ fun SurfListScreen(
     val selectedSong = selectedSongForInfo
 
     val systemNavBarInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val miniPlayerVisible = stablePlayerState.currentSong != null
     val listBottomPadding = systemNavBarInset +
             (if (miniPlayerVisible) MiniPlayerHeight + MiniPlayerBottomSpacer else 0.dp) + 24.dp
 
-    val bgColors = listOf(
-        MaterialTheme.colorScheme.secondary.copy(alpha = 0.24f),
-        MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
-        MaterialTheme.colorScheme.surface
-    )
-    val backgroundBrush = remember(bgColors) {
-        Brush.verticalGradient(colors = bgColors, endY = 1200f)
+    // PERF: the stop list used to be re-allocated on every screen
+    // recomposition just to key the brush cache below.
+    val colorScheme = MaterialTheme.colorScheme
+    val backgroundBrush = remember(colorScheme) {
+        Brush.verticalGradient(
+            colors = listOf(
+                colorScheme.secondary.copy(alpha = 0.24f),
+                colorScheme.surface.copy(alpha = 0.55f),
+                colorScheme.surface
+            ),
+            endY = 1200f
+        )
     }
 
     Box(
@@ -216,6 +231,17 @@ fun SurfListScreen(
                 val songKeys = remember(songs) {
                     SearchResultKeys.disambiguate(songs.map { "surf_song_${it.id}" })
                 }
+                // PERF(scroll): hoisted, remembered row handlers — see the
+                // itemsIndexed below.
+                val onPlaySongFromList = remember(songs, uiState.title, playerViewModel) {
+                    { song: Song ->
+                        playerViewModel.playSongs(
+                            songsToPlay = songs,
+                            startSong = song,
+                            queueName = uiState.title
+                        )
+                    }
+                }
 
                 LazyColumn(
                     state = lazyListState,
@@ -258,22 +284,25 @@ fun SurfListScreen(
                             key = { index, _ -> songKeys[index] },
                             contentType = { _, _ -> "song" }
                         ) { _, song ->
+                            // PERF(scroll): the play handler is remembered so
+                            // the per-row onClick captures only stable values
+                            // (the remembered handler + the row's own song) —
+                            // otherwise it captured the unstable view-model
+                            // and every visible row recomposed on every list
+                            // re-execution instead of skipping.
+                            val onPlaySong = remember(song, onPlaySongFromList) {
+                                { onPlaySongFromList(song) }
+                            }
                             EnhancedSongListItem(
                                 modifier = Modifier.padding(horizontal = 16.dp),
                                 song = song,
-                                isPlaying = stablePlayerState.isPlaying,
+                                isPlaying = isPlaying,
                                 isCurrentSong = currentSongId == song.id,
                                 onMoreOptionsClick = {
                                     selectedSongForInfo = song
                                     showSongInfoBottomSheet = true
                                 },
-                                onClick = {
-                                    playerViewModel.playSongs(
-                                        songsToPlay = songs,
-                                        startSong = song,
-                                        queueName = uiState.title
-                                    )
-                                }
+                                onClick = onPlaySong
                             )
                         }
 
@@ -324,6 +353,10 @@ fun SurfListScreen(
     // The app's standard song bottom sheet (same wiring the online search
     // results and CloudCatalog use — favorite, queue, add-to-playlist).
     if (showSongInfoBottomSheet && selectedSong != null) {
+        // PERF(scoping): collected here rather than at screen scope — the
+        // favorite set is only read by the sheet, so favorite toggles from
+        // any other surface no longer recompose the whole list mid-scroll.
+        val favoriteIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle()
         val isFavorite = remember(selectedSong.id, favoriteIds) {
             favoriteIds.contains(selectedSong.id)
         }
@@ -426,6 +459,21 @@ private fun SurfListHeader(
             (1f - (scrollState.firstVisibleItemScrollOffset / 520f)).coerceIn(0f, 1f)
         }
     }
+    // PERF: the banner gradient used to be rebuilt (brush + 4-color list)
+    // on every header recomposition — re-entering composition on scroll-back
+    // re-allocated it each time.
+    val headerColorScheme = MaterialTheme.colorScheme
+    val headerBrush = remember(headerColorScheme) {
+        Brush.verticalGradient(
+            colors = listOf(
+                headerColorScheme.secondary.copy(alpha = 0.24f),
+                headerColorScheme.primary.copy(alpha = 0.10f),
+                headerColorScheme.surface.copy(alpha = 0.95f),
+                headerColorScheme.surface
+            ),
+            endY = 780f
+        )
+    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -438,17 +486,7 @@ private fun SurfListHeader(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.secondary.copy(alpha = 0.24f),
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-                            MaterialTheme.colorScheme.surface
-                        ),
-                        endY = 780f
-                    )
-                )
+                .background(headerBrush)
         )
         FilledIconButton(
             onClick = onBackClick,
